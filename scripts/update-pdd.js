@@ -377,6 +377,17 @@ class PDDOrderCrawler {
                     // 检查确认按钮是否存在
                     const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
                     
+                    // 等待60秒，让用户有足够时间更新验证码环境变量
+                    console.log('⏳ 等待60秒，以便用户更新验证码环境变量（拼多多验证码有效期10分钟）...');
+                    await new Promise(resolve => setTimeout(resolve, 60000));
+                    
+                    // 等待后，重新从环境变量读取验证码（支持动态更新）
+                    const verificationCodeFromEnv = process.env[`VERIFICATION_CODE_${this.loginCredentials.username.toUpperCase()}`];
+                    if (verificationCodeFromEnv) {
+                        this.verificationCode = verificationCodeFromEnv;
+                        console.log(`   🔑 从环境变量读取验证码: ${this.verificationCode}`);
+                    }
+                    
                     // 如果提供了验证码，尝试自动填写
                     if (this.verificationCode) {
                         console.log(`   🔑 使用提供的验证码: ${this.verificationCode}`);
