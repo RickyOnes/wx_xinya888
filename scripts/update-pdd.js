@@ -54,7 +54,7 @@ const CONFIG = {
 };
 
 class PDDOrderCrawler {
-    constructor(loginCredentials, userDataDir) {
+    constructor(loginCredentials, userDataDir, verificationCode) {
         this.browser = null;
         this.page = null;
         this.capturedData = {
@@ -70,10 +70,18 @@ class PDDOrderCrawler {
             apiRequestCaptured: false,
             resultList: null,
             resultListExtracted: false,
-            dataSaved: false
+            dataSaved: false,
+            // 验证码相关字段
+            verificationCodeRequest: null,
+            verificationCodeRequestHeaders: null,
+            verificationCodeResponse: null,
+            verificationCodeJson: null,
+            requiresVerificationCode: false,
+            verificationCode: verificationCode || null
         };
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
+        this.verificationCode = verificationCode || null;
     }
 
     async init() {
@@ -164,6 +172,26 @@ class PDDOrderCrawler {
                 this.capturedData.orderRequestHeaders = headers;
             }
             
+            // 捕获登录验证码请求
+            if (url.includes('janus/api/user/getLoginVerificationCode')) {
+                console.log('\n📱 捕获到登录验证码请求:');
+                console.log('   URL:', url);
+                console.log('   方法:', request.method());
+                console.log('   请求头:', JSON.stringify(request.headers(), null, 2));
+                
+                // 获取请求体
+                if (request.method() === 'POST') {
+                    const postData = request.postData();
+                    if (postData) {
+                        console.log('   请求体:', postData);
+                        this.capturedData.verificationCodeRequest = postData;
+                    }
+                }
+                
+                // 保存请求信息
+                this.capturedData.verificationCodeRequestHeaders = request.headers();
+            }
+            
             // 继续请求
             request.continue();
         });
@@ -204,6 +232,42 @@ class PDDOrderCrawler {
                 } catch (e) {
                     console.log('   无法获取响应数据:', e.message);
                     this.capturedData.resultListExtracted = true;
+                }
+            }
+            
+            // 捕获登录验证码响应
+            if (url.includes('janus/api/user/getLoginVerificationCode')) {
+                console.log('\n📱 登录验证码响应状态:', response.status());
+                try {
+                    const responseData = await response.text();
+                    console.log('   响应数据长度:', responseData.length);
+                    console.log('   响应内容:', responseData);
+                    
+                    // 保存响应数据
+                    this.capturedData.verificationCodeResponse = responseData;
+                    
+                    // 尝试解析为JSON
+                    try {
+                        const jsonResponse = JSON.parse(responseData);
+                        console.log('   ✅ 验证码响应JSON解析成功:');
+                        console.log('      success:', jsonResponse.success);
+                        console.log('      errorCode:', jsonResponse.errorCode);
+                        console.log('      errorMsg:', jsonResponse.errorMsg);
+                        console.log('      result:', jsonResponse.result);
+                        
+                        // 保存解析后的数据
+                        this.capturedData.verificationCodeJson = jsonResponse;
+                        
+                        // 如果响应表明需要验证码，记录该信息
+                        if (jsonResponse.success === true && jsonResponse.result === null) {
+                            console.log('   ⚠️  响应表明需要验证码（result为null），可能需要手动输入');
+                            this.capturedData.requiresVerificationCode = true;
+                        }
+                    } catch (e) {
+                        console.log('   ⚠️  响应不是有效的JSON格式');
+                    }
+                } catch (e) {
+                    console.log('   无法获取验证码响应数据:', e.message);
                 }
             }
         });
@@ -302,6 +366,77 @@ class PDDOrderCrawler {
                         }
                     } catch (e) {
                         // 忽略点击失败
+                    }
+                }
+                
+                // 检查是否出现验证码输入框（用户提供的元素结构）
+                const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+                if (verificationCodeInput) {
+                    console.log('📱 检测到验证码输入框，可能需要短信验证码');
+                    
+                    // 检查确认按钮是否存在
+                    const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
+                    
+                    // 如果提供了验证码，尝试自动填写
+                    if (this.verificationCode) {
+                        console.log(`   🔑 使用提供的验证码: ${this.verificationCode}`);
+                        
+                        try {
+                            // 清空输入框并填写验证码
+                            await verificationCodeInput.click({ clickCount: 3 }); // 全选
+                            await verificationCodeInput.press('Backspace'); // 删除
+                            await verificationCodeInput.type(this.verificationCode, { delay: 50 });
+                            console.log('   ✅ 已输入验证码');
+                            
+                            // 点击确认按钮
+                            if (confirmButton) {
+                                await confirmButton.click();
+                                console.log('   ✅ 已点击确认按钮');
+                                
+                                // 等待跳转
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                continue; // 继续循环检查是否跳转
+                            }
+                        } catch (e) {
+                            console.log('   ⚠️  自动填写验证码失败:', e.message);
+                        }
+                    } else {
+                        console.log('   ⚠️  请检查手机短信，需要手动输入验证码');
+                        if (confirmButton) {
+                            console.log('   ✅ 找到确认按钮（等待验证码输入）');
+                        }
+                    }
+                    
+                    // 标记需要验证码
+                    this.capturedData.requiresVerificationCode = true;
+                    
+                    // 等待一段时间（30秒）看看是否自动跳转
+                    const verificationCodeWaitStart = Date.now();
+                    const maxVerificationCodeWait = 30000; // 30秒
+                    
+                    while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
+                        // 检查是否已跳转到订单管理页面
+                        const currentUrl = this.page.url();
+                        if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                            console.log('✅ 在验证码等待期间成功跳转到订单管理页面');
+                            return true;
+                        }
+                        
+                        // 检查验证码输入框是否还存在
+                        const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                        if (!stillExists) {
+                            console.log('✅ 验证码输入框已消失，可能已自动处理');
+                            break;
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                    
+                    // 如果30秒后仍然需要验证码，返回false表示需要手动处理
+                    if (this.capturedData.requiresVerificationCode) {
+                        console.log('❌ 需要短信验证码，无法自动登录');
+                        console.log('   ℹ️  验证码请求响应已捕获，请检查输出信息');
+                        return false;
                     }
                 }
             } catch (e) {
@@ -423,19 +558,11 @@ class PDDOrderCrawler {
             
             // 3. 自动登录
             const loginSuccess = await this.autoLogin();
-            if (!loginSuccess) {
-                console.log('❌ 登录失败，程序退出');
-                await this.browser.close();
-                return;
-            }
             
-            // 4. 捕获cookies
+            // 4. 无论登录成功与否，都捕获cookies和输出信息
             await this.captureCookies();
             
-            // 5. 等待API请求
-            // const apiCaptured = await this.waitForAPIRequest();
-            
-            // 输出关键信息
+            // 输出关键信息（包括验证码响应）
             console.log('\n📋 关键信息汇总:');
             console.log('='.repeat(50));
             
@@ -464,7 +591,40 @@ class PDDOrderCrawler {
                 console.log('PASS_ID: 未捕获到');
             }
             
+            console.log('\n' + '='.repeat(50));
+            
+            // 验证码响应信息
+            if (this.capturedData.verificationCodeResponse) {
+                console.log('📱 验证码响应:');
+                console.log('   响应数据长度:', this.capturedData.verificationCodeResponse.length);
+                console.log('   响应内容:', this.capturedData.verificationCodeResponse);
+                
+                if (this.capturedData.verificationCodeJson) {
+                    const json = this.capturedData.verificationCodeJson;
+                    console.log('   JSON解析结果:');
+                    console.log('     success:', json.success);
+                    console.log('     errorCode:', json.errorCode);
+                    console.log('     errorMsg:', json.errorMsg);
+                    console.log('     result:', json.result);
+                }
+                
+                if (this.capturedData.requiresVerificationCode) {
+                    console.log('   ⚠️  需要验证码: 响应表明需要短信验证码');
+                }
+            } else {
+                console.log('📱 验证码响应: 未捕获到');
+            }
+            
             console.log('='.repeat(50));
+            
+            // 5. 等待API请求（注释掉）
+            // const apiCaptured = await this.waitForAPIRequest();
+            
+            // 检查登录是否成功
+            if (!loginSuccess) {
+                console.log('❌ 登录失败，程序退出');
+                return;
+            }
             
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -485,8 +645,11 @@ class PDDOrderCrawler {
 }
 
 // 主函数
-async function updateAccount(username, password) {
+async function updateAccount(username, password, verificationCode) {
     console.log(`\n🔄 开始更新账号: ${username}`);
+    if (verificationCode) {
+        console.log(`   🔑 使用验证码: ${verificationCode}`);
+    }
     
     // 获取Supabase客户端
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -550,7 +713,7 @@ async function updateAccount(username, password) {
         
         // 3. 需要重新登录，启动浏览器
         console.log(`🔍 未找到有效参数，开始浏览器登录流程...`);
-        const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`);
+        const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode);
         await crawler.run();
         
         // 4. 准备要上传的数据
@@ -600,7 +763,10 @@ async function main() {
                 continue;
             }
             
-            await updateAccount(username, password);
+            // 从环境变量获取验证码（可选）
+            const verificationCode = process.env[`VERIFICATION_CODE_${username.toUpperCase()}`];
+            
+            await updateAccount(username, password, verificationCode);
         }
         
         console.log('\n🎉 所有账号更新完成');
