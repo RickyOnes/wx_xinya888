@@ -1,0 +1,8 @@
+{
+  "compileType": "miniprogram",
+  "simulatorPluginLibVersion": {},
+  "setting": {
+    "minified": true,
+    "uglifyFileName": true
+  }
+}

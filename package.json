@@ -1,0 +1,23 @@
+{
+  "name": "xinya888",
+  "version": "1.0.0",
+  "description": "拼多多参数自动更新系统",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.7",
+    "puppeteer": "^24.37.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "keywords": [
+    "pinduoduo",
+    "supabase",
+    "automation"
+  ],
+  "author": "RickyOne",
+  "license": "MIT"
+}
