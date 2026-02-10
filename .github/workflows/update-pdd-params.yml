@@ -15,6 +15,17 @@ jobs:
       with:
         node-version: '24'
     
+    # 缓存APT包，减少系统依赖下载时间
+    - name: 缓存APT包
+      uses: actions/cache@v4
+      with:
+        path: |
+          /var/cache/apt/archives
+          /var/lib/apt/lists
+        key: ${{ runner.os }}-apt-${{ hashFiles('**/.github/workflows/update-pdd-params.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
+    
     # 缓存npm包和puppeteer浏览器，减少安装时间
     - name: 缓存npm依赖
       uses: actions/cache@v4
