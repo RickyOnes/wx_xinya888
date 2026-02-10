@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs').promises;
+const readline = require('readline');
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -405,6 +406,36 @@ class PDDOrderCrawler {
                         if (confirmButton) {
                             console.log('   ✅ 找到确认按钮（等待验证码输入）');
                         }
+                        
+                        // 尝试从命令行获取验证码
+                        const userCode = await this.promptForVerificationCode();
+                        if (userCode) {
+                            this.verificationCode = userCode;
+                            console.log(`   🔑 使用手动输入的验证码: ${this.verificationCode}`);
+                            
+                            try {
+                                // 清空输入框并填写验证码
+                                await verificationCodeInput.click({ clickCount: 3 }); // 全选
+                                await verificationCodeInput.press('Backspace'); // 删除
+                                await verificationCodeInput.type(this.verificationCode, { delay: 50 });
+                                console.log('   ✅ 已输入验证码');
+                                
+                                // 点击确认按钮
+                                if (confirmButton) {
+                                    await confirmButton.click();
+                                    console.log('   ✅ 已点击确认按钮');
+                                    
+                                    // 等待跳转
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
+                                    // 继续循环检查是否跳转
+                                    continue;
+                                }
+                            } catch (e) {
+                                console.log('   ⚠️  手动填写验证码失败:', e.message);
+                            }
+                        } else {
+                            console.log('   ⚠️  未获取到验证码，继续等待...');
+                        }
                     }
                     
                     // 标记需要验证码
@@ -451,6 +482,41 @@ class PDDOrderCrawler {
             
             await new Promise(resolve => setTimeout(resolve, pollInterval));
         }
+    }
+
+    async promptForVerificationCode() {
+        return new Promise((resolve) => {
+            // 检查是否在交互式环境中（标准输入是否可用）
+            if (!process.stdin.isTTY) {
+                console.log('   ⚠️  非交互式环境，无法从命令行获取验证码');
+                resolve(null);
+                return;
+            }
+
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout
+            });
+
+            // 设置60秒超时
+            const timeout = setTimeout(() => {
+                rl.close();
+                console.log('   ⏰  输入超时（60秒），跳过手动输入');
+                resolve(null);
+            }, 60000);
+
+            rl.question('   📱 请输入短信验证码（60秒超时）: ', (code) => {
+                clearTimeout(timeout);
+                rl.close();
+                if (code && code.trim()) {
+                    console.log('   ✅ 已接收验证码');
+                    resolve(code.trim());
+                } else {
+                    console.log('   ⚠️  未输入验证码');
+                    resolve(null);
+                }
+            });
+        });
     }
 
     async captureCookies() {
