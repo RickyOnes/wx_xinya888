@@ -79,4 +79,5 @@ jobs:
         PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
+        TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/update-pdd.js

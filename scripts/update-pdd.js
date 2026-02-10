@@ -32,7 +32,13 @@ const CONFIG = {
             '--disable-site-isolation-trials',
             '--disable-blink-features=AutomationControlled',
             '--allow-running-insecure-content',
-            '--disable-features=BlockInsecurePrivateNetworkRequests'
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
+            '--use-gl=swiftshader',  // 固定WebGL渲染器
+            '--disable-software-rasterizer',
+            '--disable-webgl',
+            '--disable-canvas-aa',  // 禁用画布抗锯齿
+            '--disable-2d-canvas-clip-aa',
+            '--disable-gl-drawing-for-tests'
         ],
         ignoreDefaultArgs: ['--enable-automation']
     },
@@ -83,7 +89,21 @@ class PDDOrderCrawler {
         this.page = await this.browser.newPage();
         
         // 设置用户代理
-        await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36');
+        await this.page.setUserAgent(
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+          {
+            brands: [
+              { brand: 'Chromium', version: '144' },
+              { brand: 'Not=A?Brand', version: '99' },
+            ],
+            platform: 'Windows',
+            platformVersion: '10.0',
+            architecture: 'x86',
+            model: '',
+            mobile: false,
+            bitness: '64',
+          }
+        );
         
         // 设置额外的请求头
         await this.page.setExtraHTTPHeaders({
