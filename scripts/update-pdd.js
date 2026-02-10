@@ -2,7 +2,6 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs').promises;
-const readline = require('readline');
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -394,81 +393,57 @@ class PDDOrderCrawler {
                                 await confirmButton.click();
                                 console.log('   ✅ 已点击确认按钮');
                                 
-                                // 等待跳转
-                                await new Promise(resolve => setTimeout(resolve, 2000));
-                                continue; // 继续循环检查是否跳转
+                                // 等待一段时间（30秒）看看是否自动跳转
+                                const verificationCodeWaitStart = Date.now();
+                                const maxVerificationCodeWait = 30000; // 30秒
+                                
+                                while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
+                                    // 检查是否已跳转到订单管理页面
+                                    const currentUrl = this.page.url();
+                                    if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                                        console.log('✅ 验证码正确，成功跳转到订单管理页面');
+                                        return true;
+                                    }
+                                    
+                                    // 检查是否出现错误提示或验证码输入框是否消失
+                                    const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                                    if (!stillExists) {
+                                        console.log('✅ 验证码输入框已消失，可能已自动处理');
+                                        break;
+                                    }
+                                    
+                                    // 检查是否有错误提示
+                                    const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
+                                    if (errorElement) {
+                                        const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
+                                        if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
+                                            console.log(`❌ 验证码错误: ${errorText}`);
+                                            return false;
+                                        }
+                                    }
+                                    
+                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                }
+                                
+                                // 如果30秒后仍然在验证码页面，返回false
+                                const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                                if (stillOnVerificationPage) {
+                                    console.log('❌ 验证码可能错误或已过期，页面未跳转');
+                                    return false;
+                                }
                             }
                         } catch (e) {
                             console.log('   ⚠️  自动填写验证码失败:', e.message);
                         }
                     } else {
-                        console.log('   ⚠️  请检查手机短信，需要手动输入验证码');
-                        if (confirmButton) {
-                            console.log('   ✅ 找到确认按钮（等待验证码输入）');
-                        }
-                        
-                        // 尝试从命令行获取验证码
-                        const userCode = await this.promptForVerificationCode();
-                        if (userCode) {
-                            this.verificationCode = userCode;
-                            console.log(`   🔑 使用手动输入的验证码: ${this.verificationCode}`);
-                            
-                            try {
-                                // 清空输入框并填写验证码
-                                await verificationCodeInput.click({ clickCount: 3 }); // 全选
-                                await verificationCodeInput.press('Backspace'); // 删除
-                                await verificationCodeInput.type(this.verificationCode, { delay: 50 });
-                                console.log('   ✅ 已输入验证码');
-                                
-                                // 点击确认按钮
-                                if (confirmButton) {
-                                    await confirmButton.click();
-                                    console.log('   ✅ 已点击确认按钮');
-                                    
-                                    // 等待跳转
-                                    await new Promise(resolve => setTimeout(resolve, 2000));
-                                    // 继续循环检查是否跳转
-                                    continue;
-                                }
-                            } catch (e) {
-                                console.log('   ⚠️  手动填写验证码失败:', e.message);
-                            }
-                        } else {
-                            console.log('   ⚠️  未获取到验证码，继续等待...');
-                        }
+                        // 没有验证码，直接失败
+                        console.log('❌ 没有提供验证码，无法自动登录');
+                        console.log('   ℹ️  请设置环境变量 VERIFICATION_CODE_用户名');
+                        return false;
                     }
                     
                     // 标记需要验证码
                     this.capturedData.requiresVerificationCode = true;
-                    
-                    // 等待一段时间（30秒）看看是否自动跳转
-                    const verificationCodeWaitStart = Date.now();
-                    const maxVerificationCodeWait = 30000; // 30秒
-                    
-                    while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
-                        // 检查是否已跳转到订单管理页面
-                        const currentUrl = this.page.url();
-                        if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                            console.log('✅ 在验证码等待期间成功跳转到订单管理页面');
-                            return true;
-                        }
-                        
-                        // 检查验证码输入框是否还存在
-                        const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                        if (!stillExists) {
-                            console.log('✅ 验证码输入框已消失，可能已自动处理');
-                            break;
-                        }
-                        
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                    }
-                    
-                    // 如果30秒后仍然需要验证码，返回false表示需要手动处理
-                    if (this.capturedData.requiresVerificationCode) {
-                        console.log('❌ 需要短信验证码，无法自动登录');
-                        console.log('   ℹ️  验证码请求响应已捕获，请检查输出信息');
-                        return false;
-                    }
                 }
             } catch (e) {
                 // 忽略查询表单时的错误
@@ -484,40 +459,7 @@ class PDDOrderCrawler {
         }
     }
 
-    async promptForVerificationCode() {
-        return new Promise((resolve) => {
-            // 检查是否在交互式环境中（标准输入是否可用）
-            if (!process.stdin.isTTY) {
-                console.log('   ⚠️  非交互式环境，无法从命令行获取验证码');
-                resolve(null);
-                return;
-            }
 
-            const rl = readline.createInterface({
-                input: process.stdin,
-                output: process.stdout
-            });
-
-            // 设置60秒超时
-            const timeout = setTimeout(() => {
-                rl.close();
-                console.log('   ⏰  输入超时（60秒），跳过手动输入');
-                resolve(null);
-            }, 60000);
-
-            rl.question('   📱 请输入短信验证码（60秒超时）: ', (code) => {
-                clearTimeout(timeout);
-                rl.close();
-                if (code && code.trim()) {
-                    console.log('   ✅ 已接收验证码');
-                    resolve(code.trim());
-                } else {
-                    console.log('   ⚠️  未输入验证码');
-                    resolve(null);
-                }
-            });
-        });
-    }
 
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
