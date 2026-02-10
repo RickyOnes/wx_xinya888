@@ -663,56 +663,8 @@ async function updateAccount(username, password, verificationCode) {
     const supabase = createClient(supabaseUrl, supabaseKey);
     
     try {
-        // 1. 检查Supabase中是否已有未过期的数据
-        const { data: existingData, error: fetchError } = await supabase
-            .from('pdd_accounts')
-            .select('*')
-            .eq('username', username)
-            .maybeSingle();
-        
-        if (fetchError) {
-            console.log(`⚠️  查询Supabase数据失败: ${fetchError.message}`);
-        }
-        
-        const now = new Date();
-        let shouldUseExisting = false;
-        
-        if (existingData && existingData.expires_at) {
-            const expiresAt = new Date(existingData.expires_at);
-            const hoursLeft = (expiresAt - now) / (1000 * 60 * 60);
-            
-            if (expiresAt > now) {
-                console.log(`✅ 发现未过期参数，还有 ${hoursLeft.toFixed(1)} 小时过期`);
-                console.log(`   🍪 Cookie字符串长度: ${existingData.cookie_string?.length || 0}`);
-                console.log(`   🔑 anti_content长度: ${existingData.anti_content?.length || 0}`);
-                
-                // 更新过期时间，延长20小时
-                const newExpiresAt = new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString();
-                const { error: updateError } = await supabase
-                    .from('pdd_accounts')
-                    .update({ expires_at: newExpiresAt, last_success: true })
-                    .eq('username', username);
-                
-                if (updateError) {
-                    console.log(`⚠️  更新过期时间失败: ${updateError.message}`);
-                } else {
-                    console.log(`✅ 已更新过期时间至: ${newExpiresAt}`);
-                }
-                
-                shouldUseExisting = true;
-            } else {
-                console.log(`⚠️  参数已过期 ${Math.abs(hoursLeft).toFixed(1)} 小时，需要重新登录`);
-            }
-        }
-        
-        // 2. 如果已有有效数据，跳过浏览器登录
-        if (shouldUseExisting) {
-            console.log(`✅ 使用现有参数，跳过浏览器登录流程`);
-            return;
-        }
-        
-        // 3. 需要重新登录，启动浏览器
-        console.log(`🔍 未找到有效参数，开始浏览器登录流程...`);
+        // 开始浏览器登录流程
+        console.log(`🔍 开始浏览器登录流程...`);
         const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode);
         await crawler.run();
         
