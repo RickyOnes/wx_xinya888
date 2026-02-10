@@ -1,0 +1,62 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/index/index",
+    "pages/longqiao/longqiao",
+    "pages/detail/detail",
+    "pages/stock/stock"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#667eea",
+    "navigationBarTitleText": "销售数据查询系统",
+    "navigationBarTextStyle": "white"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#999",
+    "selectedColor": "#07c160",
+    "backgroundColor": "#fff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "iconPath": "images/icon64-gray.png",
+        "selectedIconPath": "images/icon64.png",
+        "text": "多多仓"
+      },
+      {
+        "pagePath": "pages/longqiao/longqiao",
+        "iconPath": "images/icon64-gray.png",
+        "selectedIconPath": "images/icon64.png",
+        "text": "隆桥仓"
+      },
+      {
+        "pagePath": "pages/stock/stock",
+        "iconPath": "images/icon64-gray.png",
+        "selectedIconPath": "images/icon64.png",
+        "text": "库存查询"
+      },
+      {
+        "pagePath": "pages/detail/detail",
+        "iconPath": "images/icon64-gray.png",
+        "selectedIconPath": "images/icon64.png",
+        "text": "关于"
+      }
+    ]
+  },
+  "usingComponents": {},
+  "lazyCodeLoading": "requiredComponents",
+  "componentPlaceholder": {
+    "custom-tab-bar": "view"
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "你的位置信息将用于小程序位置接口的效果展示"
+    },
+    "scope.writePhotosAlbum": {
+      "desc": "保存图片到相册，方便您分享和查看"
+    }
+  },
+  "sitemapLocation": "sitemap.json"
+}

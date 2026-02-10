@@ -1,0 +1,208 @@
+<!--pages/stock/stock.wxml-->
+<view class="page-container">
+  <view class="content">
+
+    <!-- 顶部用户信息栏 -->
+    <view class="user-header">
+      <view class="user-info" bindtap="onUserMenu">
+        <image class="user-avatar" src="/images/guanjiapo.png"></image>
+        <view class="user-details">
+          <text class="user-email">{{userName || '管家婆用户'}}</text>
+          <text class="user-status {{authStatus.class}}">{{authStatus.text}}</text>
+        </view>
+        <text class="dropdown-icon">▼</text>
+      </view>
+      <view class="header-actions">
+        <button class="btn-refresh" size="mini" bindtap="clearGuanjiapoAuth">退出登录</button>
+      </view>
+    </view>
+
+    <!-- 登录表单（未登录时显示） -->
+    <view wx:if="{{showLogin}}" class="card login-card">
+      <view class="card-header">
+        <text class="card-title">🔐 管家婆登录</text>
+      </view>
+      
+      <view class="card-body">
+        <view class="login-form">
+          <view class="form-item">
+            <text class="form-label">公司名称：</text>
+            <input class="form-input" 
+                   value="{{loginForm.companyName}}" 
+                   placeholder="请输入公司名称"
+                   data-field="companyName"
+                   bindinput="onLoginInput" />
+          </view>
+          
+          <view class="form-item">
+            <text class="form-label">用户名：</text>
+            <input class="form-input" 
+                   value="{{loginForm.username}}" 
+                   placeholder="请输入用户名"
+                   data-field="username"
+                   bindinput="onLoginInput" />
+          </view>
+          
+          <view class="form-item">
+            <text class="form-label">密码：</text>
+            <input class="form-input" 
+                   value="{{loginForm.password}}" 
+                   placeholder="请输入密码"
+                   password
+                   data-field="password"
+                   bindinput="onLoginInput" />
+          </view>
+          
+          <view class="form-actions">
+            <button class="btn btn-primary" bindtap="testGuanjiapoLogin" loading="{{isLoggingIn}}" disabled="{{isLoggingIn}}">
+              登录
+            </button>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 第一版块：数据筛选 -->
+    <view wx:if="{{!showLogin}}" class="card">
+      <view class="card-header">
+        <text class="card-title">⏳ 数据筛选</text>
+      </view>
+      
+      <view class="card-body">
+        <view class="filter-grid">
+          <view class="filter-group">
+            <view class="filter-item">
+              <text class="filter-label">🏷️品牌名称</text>
+              <picker 
+                class="picker" 
+                mode="selector" 
+                range="{{brandOptions}}" 
+                range-key="text"
+                value="{{selectedBrandIndex}}"
+                bindchange="onBrandPickerChange">
+                <view class="picker-display">
+                  {{selectedBrandName || '请选择品牌'}}
+                </view>
+              </picker>
+            </view>
+            
+            <view class="filter-item">
+              <text class="filter-label">🎁商品名称</text>
+              <picker 
+                class="picker" 
+                mode="selector" 
+                range="{{productOptions}}" 
+                range-key="text"
+                value="{{selectedProductIndex}}"
+                bindchange="onProductPickerChange">
+                <view class="picker-display">
+                  {{selectedProductName || '请选择商品'}}
+                </view>
+              </picker>
+            </view>
+          </view>
+        </view>
+
+        <view class="filter-actions">
+          <button class="btn btn-secondary" bindtap="clearFilter" >🧽清除筛选</button>
+          <button class="btn btn-primary" bindtap="queryStockData" loading="{{isQuerying}}" disabled="{{isQuerying}}">🔍数据查询</button>
+        </view>
+      </view>
+    </view>
+
+    <!-- 第二版块：数据汇总（合并统计卡片和商品列表） -->
+    <view wx:if="{{!showLogin}}" class="card">
+      <view class="card-header">
+        <text class="card-title">📈 数据汇总</text>
+      </view>
+      
+      <view class="card-body">
+        <!-- 1. 统计卡片 -->
+        <view class="summary-grid">
+          <view class="stat-card">
+            <view class="stat-content">
+              <text class="stat-label" wx:if="{{displayMode === 'brand'}}">🏷️品牌种类</text>
+              <text class="stat-label" wx:else>🛍️商品种类</text>
+              <text class="stat-value">{{summaryCards.productTypes}}</text>
+            </view>
+          </view>
+          
+          <view class="stat-card">
+            <view class="stat-content">
+              <text class="stat-label">📦总库存(件)</text>
+              <text class="stat-value">{{summaryCards.totalStock}}</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- 2. 商品汇总表格 -->
+        <view class="brand-summary-section" wx:if="{{filteredStockData.length > 0}}">
+          <view class="section-header">
+            <view class="section-header-left">
+              <text class="section-title" wx:if="{{displayMode === 'brand'}}">📋品牌汇总 ({{filteredStockData.length}}个)</text>
+              <text class="section-title" wx:else>📋商品汇总 ({{filteredStockData.length}}个)</text>
+            </view>
+            <view class="section-header-right">
+              <button class="btn-share" size="mini" bindtap="shareAsImage">📤分享图片</button>
+            </view>
+          </view>
+          
+          <view class="brand-table-container">
+            <view class="brand-table">
+              <scroll-view class="brand-table-body" scroll-x="true" scroll-y="true" style="height: 500rpx;">
+                <view class="brand-table-body-content" style="min-width: 600rpx;">
+                  <!-- 固定表头 -->
+                  <view class="brand-table-header sticky-header">
+                    <text class="brand-cell header-cell" wx:if="{{displayMode === 'brand'}}">品牌编号</text>
+                    <text class="brand-cell header-cell" wx:else>商品编号</text>
+                    <text class="brand-cell header-cell brand-cell-wide" wx:if="{{displayMode === 'brand'}}">品牌名称</text>
+                    <text class="brand-cell header-cell brand-cell-wide" wx:else>商品名称</text>
+                    <text class="brand-cell header-cell">总件数</text>
+                  </view>
+                  
+                  <view class="brand-table-rows">
+                    <view class="brand-table-row" wx:if="{{filteredStockData.length > 0}}" wx:for="{{filteredStockData}}" wx:key="index">
+                      <text class="brand-cell">{{item.userCode}}</text>
+                      <text class="brand-cell brand-cell-wide">{{item.productName}}</text>
+                      <text class="brand-cell">{{item.unitQuantity}}</text>
+                    </view>
+                  </view>
+                </view>
+              </scroll-view>
+            </view>
+          </view>
+        </view>
+        
+        <view class="no-data" wx:if="{{filteredStockData.length === 0}}">
+          <text class="no-data-icon">📭</text>
+          <text class="no-data-text">暂无库存数据</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 查询结果提示 -->
+    <view wx:if="{{queryResult}}" class="test-result">
+      <text class="result-title">状态：</text>
+      <text class="result-content">{{queryResult}}</text>
+    </view>
+
+    <view class="loading-overlay" wx:if="{{isLoggingIn}}">
+      <view class="loading-content">
+        <view class="spinner"></view>
+        <text class="loading-text">正在登录...</text>
+      </view>
+    </view>
+
+    <view class="loading-overlay" wx:if="{{isQuerying}}">
+      <view class="loading-content">
+        <view class="spinner"></view>
+        <text class="loading-text">正在查询库存数据...</text>
+      </view>
+    </view>
+
+    <!-- 隐藏的canvas，用于生成分享图片 -->
+    <view class="hidden-canvas">
+      <canvas id="shareCanvas" type="2d" style="position: fixed; top: -9999rpx; left: -9999rpx; width: 600rpx; height: 800rpx;"></canvas>
+    </view>
+  </view>
+</view>

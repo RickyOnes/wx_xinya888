@@ -1,0 +1,69 @@
+/* pages/longqiao/longqiao.wxss - 隆桥仓库页面特定样式 */
+/* 通用样式已在 app.wxss 中定义 */
+
+/* 品牌汇总各列宽度设置 */
+.brand-cell:nth-child(1) {
+  flex: 0.8; /* 品牌 */
+}
+.brand-cell:nth-child(2) {
+  flex: 1; /* 总件数 */
+}
+.brand-cell:nth-child(3) {
+  flex: 1.4; /* 总金额，与app.wxss保持一致 */
+}
+.brand-cell:nth-child(4) {
+  flex: 0.8; /* 占比 */
+}
+.brand-cell:nth-child(5) {
+  flex: 1.2; /* 总毛利 */
+}
+.brand-cell:nth-child(6) {
+  flex: 1.2; /* 总费用 */
+}
+
+/* 当选择了具体销售人员时，第一列（商品名称）宽度为flex:2 */
+.brand-cell.brand-cell-salesperson {
+  flex: 2.6 !important;
+}
+
+/* 隆桥仓库详细记录表特定列宽 */
+.cell:nth-child(1) {
+  flex: 1 !important;
+}
+
+.cell-customer {
+  flex: 2 !important;
+  text-align: left;
+  min-width: 150rpx;
+}
+
+.cell-product-name {
+  flex: 2.5 !important; /* 增加商品名称列宽 */
+  text-align: left;
+}
+
+.cell-sales {
+  flex: 0.8 !important;
+  text-align: center !important;
+}
+
+.cell-quantity {
+  flex: 0.9 !important;
+  text-align: right;
+}
+
+.cell-amount {
+  flex: 1!important;
+  text-align: right;
+  min-width: 150rpx;
+}
+
+.cell-cost {
+  flex: 1 !important;
+  text-align: right;
+}
+
+.cell-profit {
+  flex: 1 !important;
+  text-align: right;
+}

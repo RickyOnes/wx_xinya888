@@ -1,0 +1,590 @@
+/* pages/detail/detail.wxss - 关于页面样式 */
+
+/* 关于页面样式适配不同屏幕高度 */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 164rpx; /* 为tabbar预留空间，与app.wxss保持一致 */
+}
+
+.card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  margin: 6rpx;
+  border-radius: 20rpx;
+  background: white;
+  box-shadow: 0 10rpx 30rpx rgba(0, 0, 0, 0.1);
+  overflow: scroll;
+}
+
+.card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding-left: 40rpx;
+  padding-right: 40rpx;
+}
+
+/* 关于部分样式 */
+.about-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20rpx 0;
+  text-align: center;
+}
+
+.about-logo {
+  margin-bottom: 30rpx;
+}
+
+.logo-image {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 24rpx;
+  border: 2rpx solid #f07d68;
+}
+
+.app-name {
+  display: block;
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 10rpx;
+}
+
+.app-version {
+  display: block;
+  font-size: 28rpx;
+  color: #666;
+}
+
+.app-description {
+  display: block;
+  font-size: 28rpx;
+  color: #666;
+  line-height: 1.6;
+  max-width: 600rpx;
+  margin: 0 auto;
+}
+
+/* 功能部分样式 */
+.feature-section {
+  padding: 20rpx 0;
+  border-top: 1rpx solid #e0e0e0;
+  border-bottom: 1rpx solid #e0e0e0;
+}
+
+.section-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 30rpx;
+}
+
+.feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+.feature-item {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.feature-icon {
+  font-size: 32rpx;
+  width: 50rpx;
+  text-align: center;
+}
+
+.feature-text {
+  font-size: 28rpx;
+  color: #333;
+  flex: 1;
+}
+
+/* 技术支持部分样式 */
+.support-section {
+  margin: 20rpx 0;
+}
+
+.support-info {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+}
+
+.info-label {
+  font-size: 28rpx;
+  color: #666;
+  min-width: 120rpx;
+  font-weight: 500;
+}
+
+.info-value {
+  font-size: 28rpx;
+  color: #333;
+  flex: 1;
+}
+
+/* 管家婆接口测试部分样式 */
+.test-section {
+  margin: 20rpx 0;
+  padding: 20rpx 0;
+  border-top: 1rpx solid #e0e0e0;
+}
+
+.test-info {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.test-description {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+  line-height: 1.4;
+}
+
+.test-status {
+  display: flex;
+  align-items: center;
+}
+
+.status-label {
+  font-size: 28rpx;
+  color: #666;
+  font-weight: 500;
+}
+
+.status-value {
+  font-size: 28rpx;
+  font-weight: 500;
+  margin-left: 10rpx;
+}
+
+.status-value.success {
+  color: #07c160;
+}
+
+.status-value.error {
+  color: #e64340;
+}
+
+.status-value.warning {
+  color: #f0ad4e;
+}
+
+.status-value.default {
+  color: #333;
+}
+
+.test-actions {
+  display: flex;
+  gap: 20rpx;
+  flex-wrap: wrap;
+}
+
+.test-btn {
+  min-width: 140rpx;
+}
+
+.test-result {
+  margin-top: 10rpx;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 10rpx;
+  border-left: 6rpx solid #667eea;
+}
+
+.result-title {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 10rpx;
+}
+
+.result-content {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* 登录表单样式 */
+.login-form {
+  margin-top: 20rpx;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 10rpx;
+  border: 1rpx solid #e0e0e0;
+}
+
+.form-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20rpx;
+}
+
+.form-label {
+  font-size: 28rpx;
+  color: #333;
+  min-width: 140rpx;
+  font-weight: 500;
+}
+
+.form-input {
+  flex: 1;
+  padding: 15rpx 20rpx;
+  border: 1rpx solid #ddd;
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  background-color: white;
+}
+
+.form-input:focus {
+  border-color: #667eea;
+  outline: none;
+}
+
+.form-note {
+  margin-top: 15rpx;
+  padding: 15rpx;
+  background-color: #e6f7ff;
+  border-radius: 8rpx;
+  border-left: 4rpx solid #1890ff;
+}
+
+.note-text {
+  font-size: 24rpx;
+  color: #666;
+  line-height: 1.4;
+}
+
+.mock-data-section {
+  margin-top: 20rpx;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 10rpx;
+  border: 1rpx solid #e0e0e0;
+}
+
+.mock-title {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 15rpx;
+}
+
+.mock-data-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15rpx;
+}
+
+.mock-item {
+  padding: 15rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  border-left: 4rpx solid #07c160;
+}
+
+.mock-product {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 5rpx;
+}
+
+.mock-detail {
+  display: block;
+  font-size: 24rpx;
+  color: #666;
+}
+
+/* 拼多多多多买菜测试样式补充 */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  padding: 20rpx 0;
+  border-bottom: 1rpx solid #e0e0e0;
+}
+
+.section-toggle {
+  padding: 10rpx;
+}
+
+.toggle-icon {
+  font-size: 28rpx;
+  color: #666;
+}
+
+/* 配置区域样式 */
+.config-section {
+  margin: 25rpx 0;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 12rpx;
+  border: 1rpx solid #e0e0e0;
+}
+
+.config-form {
+  margin-top: 20rpx;
+}
+
+.config-note {
+  display: block;
+  margin-bottom: 25rpx;
+  padding: 20rpx;
+  background-color: #e6f7ff;
+  border-radius: 10rpx;
+  border-left: 6rpx solid #1890ff;
+  font-size: 26rpx;
+  color: #666;
+  line-height: 1.5;
+}
+
+.form-group {
+  margin-bottom: 25rpx;
+}
+
+.form-label {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 10rpx;
+}
+
+.form-input {
+  width: 100%;
+  padding: 20rpx;
+  border: 1rpx solid #ddd;
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  background-color: white;
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  border-color: #667eea;
+  outline: none;
+}
+
+.form-textarea {
+  width: 100%;
+  min-height: 150rpx;
+  padding: 20rpx;
+  border: 1rpx solid #ddd;
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  background-color: white;
+  box-sizing: border-box;
+  line-height: 1.4;
+}
+
+.form-textarea:focus {
+  border-color: #667eea;
+  outline: none;
+}
+
+.form-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: #999;
+  line-height: 1.4;
+}
+
+.form-hint-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.form-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10rpx;
+}
+
+.form-counter {
+  font-size: 22rpx;
+  color: #666;
+  background-color: #f0f0f0;
+  padding: 4rpx 10rpx;
+  border-radius: 4rpx;
+}
+
+.config-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 30rpx;
+}
+
+.config-btn {
+  flex: 1;
+  min-width: 120rpx;
+}
+
+.test-item {
+  margin: 25rpx 0;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 12rpx;
+  border: 1rpx solid #e0e0e0;
+}
+
+.test-logs-section {
+  margin: 30rpx 0;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 12rpx;
+  border: 1rpx solid #e0e0e0;
+}
+
+.logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+}
+
+.logs-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #333;
+}
+
+.clear-btn {
+  min-width: 120rpx;
+}
+
+.logs-container {
+  max-height: 300rpx;
+  overflow-y: auto;
+  padding: 15rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  border: 1rpx solid #ddd;
+}
+
+.log-item {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 12rpx;
+  padding-bottom: 12rpx;
+  border-bottom: 1rpx solid #f0f0f0;
+  font-size: 24rpx;
+  line-height: 1.4;
+}
+
+.log-item:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.log-time {
+  color: #999;
+  margin-right: 15rpx;
+  min-width: 140rpx;
+}
+
+.log-level {
+  font-weight: 500;
+  margin-right: 15rpx;
+  min-width: 60rpx;
+}
+
+.log-level.info {
+  color: #1890ff;
+}
+
+.log-level.success {
+  color: #07c160;
+}
+
+.log-level.warning {
+  color: #f0ad4e;
+}
+
+.log-level.error {
+  color: #e64340;
+}
+
+.log-message {
+  color: #333;
+  flex: 1;
+  word-break: break-all;
+}
+
+.empty-logs {
+  text-align: center;
+  padding: 30rpx;
+  color: #999;
+}
+
+.empty-text {
+  font-size: 26rpx;
+}
+
+.test-note {
+  display: block;
+  margin-top: 20rpx;
+  padding: 20rpx;
+  background-color: #fff7e6;
+  border-radius: 10rpx;
+  border-left: 6rpx solid #ffa940;
+  font-size: 26rpx;
+  color: #666;
+  line-height: 1.5;
+}
+
+/* 版权部分样式 */
+.copyright-section {
+  text-align: center;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #e0e0e0;
+}
+
+.copyright-text {
+  display: block;
+  font-size: 26rpx;
+  color: #999;
+  margin-bottom: 10rpx;
+}
+
+.copyright-subtext {
+  display: block;
+  font-size: 24rpx;
+  color: #aaa;
+}

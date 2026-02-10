@@ -15,6 +15,18 @@ jobs:
       with:
         node-version: '24'
     
+    # 缓存npm包和puppeteer浏览器，减少安装时间
+    - name: 缓存npm依赖
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          ~/.cache/puppeteer
+          ./puppeteer_user_data
+        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+    
     - name: 安装系统依赖
       run: |
         sudo apt-get update

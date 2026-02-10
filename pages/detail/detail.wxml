@@ -1,0 +1,238 @@
+<!--pages/detail/detail.wxml-->
+<view class="page-container">
+  <view class="content">
+    <!-- 关于页面内容 -->
+    <view class="card">
+      <view class="card-header">
+        <text class="card-title">ℹ️ 关于系统</text>
+      </view>
+      
+      <view class="card-body">
+        <view class="about-section">
+          <view class="about-logo">
+            <image src="/images/icon.jpg" class="logo-image"></image>
+          </view>
+          
+          <view class="about-info">
+            <text class="app-name">销售数据查询系统</text>
+            <text class="app-version">版本：1.31.10</text>
+            <text class="app-description">
+              欣雅商贸销售数据管理与分析平台，为品牌销售提供全面的数据支持
+            </text>
+          </view>
+        </view>
+        
+        <view class="feature-section">
+          <view class="section-title">✨ 主要功能</view>
+          <view class="feature-list">
+            <view class="feature-item">
+              <text class="feature-icon">📊</text>
+              <text class="feature-text">多维度数据查询与分析</text>
+            </view>
+            <view class="feature-item">
+              <text class="feature-icon">🏷️</text>
+              <text class="feature-text">库存数据查询与分享</text>
+            </view>
+            <view class="feature-item">
+              <text class="feature-icon">📈</text>
+              <text class="feature-text">详细销售记录查看</text>
+            </view>
+            <view class="feature-item">
+              <text class="feature-icon">📥</text>
+              <text class="feature-text">数据导出功能</text>
+            </view>
+          </view>
+        </view>
+        
+        <view class="support-section">
+          <view class="section-title">🛠️ 技术支持</view>
+          <view class="support-info">
+            <view class="info-item">
+              <text class="info-label">技术支持：</text>
+              <text class="info-value">飘渺峰</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">联系邮箱：</text>
+              <text class="info-value">162004332@qq.com</text>
+            </view>
+          </view>
+        </view>
+        
+        <!-- 拼多多多多买菜测试 -->
+        <view class="test-section">
+          <view class="section-header" bindtap="toggleTestSection">
+            <view class="section-title">🍱 拼多多多多买菜测试</view>
+            <view class="section-toggle">
+              <text class="toggle-icon">{{showDuoduomaiTest ? '▼' : '▶'}}</text>
+            </view>
+          </view>
+          
+          <view class="test-info" wx:if="{{showDuoduomaiTest}}">
+            <text class="test-description">
+              此功能测试拼多多多多买菜平台的连通性、登录验证与订单查询功能。
+              由于无法获取官方API密钥，采用模拟浏览器请求的方式进行测试。
+            </text>
+            
+            <!-- 连通性测试 -->
+            <view class="test-item">
+              <view class="test-status">
+                <text class="status-label">连通性测试：</text>
+                <text class="status-value {{duoduomaiConnectivityStatus}}">{{duoduomaiConnectivityStatusText}}</text>
+              </view>
+              <view class="test-actions">
+                <button class="test-btn" type="primary" size="mini" bindtap="testConnectivity" loading="{{testingConnectivity}}">
+                  {{testingConnectivity ? '测试中...' : '测试连通性'}}
+                </button>
+              </view>
+              <view class="test-result" wx:if="{{duoduomaiConnectivityResult}}">
+                <text class="result-title">测试结果：</text>
+                <text class="result-content">{{duoduomaiConnectivityResult}}</text>
+              </view>
+            </view>
+            
+            <!-- 登录测试 -->
+            <view class="test-item">
+              <view class="test-status">
+                <text class="status-label">登录测试：</text>
+                <text class="status-value {{duoduomaiLoginStatus}}">{{duoduomaiLoginStatusText}}</text>
+              </view>
+              <view class="test-actions">
+                <button class="test-btn" type="primary" size="mini" bindtap="testLogin" loading="{{testingLogin}}">
+                  {{testingLogin ? '测试中...' : '测试登录'}}
+                </button>
+              </view>
+              <view class="test-result" wx:if="{{duoduomaiLoginResult}}">
+                <text class="result-title">测试结果：</text>
+                <text class="result-content">{{duoduomaiLoginResult}}</text>
+              </view>
+            </view>
+            
+            <!-- 订单查询测试 -->
+            <view class="test-item">
+              <view class="test-status">
+                <text class="status-label">订单查询测试：</text>
+                <text class="status-value {{duoduomaiOrderQueryStatus}}">{{duoduomaiOrderQueryStatusText}}</text>
+              </view>
+              <view class="test-actions">
+                <button class="test-btn" type="primary" size="mini" bindtap="testOrderQuery" loading="{{testingOrderQuery}}">
+                  {{testingOrderQuery ? '测试中...' : '测试订单查询'}}
+                </button>
+              </view>
+              <view class="test-result" wx:if="{{duoduomaiOrderQueryResult}}">
+                <text class="result-title">测试结果：</text>
+                <text class="result-content">{{duoduomaiOrderQueryResult}}</text>
+              </view>
+            </view>
+            
+            <!-- 高级配置 -->
+            <view class="config-section">
+              <view class="section-header" bindtap="toggleConfigSection">
+                <view class="section-title">⚙️ 高级配置</view>
+                <view class="section-toggle">
+                  <text class="toggle-icon">{{showDuoduomaiConfig ? '▼' : '▶'}}</text>
+                </view>
+              </view>
+              
+              <view class="config-form" wx:if="{{showDuoduomaiConfig}}">
+                <text class="config-note">
+                  配置说明：在浏览器中正常登录拼多多商家后台后，从开发者工具中复制最新的Cookie和anti-content值填入以下字段。
+                  如果遇到图形验证码错误，这是最有效的解决方法。
+                </text>
+                
+                <view class="form-group">
+                  <text class="form-label">用户名：</text>
+                  <input class="form-input" type="text" value="{{duoduomaiUsername}}" placeholder="请输入用户名" bindinput="updateUsername" />
+                </view>
+                
+                <view class="form-group">
+                  <text class="form-label">密码（已加密）：</text>
+                  <textarea class="form-textarea" value="{{duoduomaiPassword}}" placeholder="请输入加密后的密码（从浏览器复制）" bindinput="updatePassword" 
+                    style="min-height: 200rpx;" maxlength="5000" />
+                  <view class="form-hint-row">
+                    <text class="form-hint">注意：密码通常是加密的，请直接从浏览器请求中复制</text>
+                    <text class="form-counter" wx:if="{{duoduomaiPassword.length > 0}}">长度：{{duoduomaiPassword.length}}/5000 字符</text>
+                  </view>
+                </view>
+                
+                <view class="form-group">
+                  <text class="form-label">Cookie：</text>
+                  <textarea class="form-textarea" value="{{duoduomaiCookie}}" placeholder="请输入完整的Cookie字符串" bindinput="updateCookie" 
+                    style="min-height: 200rpx;" maxlength="5000" />
+                  <view class="form-hint-row">
+                    <text class="form-hint">格式：key1=value1; key2=value2; key3=value3</text>
+                    <text class="form-counter" wx:if="{{duoduomaiCookie.length > 0}}">长度：{{duoduomaiCookie.length}}/5000 字符</text>
+                  </view>
+                </view>
+                
+                <view class="form-group">
+                  <text class="form-label">Anti-Content：</text>
+                  <textarea class="form-textarea" value="{{duoduomaiAntiContent}}" placeholder="请输入anti-content值" bindinput="updateAntiContent" 
+                    style="min-height: 200rpx;" maxlength="5000" />
+                  <view class="form-hint-row">
+                    <text class="form-hint">注意：anti-content值通常很长，请确保完整复制</text>
+                    <text class="form-counter" wx:if="{{duoduomaiAntiContent.length > 0}}">长度：{{duoduomaiAntiContent.length}}/5000 字符</text>
+                  </view>
+                </view>
+                
+                <view class="form-group">
+                  <text class="form-label">完整登录Payload：</text>
+                  <textarea class="form-textarea" value="{{duoduomaiLoginPayload}}" placeholder="请粘贴完整的登录Payload JSON（包含username、password、timestamp、crawlerInfo等字段）" bindinput="updateLoginPayload" 
+                    style="min-height: 300rpx;" maxlength="10000" />
+                  <view class="form-hint-row">
+                    <text class="form-hint">从浏览器开发者工具中复制完整的登录请求Payload（JSON格式）</text>
+                    <text class="form-counter" wx:if="{{duoduomaiLoginPayload.length > 0}}">长度：{{duoduomaiLoginPayload.length}}/10000 字符</text>
+                  </view>
+                  <view class="form-actions">
+                    <button class="config-btn" type="primary" size="mini" bindtap="testLoginWithPayload" loading="{{testingLogin}}">使用此Payload登录测试</button>
+                  </view>
+                </view>
+                
+                <view class="form-group">
+                  <view class="form-label-row">
+                    <text class="form-label">调试模式：</text>
+                    <switch checked="{{duoduomaiDebugMode}}" bindchange="updateDebugMode" />
+                  </view>
+                  <text class="form-hint">开启后将在控制台输出详细的请求和响应信息，便于诊断问题</text>
+                </view>
+                
+                <view class="config-actions">
+                  <button class="config-btn" type="primary" size="mini" bindtap="saveConfig">保存配置</button>
+                  <button class="config-btn" type="default" size="mini" bindtap="loadConfig">重置配置</button>
+                </view>
+              </view>
+            </view>
+            
+            <!-- 测试日志 -->
+            <view class="test-logs-section">
+              <view class="logs-header">
+                <text class="logs-title">测试日志</text>
+                <button class="clear-btn" type="warn" size="mini" bindtap="clearTestLogs">清除日志</button>
+              </view>
+              <view class="logs-container">
+                <view class="log-item" wx:for="{{duoduomaiTestLogs}}" wx:for-item="log" wx:key="index">
+                  <text class="log-time">[{{log.time}}]</text>
+                  <text class="log-level {{log.level}}">[{{log.level}}]</text>
+                  <text class="log-message">{{log.message}}</text>
+                </view>
+                <view class="empty-logs" wx:if="{{duoduomaiTestLogs.length === 0}}">
+                  <text class="empty-text">暂无测试日志</text>
+                </view>
+              </view>
+            </view>
+            
+            <text class="test-note">
+              💡 注意：测试需要使用有效的拼多多商家账号，且小程序需配置相关服务域名（mms.pinduoduo.com、mc.pinduoduo.com、apm.pinduoduo.com）。
+              订单查询功能依赖有效的登录会话Cookie，当前使用示例Cookie可能已过期。
+            </text>
+          </view>
+        </view>
+        
+        <view class="copyright-section">
+          <text class="copyright-text">© 2026 飘渺峰 版权所有</text>
+          <text class="copyright-text">备案编号：湘ICP备2026002510号-1X</text>
+          <text class="copyright-subtext">本系统基于微信小程序平台开发</text>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
