@@ -187,7 +187,7 @@ class PDDOrderCrawler {
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log('✅ 会话有效，已直接进入订单管理页面');
                 // 等待页面完全稳定，确保任何自动跳转已完成
-                await this.page.waitForTimeout(3000);
+                await new Promise(resolve => setTimeout(resolve, 3000));
                 // 再次检查URL，确保仍在订单管理页面
                 const stableUrl = this.page.url();
                 if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
