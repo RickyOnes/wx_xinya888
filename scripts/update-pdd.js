@@ -176,14 +176,11 @@ class PDDOrderCrawler {
             if (url.includes('janus/api/user/getLoginVerificationCode')) {
                 console.log('\n📱 捕获到登录验证码请求:');
                 console.log('   URL:', url);
-                console.log('   方法:', request.method());
-                console.log('   请求头:', JSON.stringify(request.headers(), null, 2));
                 
                 // 获取请求体
                 if (request.method() === 'POST') {
                     const postData = request.postData();
                     if (postData) {
-                        console.log('   请求体:', postData);
                         this.capturedData.verificationCodeRequest = postData;
                     }
                 }
@@ -260,7 +257,7 @@ class PDDOrderCrawler {
                         
                         // 如果响应表明需要验证码，记录该信息
                         if (jsonResponse.success === true && jsonResponse.result === null) {
-                            console.log('   ⚠️  响应表明需要验证码（result为null），可能需要手动输入');
+                            console.log('   ⚠️  响应表明需要验证码（result为null），需要从Supabase表读取，请上传！');
                             this.capturedData.requiresVerificationCode = true;
                         }
                     } catch (e) {
@@ -314,7 +311,7 @@ class PDDOrderCrawler {
         while (true) {
             const currentUrl = this.page.url();
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 已处于订单管理页面，可能已自动登录');
+                console.log('✅ 已处于订单管理页面：',currentUrl);
                 return true;
             }
 
@@ -599,11 +596,11 @@ class PDDOrderCrawler {
     async waitForAPIRequest() {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
         
-        // 等待API请求被捕获
+        // 等待API请求被捕获 - 增加到15分钟
         const startTime = Date.now();
-        const maxWaitTime = CONFIG.timeouts.apiRequest;
+        const maxWaitTime = 900000; // 15分钟
         
-        while (!this.capturedData.apiRequestCaptured && (Date.now() - startTime) < maxWaitTime) {
+        while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
             // 检查页面是否仍在订单管理页面
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
@@ -614,18 +611,19 @@ class PDDOrderCrawler {
             // 等待1秒后再次检查
             await new Promise(resolve => setTimeout(resolve, 1000));
             
-            // 每10秒显示一次状态
+            // 每30秒显示一次状态
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-            if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
+            if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
                 console.log(`   已等待 ${elapsedSeconds} 秒...`);
             }
         }
         
-        if (this.capturedData.apiRequestCaptured) {
-            console.log('✅ 已捕获到订单查询API请求');
+        if (this.capturedData.antiContent) {
+            console.log('✅ 已捕获到订单查询API请求，获取到anti-content参数');
+            console.log(`   anti-content长度: ${this.capturedData.antiContent.length}`);
             return true;
         } else {
-            console.log(`❌ 在 ${maxWaitTime/1000} 秒内未捕获到API请求`);
+            console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到API请求或未获取到anti-content参数`);
             return false;
         }
     }
@@ -684,32 +682,22 @@ class PDDOrderCrawler {
                 console.log('📱 验证码响应:');
                 console.log('   响应数据长度:', this.capturedData.verificationCodeResponse.length);
                 console.log('   响应内容:', this.capturedData.verificationCodeResponse);
-                
-                if (this.capturedData.verificationCodeJson) {
-                    const json = this.capturedData.verificationCodeJson;
-                    console.log('   JSON解析结果:');
-                    console.log('     success:', json.success);
-                    console.log('     errorCode:', json.errorCode);
-                    console.log('     errorMsg:', json.errorMsg);
-                    console.log('     result:', json.result);
-                }
-                
-                if (this.capturedData.requiresVerificationCode) {
-                    console.log('   ⚠️  需要验证码: 响应表明需要短信验证码');
-                }
             } else {
                 console.log('📱 验证码响应: 未捕获到');
             }
             
             console.log('='.repeat(50));
             
-            // 5. 等待API请求（注释掉）
-            // const apiCaptured = await this.waitForAPIRequest();
-            
             // 检查登录是否成功
             if (!loginSuccess) {
                 console.log('❌ 登录失败，程序退出');
                 return;
+            }
+            
+            // 5. 等待API请求，捕获anti-content参数
+            const apiCaptured = await this.waitForAPIRequest();
+            if (!apiCaptured) {
+                throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
             
         } catch (error) {
