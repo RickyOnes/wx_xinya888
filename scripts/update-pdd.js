@@ -63,18 +63,12 @@ class PDDOrderCrawler {
             allCookies: [],
             orderRequestHeaders: null,
             orderRequestBody: null,
-            orderResponse: null,
             localStorageData: null,
             sessionStorageData: null,
             apiRequestCaptured: false,
-            resultList: null,
-            resultListExtracted: false,
-            dataSaved: false,
             // 验证码相关字段
             verificationCodeRequest: null,
             verificationCodeRequestHeaders: null,
-            verificationCodeResponse: null,
-            verificationCodeJson: null,
             requiresVerificationCode: false,
             verificationCode: verificationCode || null
         };
@@ -171,102 +165,8 @@ class PDDOrderCrawler {
                 
                 this.capturedData.orderRequestHeaders = headers;
             }
-            
-            // 捕获登录验证码请求
-            if (url.includes('janus/api/user/getLoginVerificationCode')) {
-                console.log('\n📱 捕获到登录验证码请求:');
-                console.log('   URL:', url);
-                
-                // 获取请求体
-                if (request.method() === 'POST') {
-                    const postData = request.postData();
-                    if (postData) {
-                        this.capturedData.verificationCodeRequest = postData;
-                    }
-                }
-                
-                // 保存请求信息
-                this.capturedData.verificationCodeRequestHeaders = request.headers();
-            }
-            
             // 继续请求
             request.continue();
-        });
-        
-        // 监听响应
-        this.page.on('response', async (response) => {
-            const url = response.url();
-            
-            // 捕获订单查询API响应
-            if (url.includes(CONFIG.targetApiEndpoint)) {
-                console.log('\n📊 订单查询响应状态:', response.status());
-                try {
-                    const responseData = await response.text();
-                    console.log('   响应数据长度:', responseData.length);
-                    // 保存响应数据
-                    this.capturedData.orderResponse = responseData;
-                    
-                    // 尝试解析为JSON并提取resultList
-                    try {
-                        const jsonResponse = JSON.parse(responseData);
-                        
-                        // 提取resultList字段
-                        if (jsonResponse.result && jsonResponse.result.resultList && Array.isArray(jsonResponse.result.resultList)) {
-                            this.capturedData.resultList = jsonResponse.result.resultList;
-                            this.capturedData.resultListExtracted = true;
-                            console.log(`   ✅ 提取到resultList，包含 ${jsonResponse.result.resultList.length} 条数据`);
-                        } else if (jsonResponse.resultList && Array.isArray(jsonResponse.resultList)) {
-                            this.capturedData.resultList = jsonResponse.resultList;
-                            this.capturedData.resultListExtracted = true;
-                            console.log(`   ✅ 提取到resultList，包含 ${jsonResponse.resultList.length} 条数据`);
-                        } else {
-                            console.log('   ⚠️  响应中未找到resultList字段或不是数组');
-                            this.capturedData.resultListExtracted = true;
-                        }
-                    } catch (e) {
-                        this.capturedData.resultListExtracted = true;
-                    }
-                } catch (e) {
-                    console.log('   无法获取响应数据:', e.message);
-                    this.capturedData.resultListExtracted = true;
-                }
-            }
-            
-            // 捕获登录验证码响应
-            if (url.includes('janus/api/user/getLoginVerificationCode')) {
-                console.log('\n📱 登录验证码响应状态:', response.status());
-                try {
-                    const responseData = await response.text();
-                    console.log('   响应数据长度:', responseData.length);
-                    console.log('   响应内容:', responseData);
-                    
-                    // 保存响应数据
-                    this.capturedData.verificationCodeResponse = responseData;
-                    
-                    // 尝试解析为JSON
-                    try {
-                        const jsonResponse = JSON.parse(responseData);
-                        console.log('   ✅ 验证码响应JSON解析成功:');
-                        console.log('      success:', jsonResponse.success);
-                        console.log('      errorCode:', jsonResponse.errorCode);
-                        console.log('      errorMsg:', jsonResponse.errorMsg);
-                        console.log('      result:', jsonResponse.result);
-                        
-                        // 保存解析后的数据
-                        this.capturedData.verificationCodeJson = jsonResponse;
-                        
-                        // 如果响应表明需要验证码，记录该信息
-                        if (jsonResponse.success === true && jsonResponse.result === null) {
-                            console.log('   ⚠️  响应表明需要验证码（result为null），需要从Supabase表读取，请上传！');
-                            this.capturedData.requiresVerificationCode = true;
-                        }
-                    } catch (e) {
-                        console.log('   ⚠️  响应不是有效的JSON格式');
-                    }
-                } catch (e) {
-                    console.log('   无法获取验证码响应数据:', e.message);
-                }
-            }
         });
     }
 
@@ -534,8 +434,6 @@ class PDDOrderCrawler {
         }
     }
 
-
-
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
         
@@ -643,10 +541,20 @@ class PDDOrderCrawler {
             // 3. 自动登录
             const loginSuccess = await this.autoLogin();
             
-            // 4. 无论登录成功与否，都捕获cookies和输出信息
+            // 4. 检查登录是否成功
+            if (!loginSuccess) {
+                console.log('❌ 登录失败，程序退出');
+                return;
+            }
+            
+            // 5. 等待API请求，捕获anti-content参数
+            const apiCaptured = await this.waitForAPIRequest();
+            if (!apiCaptured) {
+                throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
+            }
             await this.captureCookies();
             
-            // 输出关键信息（包括验证码响应）
+            // 输出关键信息
             console.log('\n📋 关键信息汇总:');
             console.log('='.repeat(50));
             
@@ -673,33 +581,7 @@ class PDDOrderCrawler {
                 console.log(this.capturedData.passId.substring(0, 100) + '...');
             } else {
                 console.log('PASS_ID: 未捕获到');
-            }
-            
-            console.log('\n' + '='.repeat(50));
-            
-            // 验证码响应信息
-            if (this.capturedData.verificationCodeResponse) {
-                console.log('📱 验证码响应:');
-                console.log('   响应数据长度:', this.capturedData.verificationCodeResponse.length);
-                console.log('   响应内容:', this.capturedData.verificationCodeResponse);
-            } else {
-                console.log('📱 验证码响应: 未捕获到');
-            }
-            
-            console.log('='.repeat(50));
-            
-            // 检查登录是否成功
-            if (!loginSuccess) {
-                console.log('❌ 登录失败，程序退出');
-                return;
-            }
-            
-            // 5. 等待API请求，捕获anti-content参数
-            const apiCaptured = await this.waitForAPIRequest();
-            if (!apiCaptured) {
-                throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
-            }
-            
+            }            
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
             
@@ -712,7 +594,6 @@ class PDDOrderCrawler {
                     console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
                 }
             }
-            
             console.log('🏁 程序执行完毕');
         }
     }
@@ -754,7 +635,7 @@ async function updateAccount(username, password, verificationCode) {
         };
         
         // 5. 上传到Supabase
-        const { data, error } = await supabase
+        const { error } = await supabase
             .from('pdd_accounts')
             .upsert(accountData, { onConflict: 'username' });
             
@@ -762,6 +643,7 @@ async function updateAccount(username, password, verificationCode) {
             console.log(`❌ 上传失败: ${error.message}`);
         } else {
             console.log(`✅ 账号 ${username} 数据已更新到Supabase`);
+            console.log('\n' + '='.repeat(50));
         }
         
     } catch (error) {
