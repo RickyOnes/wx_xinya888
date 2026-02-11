@@ -22,10 +22,17 @@ jobs:
         path: |
           ~/.npm
           ~/.cache/puppeteer
-          ./puppeteer_user_data
         key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
         restore-keys: |
           ${{ runner.os }}-node-
+    
+    - name: 缓存puppeteer用户数据
+      uses: actions/cache@v4
+      with:
+        path: ./puppeteer_user_data
+        key: ${{ runner.os }}-pdd-user-data-${{ hashFiles('**/scripts/update-pdd.js') }}
+        restore-keys: |
+          ${{ runner.os }}-pdd-user-data-
     
     - name: 安装系统依赖
       run: |

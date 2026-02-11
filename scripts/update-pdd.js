@@ -80,6 +80,7 @@ class PDDOrderCrawler {
 
     async init() {
         console.log('🚀 启动浏览器...');
+        console.log(`   📁 用户数据目录: ${this.userDataDir}`);
         
         // 在GitHub Actions中使用puppeteer
         const launchOptions = {
@@ -171,7 +172,28 @@ class PDDOrderCrawler {
     }
 
     async autoLogin() {
-        console.log('\n🌐 访问登录页面（带重定向）...');
+        console.log('\n🔍 检查现有会话...');
+        
+        // 首先尝试直接访问订单管理页面，使用现有cookies
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                waitUntil: 'domcontentloaded',
+                timeout: 10000
+            });
+            
+            // 检查是否成功进入订单管理页面
+            const currentUrl = this.page.url();
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                console.log('✅ 会话有效，已直接进入订单管理页面');
+                return true;
+            }
+        } catch (error) {
+            // 忽略导航错误，继续登录流程
+        }
+        
+        console.log('🌐 会话无效或已过期，开始登录流程...');
+        console.log('   访问登录页面（带重定向）...');
+        
         try {
             // 不设超时，初次加载可能很慢
             await this.page.goto(CONFIG.loginUrl, {
@@ -188,7 +210,7 @@ class PDDOrderCrawler {
             if (tabContainer) {
                 const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                 if (items && items.length >= 2) {
-                    // 第二个通常是“账号登录”
+                    // 第二个通常是"账号登录"
                     const secondClass = await this.page.evaluate(el => el.className, items[1]);
                     if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                         await items[1].click().catch(() => {});
