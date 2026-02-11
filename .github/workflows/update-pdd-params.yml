@@ -2,7 +2,7 @@
 on:
   schedule:
     - cron: '0 21 * * *'  # 每天UTC 21点（北京时间5点）
-  workflow_dispatch: {}  # 支持手动触发
+  workflow_dispatch: {}  # 支持手动触发，无需验证码输入
 
 jobs:
   update:
@@ -79,8 +79,6 @@ jobs:
         PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
-        VERIFICATION_CODE_WANGXH03: ${{ secrets.VERIFICATION_CODE_WANGXH03 }}
-        VERIFICATION_CODE_WANGXH04: ${{ secrets.VERIFICATION_CODE_WANGXH04 }}
-        VERIFICATION_CODE_17752768679: ${{ secrets.VERIFICATION_CODE_17752768679 }}
+
         TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/update-pdd.js

@@ -1,7 +1,6 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
-const fs = require('fs').promises;
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -54,7 +53,7 @@ const CONFIG = {
 };
 
 class PDDOrderCrawler {
-    constructor(loginCredentials, userDataDir, verificationCode) {
+    constructor(loginCredentials, userDataDir, verificationCode, supabaseClient) {
         this.browser = null;
         this.page = null;
         this.capturedData = {
@@ -82,6 +81,7 @@ class PDDOrderCrawler {
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
         this.verificationCode = verificationCode || null;
+        this.supabaseClient = supabaseClient || null;
     }
 
     async init() {
@@ -377,80 +377,147 @@ class PDDOrderCrawler {
                     // 检查确认按钮是否存在
                     const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
                     
-                    // 等待60秒，让用户有足够时间更新验证码环境变量
-                    console.log('⏳ 等待60秒，以便用户更新验证码环境变量（拼多多验证码有效期10分钟）...');
-                    await new Promise(resolve => setTimeout(resolve, 60000));
+                    let verificationCode = null;
                     
-                    // 等待后，重新从环境变量读取验证码（支持动态更新）
-                    const verificationCodeFromEnv = process.env[`VERIFICATION_CODE_${this.loginCredentials.username.toUpperCase()}`];
-                    if (verificationCodeFromEnv) {
-                        this.verificationCode = verificationCodeFromEnv;
-                        console.log(`   🔑 从环境变量读取验证码: ${this.verificationCode}`);
-                    }
-                    
-                    // 如果提供了验证码，尝试自动填写
-                    if (this.verificationCode) {
-                        console.log(`   🔑 使用提供的验证码: ${this.verificationCode}`);
-                        
+                    // 只从Supabase获取验证码
+                    if (this.supabaseClient) {
+                        console.log('🔍 从Supabase获取验证码...');
                         try {
-                            // 清空输入框并填写验证码
-                            await verificationCodeInput.click({ clickCount: 3 }); // 全选
-                            await verificationCodeInput.press('Backspace'); // 删除
-                            await verificationCodeInput.type(this.verificationCode, { delay: 50 });
-                            console.log('   ✅ 已输入验证码');
+                            const { data, error } = await this.supabaseClient
+                                .from('pdd_verification_codes')
+                                .select('code, updated_at')
+                                .eq('username', this.loginCredentials.username)
+                                .single();
                             
-                            // 点击确认按钮
-                            if (confirmButton) {
-                                await confirmButton.click();
-                                console.log('   ✅ 已点击确认按钮');
+                            if (!error && data && data.code) {
+                                // 检查验证码是否新鲜（10分钟内）
+                                const updatedAt = new Date(data.updated_at);
+                                const now = new Date();
+                                const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
                                 
-                                // 等待一段时间（30秒）看看是否自动跳转
-                                const verificationCodeWaitStart = Date.now();
-                                const maxVerificationCodeWait = 30000; // 30秒
-                                
-                                while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
-                                    // 检查是否已跳转到订单管理页面
-                                    const currentUrl = this.page.url();
-                                    if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                                        console.log('✅ 验证码正确，成功跳转到订单管理页面');
-                                        return true;
-                                    }
-                                    
-                                    // 检查是否出现错误提示或验证码输入框是否消失
-                                    const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                                    if (!stillExists) {
-                                        console.log('✅ 验证码输入框已消失，可能已自动处理');
-                                        break;
-                                    }
-                                    
-                                    // 检查是否有错误提示
-                                    const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
-                                    if (errorElement) {
-                                        const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
-                                        if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
-                                            console.log(`❌ 验证码错误: ${errorText}`);
-                                            return false;
-                                        }
-                                    }
-                                    
-                                    await new Promise(resolve => setTimeout(resolve, 1000));
+                                if (updatedAt > tenMinutesAgo) {
+                                    verificationCode = data.code;
+                                    console.log(`   🔑 从Supabase获取验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
+                                } else {
+                                    console.log(`   ⚠️  Supabase中的验证码已过期 (更新时间: ${updatedAt.toLocaleString()})`);
                                 }
-                                
-                                // 如果30秒后仍然在验证码页面，返回false
-                                const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                                if (stillOnVerificationPage) {
-                                    console.log('❌ 验证码可能错误或已过期，页面未跳转');
-                                    return false;
-                                }
+                            } else if (error && error.code !== 'PGRST116') { // PGRST116是"未找到行"的错误
+                                console.log(`   ⚠️  查询Supabase失败: ${error.message}`);
                             }
                         } catch (e) {
-                            console.log('   ⚠️  自动填写验证码失败:', e.message);
+                            console.log(`   ⚠️  从Supabase获取验证码异常: ${e.message}`);
                         }
                     } else {
-                        // 没有验证码，直接失败
-                        console.log('❌ 没有提供验证码，无法自动登录');
-                        console.log('   ℹ️  请设置环境变量 VERIFICATION_CODE_用户名');
+                        console.log('❌ Supabase客户端未初始化，无法获取验证码');
                         return false;
+                    }
+                    
+                    // 如果没有有效的验证码，等待用户更新（轮询Supabase）
+                    if (!verificationCode) {
+                        console.log('⏳ 未找到有效验证码，等待用户更新...');
+                        console.log('   📝 请更新Supabase表 pdd_verification_codes (字段: username, code)');
+                        console.log('   ⏰ 等待120秒（拼多多验证码有效期10分钟）...');
+                        
+                        const waitStartTime = Date.now();
+                        const maxWaitTime = 120000; // 120秒
+                        const pollInterval = 5000; // 每5秒检查一次
+                        
+                        while (Date.now() - waitStartTime < maxWaitTime && !verificationCode) {
+                            // 等待一段时间
+                            await new Promise(resolve => setTimeout(resolve, pollInterval));
+                            
+                            console.log(`   🔍 第${Math.floor((Date.now() - waitStartTime) / pollInterval)}次检查更新...`);
+                            
+                            // 检查Supabase
+                            if (this.supabaseClient) {
+                                try {
+                                    const { data, error } = await this.supabaseClient
+                                        .from('pdd_verification_codes')
+                                        .select('code, updated_at')
+                                        .eq('username', this.loginCredentials.username)
+                                        .single();
+                                    
+                                    if (!error && data && data.code) {
+                                        // 检查验证码是否新鲜
+                                        const updatedAt = new Date(data.updated_at);
+                                        const now = new Date();
+                                        const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+                                        
+                                        if (updatedAt > tenMinutesAgo) {
+                                            verificationCode = data.code;
+                                            console.log(`   🔑 从Supabase获取到更新后的验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
+                                            break;
+                                        }
+                                    }
+                                } catch (e) {
+                                    // 忽略Supabase查询错误
+                                }
+                            }
+                        }
+                        
+                        if (!verificationCode) {
+                            console.log('❌ 等待超时，未获取到验证码');
+                            console.log('   ℹ️  请更新验证码后重新运行脚本');
+                            return false;
+                        }
+                    }
+                    
+                    // 4. 使用获取到的验证码进行自动填写
+                    console.log(`   🔑 使用验证码: ${verificationCode}`);
+                    
+                    try {
+                        // 清空输入框并填写验证码
+                        await verificationCodeInput.click({ clickCount: 3 }); // 全选
+                        await verificationCodeInput.press('Backspace'); // 删除
+                        await verificationCodeInput.type(verificationCode, { delay: 50 });
+                        console.log('   ✅ 已输入验证码');
+                        
+                        // 点击确认按钮
+                        if (confirmButton) {
+                            await confirmButton.click();
+                            console.log('   ✅ 已点击确认按钮');
+                            
+                            // 等待一段时间（30秒）看看是否自动跳转
+                            const verificationCodeWaitStart = Date.now();
+                            const maxVerificationCodeWait = 30000; // 30秒
+                            
+                            while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
+                                // 检查是否已跳转到订单管理页面
+                                const currentUrl = this.page.url();
+                                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                                    console.log('✅ 验证码正确，成功跳转到订单管理页面');
+                                    return true;
+                                }
+                                
+                                // 检查是否出现错误提示或验证码输入框是否消失
+                                const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                                if (!stillExists) {
+                                    console.log('✅ 验证码输入框已消失，可能已自动处理');
+                                    break;
+                                }
+                                
+                                // 检查是否有错误提示
+                                const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
+                                if (errorElement) {
+                                    const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
+                                    if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
+                                        console.log(`❌ 验证码错误: ${errorText}`);
+                                        return false;
+                                    }
+                                }
+                                
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            }
+                            
+                            // 如果30秒后仍然在验证码页面，返回false
+                            const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                            if (stillOnVerificationPage) {
+                                console.log('❌ 验证码可能错误或已过期，页面未跳转');
+                                return false;
+                            }
+                        }
+                    } catch (e) {
+                        console.log('   ⚠️  自动填写验证码失败:', e.message);
                     }
                     
                     // 标记需要验证码
@@ -684,7 +751,7 @@ async function updateAccount(username, password, verificationCode) {
     try {
         // 开始浏览器登录流程
         console.log(`🔍 开始浏览器登录流程...`);
-        const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode);
+        const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
         await crawler.run();
         
         // 4. 准备要上传的数据
@@ -734,10 +801,8 @@ async function main() {
                 continue;
             }
             
-            // 从环境变量获取验证码（可选）
-            const verificationCode = process.env[`VERIFICATION_CODE_${username.toUpperCase()}`];
-            
-            await updateAccount(username, password, verificationCode);
+            // 验证码只从Supabase获取，不传递验证码参数
+            await updateAccount(username, password, null);
         }
         
         console.log('\n🎉 所有账号更新完成');
