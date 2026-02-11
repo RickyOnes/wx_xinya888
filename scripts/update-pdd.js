@@ -177,18 +177,30 @@ class PDDOrderCrawler {
         // 首先尝试直接访问订单管理页面，使用现有cookies
         try {
             await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'domcontentloaded',
-                timeout: 10000
+                waitUntil: 'networkidle0',
+                timeout: 15000
             });
             
             // 检查是否成功进入订单管理页面
             const currentUrl = this.page.url();
+            console.log(`   当前URL: ${currentUrl}`);
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log('✅ 会话有效，已直接进入订单管理页面');
-                return true;
+                // 等待页面完全稳定，确保任何自动跳转已完成
+                await this.page.waitForTimeout(3000);
+                // 再次检查URL，确保仍在订单管理页面
+                const stableUrl = this.page.url();
+                if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                    console.log(`⚠️  页面跳转到: ${stableUrl}，需要重新登录`);
+                    // 继续登录流程
+                } else {
+                    console.log(`✅ 页面稳定在订单管理页面`);
+                    return true;
+                }
             }
         } catch (error) {
             // 忽略导航错误，继续登录流程
+            console.log(`⚠️  会话检查导航错误: ${error.message}`);
         }
         
         console.log('🌐 会话无效或已过期，开始登录流程...');
@@ -515,17 +527,38 @@ class PDDOrderCrawler {
 
     async waitForAPIRequest() {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
+        console.log(`   初始URL: ${this.page.url()}`);
         
         // 等待API请求被捕获 - 增加到15分钟
         const startTime = Date.now();
         const maxWaitTime = 900000; // 15分钟
+        let retryCount = 0;
+        const maxRetries = 1;
         
         while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
             // 检查页面是否仍在订单管理页面
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('⚠️  页面已离开订单管理页面，停止等待API请求');
-                break;
+                console.log(`⚠️  页面已离开订单管理页面，当前URL: ${currentUrl}`);
+                if (retryCount < maxRetries) {
+                    console.log(`🔄 尝试重新导航到订单管理页面 (重试 ${retryCount + 1}/${maxRetries})...`);
+                    try {
+                        await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                            waitUntil: 'networkidle0',
+                            timeout: 10000
+                        });
+                        retryCount++;
+                        console.log(`✅ 重新导航成功，继续等待API请求...`);
+                        // 继续循环
+                        continue;
+                    } catch (error) {
+                        console.log(`❌ 重新导航失败: ${error.message}`);
+                        break;
+                    }
+                } else {
+                    console.log('❌ 超过最大重试次数，停止等待API请求');
+                    break;
+                }
             }
             
             // 等待1秒后再次检查
