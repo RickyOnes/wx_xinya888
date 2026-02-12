@@ -75,3 +75,13 @@ jobs:
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
         TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/update-plan-only.js
+      
+    - name: 上传调试截图
+      if: always()  # 即使脚本失败也上传截图
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-screenshots
+        path: |
+          ./debug-*.png
+          ./debug-login-*.png
+        retention-days: 7
