@@ -1,7 +1,7 @@
 ﻿name: 更新拼多多参数
 on:
   schedule:
-    - cron: '18 22 * * *'  # 每天UTC 22点18分（北京时间6点18分）
+    - cron: '48 21 * * *'  # 每天UTC 21点18分（北京时间点48分）
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
 
 jobs:
