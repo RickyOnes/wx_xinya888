@@ -243,28 +243,96 @@ class PDDAntiContentPlanCrawler {
             
             console.log('   ✅ 登录表单已加载');
             
-            // 清除输入框内容并填写用户名
+            // 填写用户名 - 尝试多种方式
+            console.log('   ⏳ 填写用户名...');
+            let usernameFilled = false;
+            const username = this.loginCredentials.username;
+            
+            // 方式1: 直接使用type方法（最自然的方式）
             try {
-                await usernameInput.click({ clickCount: 3 }); // 选中所有文本
-                await usernameInput.press('Backspace'); // 删除
-                await usernameInput.type(this.loginCredentials.username, { delay: 30 });
-                console.log('   ✅ 已输入用户名');
+                await usernameInput.type(username, { delay: 30 });
+                console.log('   ✅ 已输入用户名 (方式1)');
+                usernameFilled = true;
             } catch (e) {
-                console.log('   ⚠️  输入用户名失败:', e.message);
-                // 尝试直接输入
-                await usernameInput.type(this.loginCredentials.username, { delay: 30 });
+                console.log('   ⚠️  方式1失败:', e.message);
             }
             
-            // 清除输入框内容并填写密码
+            // 方式2: 使用JavaScript设置value属性
+            if (!usernameFilled) {
+                try {
+                    await this.page.evaluate((input, value) => {
+                        input.value = value;
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, usernameInput, username);
+                    console.log('   ✅ 已输入用户名 (方式2: JS设置)');
+                    usernameFilled = true;
+                } catch (e) {
+                    console.log('   ⚠️  方式2失败:', e.message);
+                }
+            }
+            
+            // 方式3: 使用focus后type
+            if (!usernameFilled) {
+                try {
+                    await usernameInput.focus();
+                    await this.page.keyboard.type(username, { delay: 30 });
+                    console.log('   ✅ 已输入用户名 (方式3: 键盘输入)');
+                    usernameFilled = true;
+                } catch (e) {
+                    console.log('   ⚠️  方式3失败:', e.message);
+                }
+            }
+            
+            if (!usernameFilled) {
+                console.log('❌ 无法填写用户名，登录失败');
+                return false;
+            }
+            
+            // 填写密码 - 尝试多种方式
+            console.log('   ⏳ 填写密码...');
+            let passwordFilled = false;
+            const password = this.loginCredentials.password;
+            
+            // 方式1: 直接使用type方法
             try {
-                await passwordInput.click({ clickCount: 3 }); // 选中所有文本
-                await passwordInput.press('Backspace'); // 删除
-                await passwordInput.type(this.loginCredentials.password, { delay: 30 });
-                console.log('   ✅ 已输入密码');
+                await passwordInput.type(password, { delay: 30 });
+                console.log('   ✅ 已输入密码 (方式1)');
+                passwordFilled = true;
             } catch (e) {
-                console.log('   ⚠️  输入密码失败:', e.message);
-                // 尝试直接输入
-                await passwordInput.type(this.loginCredentials.password, { delay: 30 });
+                console.log('   ⚠️  方式1失败:', e.message);
+            }
+            
+            // 方式2: 使用JavaScript设置value属性
+            if (!passwordFilled) {
+                try {
+                    await this.page.evaluate((input, value) => {
+                        input.value = value;
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, passwordInput, password);
+                    console.log('   ✅ 已输入密码 (方式2: JS设置)');
+                    passwordFilled = true;
+                } catch (e) {
+                    console.log('   ⚠️  方式2失败:', e.message);
+                }
+            }
+            
+            // 方式3: 使用focus后type
+            if (!passwordFilled) {
+                try {
+                    await passwordInput.focus();
+                    await this.page.keyboard.type(password, { delay: 30 });
+                    console.log('   ✅ 已输入密码 (方式3: 键盘输入)');
+                    passwordFilled = true;
+                } catch (e) {
+                    console.log('   ⚠️  方式3失败:', e.message);
+                }
+            }
+            
+            if (!passwordFilled) {
+                console.log('❌ 无法填写密码，登录失败');
+                return false;
             }
             
             // 尝试多种方式找到并点击登录按钮
@@ -327,7 +395,10 @@ class PDDAntiContentPlanCrawler {
             
             // 等待登录完成，检查是否跳转到目标页面
             console.log('   ⏳ 等待登录完成...');
-            for (let i = 0; i < 10; i++) {
+            const loginStartTime = Date.now();
+            const loginTimeout = CONFIG.timeouts.loginWait; // 20秒
+            
+            while (Date.now() - loginStartTime < loginTimeout) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const newUrl = this.page.url();
                 
@@ -343,14 +414,91 @@ class PDDAntiContentPlanCrawler {
                     return false;
                 }
                 
+                // 检查是否有错误消息（提前退出）
+                const errorSelectors = [
+                    '.error-message', 
+                    '.ant-form-item-explain-error',
+                    '[data-testid="error-message"]',
+                    'div[role="alert"]',
+                    'div.error',
+                    'div.fail',
+                    'span.error',
+                    '.ant-message-error' // Ant Design错误消息
+                ];
+                
+                let hasError = false;
+                for (const selector of errorSelectors) {
+                    const errorElement = await this.page.$(selector);
+                    if (errorElement) {
+                        const errorText = await this.page.evaluate(el => el.textContent?.trim(), errorElement);
+                        if (errorText && errorText.length > 0) {
+                            console.log(`❌ 发现登录错误: ${errorText}`);
+                            hasError = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (hasError) {
+                    console.log('❌ 登录失败，发现错误消息');
+                    return false;
+                }
+                
                 // 检查是否仍在登录页面
                 if (!newUrl.includes('mms.pinduoduo.com/login/')) {
                     console.log(`   🔄 页面已跳转: ${newUrl}`);
                     // 如果不是登录页面，继续等待
                 }
+                
+                // 显示剩余等待时间
+                const elapsed = Math.floor((Date.now() - loginStartTime) / 1000);
+                const remaining = Math.floor((loginTimeout - (Date.now() - loginStartTime)) / 1000);
+                if (remaining % 5 === 0) { // 每5秒打印一次
+                    console.log(`   ⏰ 已等待 ${elapsed} 秒，剩余 ${remaining} 秒`);
+                }
             }
             
             console.log('❌ 登录超时，未成功跳转到目标页面');
+            
+            // 检查是否有错误消息
+            console.log('   🔍 检查登录错误信息...');
+            try {
+                // 检查常见的错误消息选择器
+                const errorSelectors = [
+                    '.error-message', 
+                    '.ant-form-item-explain-error',
+                    '[data-testid="error-message"]',
+                    'div[role="alert"]',
+                    'div.error',
+                    'div.fail',
+                    'span.error'
+                ];
+                
+                let foundError = false;
+                for (const selector of errorSelectors) {
+                    const errorElement = await this.page.$(selector);
+                    if (errorElement) {
+                        const errorText = await this.page.evaluate(el => el.textContent.trim(), errorElement);
+                        if (errorText && errorText.length > 0) {
+                            console.log(`   ⚠️  发现错误消息 (${selector}): ${errorText}`);
+                            foundError = true;
+                        }
+                    }
+                }
+                
+                // 检查页面标题或h1标签中是否包含"登录失败"等关键词
+                const pageTitle = await this.page.title();
+                if (pageTitle.includes('失败') || pageTitle.includes('错误') || pageTitle.includes('登录失败')) {
+                    console.log(`   ⚠️  页面标题提示失败: ${pageTitle}`);
+                    foundError = true;
+                }
+                
+                if (!foundError) {
+                    console.log('   ℹ️  未发现明显的错误消息，可能是网络问题或需要额外验证');
+                }
+            } catch (errorCheckError) {
+                console.log('   ⚠️  检查错误信息时出错:', errorCheckError.message);
+            }
             
             // 在失败时截图以便调试
             try {
@@ -358,6 +506,9 @@ class PDDAntiContentPlanCrawler {
                 const screenshotPath = `./debug-login-failed-${this.loginCredentials.username}-${timestamp}.png`;
                 await this.page.screenshot({ path: screenshotPath, fullPage: false });
                 console.log(`   📸 已保存失败截图: ${screenshotPath}`);
+                console.log(`   💡 截图路径: ${screenshotPath}`);
+                console.log(`   💡 在本地运行时，可以在当前工作目录找到此文件`);
+                console.log(`   💡 在GitHub Actions中，可以通过Artifacts下载截图`);
             } catch (screenshotError) {
                 console.log('   ⚠️  截图失败:', screenshotError.message);
             }
