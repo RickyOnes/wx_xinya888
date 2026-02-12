@@ -727,8 +727,8 @@ async function updateAccount(username, password, verificationCode) {
         const accountData = {
             username,
             anti_content: crawler.capturedData.antiContent,
-            anti_content_plan: crawler.capturedData.antiContentPlan,
-            anti_content_date: crawler.capturedData.antiContentDate,
+            anti_content_Plan: crawler.capturedData.antiContentPlan,
+            anti_content_Date: crawler.capturedData.antiContentDate,
             cookie_string: crawler.capturedData.cookieString,
             expires_at: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
             updated_at: new Date().toISOString(),
