@@ -63,3 +63,19 @@ accounts.json
 index.js
 maicai.py
 run-local.js
+
+# 微信小程序源文件（工作流不需要）
+/app.js
+/app.json
+/app.wxss
+/project.config.json
+/sitemap.json
+
+# 微信小程序目录（工作流不需要）
+/custom-tab-bar/
+/images/
+/pages/
+/utils/
+
+# 备份文件
+*.backup
