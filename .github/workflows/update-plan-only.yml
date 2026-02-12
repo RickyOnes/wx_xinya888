@@ -1,0 +1,77 @@
+name: 更新预估销量anti-content（快速手动触发版）
+on:
+  workflow_dispatch: {}    # 只支持手动触发，供其他程序调用
+
+jobs:
+  update-plan:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3      # 整体超时3分钟，确保快速响应
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 安装 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24.7.0'  # 与主工作流保持一致
+    
+    # 缓存npm包和puppeteer浏览器，减少安装时间
+    - name: 缓存npm依赖
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.npm
+          ~/.cache/puppeteer
+        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+    
+    - name: 缓存puppeteer用户数据
+      uses: actions/cache@v4
+      with:
+        path: ./puppeteer_user_data
+        key: ${{ runner.os }}-pdd-user-data-plan-only-${{ hashFiles('**/scripts/update-plan-only.js') }}
+        restore-keys: |
+          ${{ runner.os }}-pdd-user-data-plan-only-
+    
+    - name: 安装系统依赖（精简版）
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          ca-certificates \
+          fonts-liberation \
+          libasound2 \
+          libatk-bridge2.0-0 \
+          libatk1.0-0 \
+          libc6 \
+          libcups2 \
+          libdbus-1-3 \
+          libexpat1 \
+          libfontconfig1 \
+          libgbm1 \
+          libglib2.0-0 \
+          libnspr4 \
+          libnss3 \
+          libpango-1.0-0 \
+          libx11-6 \
+          libxcomposite1 \
+          libxdamage1 \
+          libxext6 \
+          libxfixes3 \
+          libxrandr2 \
+          libxrender1 \
+          libxss1 \
+          wget
+    
+    - name: 安装依赖
+      run: npm install
+    
+    - name: 运行快速更新脚本
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        PDD_ACCOUNTS_JSON: ${{ secrets.PDD_ACCOUNTS_JSON }}
+        PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
+        PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
+        PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
+        TZ: Asia/Shanghai  # 固定时区为中国上海
+      run: node scripts/update-plan-only.js
