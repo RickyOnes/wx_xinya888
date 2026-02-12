@@ -170,86 +170,46 @@ class PDDAntiContentPlanCrawler {
                     return true;
                 } else {
                     console.log(`⚠️  页面已重定向到: ${finalUrl}`);
-                    // 继续执行后续登录流程
+                    // 页面已跳转到登录页面，直接处理登录
+                    if (finalUrl.includes('mms.pinduoduo.com/login/')) {
+                        console.log('📝 检测到登录页面，尝试自动登录...');
+                        return await this.fillLoginFormAndSubmit();
+                    }
                 }
             }
             
-            // 如果不在预估销量页面，可能是登录页面，尝试使用直接登录URL
+            // 如果不在预估销量页面，检查当前是否已经在登录页面
+            if (currentUrl.includes('mms.pinduoduo.com/login/')) {
+                console.log('📝 当前已在登录页面，尝试自动登录...');
+                return await this.fillLoginFormAndSubmit();
+            }
+            
+            // 如果既不是预估销量页面也不是登录页面，尝试使用直接登录URL
             console.log('⚠️  当前不在预估销量页面，尝试使用直接登录URL...');
             await this.page.goto(CONFIG.directLoginUrl, {
                 waitUntil: 'domcontentloaded',
                 timeout: CONFIG.timeouts.pageLoad
             });
             
-            // 等待登录表单出现并自动填写
-            const loginFormWaitStart = Date.now();
-            while (Date.now() - loginFormWaitStart < CONFIG.timeouts.loginWait) {
-                const currentUrl = this.page.url();
-                
-                // 如果已经跳转到预估销量页面，登录成功
-                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                    console.log('✅ 登录成功，已进入预估销量页面');
-                    return true;
-                }
-                
-                // 检查登录表单是否存在
-                const usernameInput = await this.page.$('#usernameId');
-                const passwordInput = await this.page.$('#passwordId');
-                
-                if (usernameInput && passwordInput) {
-                    console.log('📝 检测到登录表单，尝试自动填写...');
-                    
-                    // 填充用户名
-                    try {
-                        const existingUser = await this.page.evaluate(el => el.value, usernameInput).catch(() => '');
-                        if (!existingUser && this.loginCredentials.username) {
-                            await usernameInput.type(this.loginCredentials.username, { delay: 50 });
-                            console.log('   ✅ 已输入用户名');
-                        }
-                    } catch (e) {}
-                    
-                    // 填充密码
-                    try {
-                        const existingPass = await this.page.evaluate(el => el.value, passwordInput).catch(() => '');
-                        if (!existingPass && this.loginCredentials.password) {
-                            await passwordInput.type(this.loginCredentials.password, { delay: 50 });
-                            console.log('   ✅ 已输入密码');
-                        }
-                    } catch (e) {}
-                    
-                    // 尝试点击登录按钮
-                    try {
-                        let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
-                        if (!loginButton) {
-                            const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
-                            if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
-                        }
-                        
-                        if (loginButton) {
-                            await loginButton.click().catch(() => {});
-                            console.log('   ✅ 尝试点击登录按钮');
-                        }
-                    } catch (e) {}
-                    
-                    // 等待登录完成
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-                
-                // 检查是否出现验证码输入框（如果出现，需要退出，因为这是"不需要验证码"的情况）
-                const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
-                if (verificationCodeInput) {
-                    console.log('❌ 检测到需要验证码，快速脚本无法处理，退出');
-                    return false;
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            
-            console.log('❌ 登录超时或失败');
-            return false;
+            // 使用统一的登录处理方法
+            return await this.fillLoginFormAndSubmit();
             
         } catch (error) {
             console.log(`⚠️  页面访问或登录失败: ${error.message}`);
+            
+            // 在异常时截图以便调试
+            try {
+                if (this.page && !this.page.isClosed()) {
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const username = this.loginCredentials.username || 'unknown';
+                    const screenshotPath = `./debug-check-login-error-${username}-${timestamp}.png`;
+                    await this.page.screenshot({ path: screenshotPath, fullPage: false });
+                    console.log(`   📸 已保存错误截图: ${screenshotPath}`);
+                }
+            } catch (screenshotError) {
+                console.log('   ⚠️  截图失败:', screenshotError.message);
+            }
+            
             return false;
         }
     }
@@ -258,71 +218,167 @@ class PDDAntiContentPlanCrawler {
     async fillLoginFormAndSubmit() {
         console.log('📝 检测到登录页面，尝试自动填写登录表单...');
         
-        const loginFormWaitStart = Date.now();
-        while (Date.now() - loginFormWaitStart < CONFIG.timeouts.loginWait) {
-            const currentUrl = this.page.url();
+        try {
+            // 等待页面完全加载
+            await this.page.waitForSelector('body', { timeout: 5000 }).catch(() => {
+                console.log('   ⚠️  页面加载较慢，继续执行...');
+            });
             
-            // 如果已经跳转到预估销量页面，登录成功
+            // 检查是否已经跳转到目标页面
+            const currentUrl = this.page.url();
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('✅ 登录成功，已进入预估销量页面');
                 return true;
             }
             
-            // 检查登录表单是否存在
-            const usernameInput = await this.page.$('#usernameId');
-            const passwordInput = await this.page.$('#passwordId');
+            // 等待登录表单出现
+            console.log('   ⏳ 等待登录表单加载...');
+            const usernameInput = await this.page.waitForSelector('#usernameId', { timeout: 5000 }).catch(() => null);
+            const passwordInput = await this.page.waitForSelector('#passwordId', { timeout: 5000 }).catch(() => null);
             
-            if (usernameInput && passwordInput) {
-                console.log('   📝 检测到登录表单，尝试自动填写...');
-                
-                // 填充用户名
-                try {
-                    const existingUser = await this.page.evaluate(el => el.value, usernameInput).catch(() => '');
-                    if (!existingUser && this.loginCredentials.username) {
-                        await usernameInput.type(this.loginCredentials.username, { delay: 50 });
-                        console.log('   ✅ 已输入用户名');
-                    }
-                } catch (e) {}
-                
-                // 填充密码
-                try {
-                    const existingPass = await this.page.evaluate(el => el.value, passwordInput).catch(() => '');
-                    if (!existingPass && this.loginCredentials.password) {
-                        await passwordInput.type(this.loginCredentials.password, { delay: 50 });
-                        console.log('   ✅ 已输入密码');
-                    }
-                } catch (e) {}
-                
-                // 尝试点击登录按钮
-                try {
-                    let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
-                    if (!loginButton) {
-                        const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
-                        if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
-                    }
-                    
-                    if (loginButton) {
-                        await loginButton.click().catch(() => {});
-                        console.log('   ✅ 尝试点击登录按钮');
-                    }
-                } catch (e) {}
-                
-                // 等待登录完成
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            
-            // 检查是否出现验证码输入框（如果出现，需要退出，因为这是"不需要验证码"的情况）
-            const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
-            if (verificationCodeInput) {
-                console.log('❌ 检测到需要验证码，快速脚本无法处理，退出');
+            if (!usernameInput || !passwordInput) {
+                console.log('❌ 未找到登录表单元素，登录失败');
                 return false;
             }
             
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log('   ✅ 登录表单已加载');
+            
+            // 清除输入框内容并填写用户名
+            try {
+                await usernameInput.click({ clickCount: 3 }); // 选中所有文本
+                await usernameInput.press('Backspace'); // 删除
+                await usernameInput.type(this.loginCredentials.username, { delay: 30 });
+                console.log('   ✅ 已输入用户名');
+            } catch (e) {
+                console.log('   ⚠️  输入用户名失败:', e.message);
+                // 尝试直接输入
+                await usernameInput.type(this.loginCredentials.username, { delay: 30 });
+            }
+            
+            // 清除输入框内容并填写密码
+            try {
+                await passwordInput.click({ clickCount: 3 }); // 选中所有文本
+                await passwordInput.press('Backspace'); // 删除
+                await passwordInput.type(this.loginCredentials.password, { delay: 30 });
+                console.log('   ✅ 已输入密码');
+            } catch (e) {
+                console.log('   ⚠️  输入密码失败:', e.message);
+                // 尝试直接输入
+                await passwordInput.type(this.loginCredentials.password, { delay: 30 });
+            }
+            
+            // 尝试多种方式找到并点击登录按钮
+            let loginButton = null;
+            
+            // 方式1: 通过data-testid属性
+            loginButton = await this.page.$('button[data-testid="beast-core-button"]');
+            
+            // 方式2: 通过文本内容
+            if (!loginButton) {
+                const loginButtons = await this.page.$x("//button[contains(., '登录')]");
+                if (loginButtons.length > 0) {
+                    loginButton = loginButtons[0];
+                }
+            }
+            
+            // 方式3: 通过type属性
+            if (!loginButton) {
+                loginButton = await this.page.$('button[type="submit"]');
+            }
+            
+            // 方式4: 通过class名称
+            if (!loginButton) {
+                loginButton = await this.page.$('.login-btn, .submit-btn, .ant-btn-primary');
+            }
+            
+            if (loginButton) {
+                console.log('   ✅ 找到登录按钮，尝试点击...');
+                
+                // 尝试多种点击方式
+                try {
+                    // 方式1: 直接点击
+                    await loginButton.click();
+                    console.log('   ✅ 已点击登录按钮');
+                } catch (clickError) {
+                    console.log('   ⚠️  直接点击失败，尝试JavaScript点击:', clickError.message);
+                    try {
+                        // 方式2: 通过JavaScript点击
+                        await this.page.evaluate(btn => btn.click(), loginButton);
+                        console.log('   ✅ 通过JavaScript点击登录按钮');
+                    } catch (jsError) {
+                        console.log('   ⚠️  JavaScript点击失败:', jsError.message);
+                        try {
+                            // 方式3: 提交表单
+                            await this.page.evaluate(() => {
+                                const form = document.querySelector('form');
+                                if (form) form.submit();
+                            });
+                            console.log('   ✅ 尝试提交表单');
+                        } catch (formError) {
+                            console.log('   ⚠️  提交表单失败:', formError.message);
+                        }
+                    }
+                }
+            } else {
+                console.log('   ⚠️  未找到登录按钮，尝试通过回车键提交');
+                // 尝试按回车键提交表单
+                await passwordInput.press('Enter');
+            }
+            
+            // 等待登录完成，检查是否跳转到目标页面
+            console.log('   ⏳ 等待登录完成...');
+            for (let i = 0; i < 10; i++) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const newUrl = this.page.url();
+                
+                if (newUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                    console.log('✅ 登录成功，已进入预估销量页面');
+                    return true;
+                }
+                
+                // 检查是否需要验证码
+                const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+                if (verificationCodeInput) {
+                    console.log('❌ 检测到需要验证码，快速脚本无法处理，退出');
+                    return false;
+                }
+                
+                // 检查是否仍在登录页面
+                if (!newUrl.includes('mms.pinduoduo.com/login/')) {
+                    console.log(`   🔄 页面已跳转: ${newUrl}`);
+                    // 如果不是登录页面，继续等待
+                }
+            }
+            
+            console.log('❌ 登录超时，未成功跳转到目标页面');
+            
+            // 在失败时截图以便调试
+            try {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const screenshotPath = `./debug-login-failed-${this.loginCredentials.username}-${timestamp}.png`;
+                await this.page.screenshot({ path: screenshotPath, fullPage: false });
+                console.log(`   📸 已保存失败截图: ${screenshotPath}`);
+            } catch (screenshotError) {
+                console.log('   ⚠️  截图失败:', screenshotError.message);
+            }
+            
+            return false;
+            
+        } catch (error) {
+            console.log(`❌ 登录过程中出错: ${error.message}`);
+            
+            // 在异常时截图以便调试
+            try {
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const screenshotPath = `./debug-login-error-${this.loginCredentials.username}-${timestamp}.png`;
+                await this.page.screenshot({ path: screenshotPath, fullPage: false });
+                console.log(`   📸 已保存错误截图: ${screenshotPath}`);
+            } catch (screenshotError) {
+                console.log('   ⚠️  截图失败:', screenshotError.message);
+            }
+            
+            return false;
         }
-        
-        console.log('❌ 登录超时或失败');
-        return false;
     }
 
     async capturePlanAntiContent() {
@@ -338,24 +394,21 @@ class PDDAntiContentPlanCrawler {
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('⚠️  页面已离开预估销量页面，当前URL:', currentUrl);
                 
-                // 检查是否是登录页面
+                // 如果跳转到登录页面，说明会话已过期，快速失败
                 if (currentUrl.includes('mms.pinduoduo.com/login/')) {
-                    console.log('📝 检测到登录页面，尝试自动登录...');
-                    const loginResult = await this.fillLoginFormAndSubmit();
-                    if (!loginResult) {
-                        console.log('❌ 登录失败，继续尝试...');
-                    }
-                } else {
-                    // 其他情况，重新访问目标页面
-                    console.log('   🔄 尝试重新访问预估销量页面...');
-                    try {
-                        await this.page.goto(CONFIG.planPageUrl, {
-                            waitUntil: 'domcontentloaded',
-                            timeout: CONFIG.timeouts.pageLoad
-                        });
-                    } catch (refreshError) {
-                        console.log('   ⚠️  重新访问失败:', refreshError.message);
-                    }
+                    console.log('❌ 会话已过期，在等待API请求期间跳转到登录页面');
+                    return false;
+                }
+                
+                // 其他情况，重新访问目标页面（快速重试）
+                console.log('   🔄 重新访问预估销量页面...');
+                try {
+                    await this.page.goto(CONFIG.planPageUrl, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 3000 // 更短的超时
+                    });
+                } catch (refreshError) {
+                    console.log('   ⚠️  重新访问失败:', refreshError.message);
                 }
             }
         }
