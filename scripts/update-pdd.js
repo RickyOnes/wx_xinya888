@@ -153,7 +153,7 @@ class PDDOrderCrawler {
                 if (headers['anti-content']) {
                     this.capturedData.antiContent = headers['anti-content'];
                     this.capturedData.apiRequestCaptured = true;
-                    console.log('   ✅ 捕获到 anti-content:', this.capturedData.antiContent.substring(0, 50) + '...');
+                    console.log('   ✅ 捕获到 anti-content:', this.capturedData.antiContent);
                 }
                 
                 // 获取请求体（对于POST请求）
@@ -178,7 +178,7 @@ class PDDOrderCrawler {
         try {
             await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
                 waitUntil: 'networkidle0',
-                timeout: 15000
+                timeout: 15000  // 15秒超时
             });
             
             // 检查是否成功进入订单管理页面
@@ -521,7 +521,7 @@ class PDDOrderCrawler {
             cookieStr += `${cookie.name}=${cookie.value}`;
         });
         this.capturedData.cookieString = cookieStr;
-        
+        console.log('   ✅  已构造 Cookie字符串');
         return cookies;
     }
 
@@ -572,8 +572,7 @@ class PDDOrderCrawler {
         }
         
         if (this.capturedData.antiContent) {
-            console.log('✅ 已捕获到订单查询API请求，获取到anti-content参数');
-            console.log(`   anti-content长度: ${this.capturedData.antiContent.length}`);
+            console.log(`✅ 已捕获到订单查询API请求，获取到anti-content（长度: ${this.capturedData.antiContent.length}）`);
             return true;
         } else {
             console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到API请求或未获取到anti-content参数`);
@@ -604,39 +603,14 @@ class PDDOrderCrawler {
             
             // 5. 等待API请求，捕获anti-content参数
             const apiCaptured = await this.waitForAPIRequest();
+
             if (!apiCaptured) {
                 throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
+            
+            // 6. 捕获Cookies
             await this.captureCookies();
-            
-            // 输出关键信息
-            console.log('\n📋 关键信息汇总:');
-            console.log('='.repeat(50));
-            
-            if (this.capturedData.antiContent) {
-                console.log('ANTI-CONTENT (前100字符):');
-                console.log(this.capturedData.antiContent.substring(0, 100) + '...');
-            } else {
-                console.log('ANTI-CONTENT: 未捕获到');
-            }
-            
-            console.log('\n' + '='.repeat(50));
-            
-            if (this.capturedData.windowsAppShopToken23) {
-                console.log('WINDOWS_APP_SHOP_TOKEN_23 (前100字符):');
-                console.log(this.capturedData.windowsAppShopToken23.substring(0, 100) + '...');
-            } else {
-                console.log('WINDOWS_APP_SHOP_TOKEN_23: 未捕获到');
-            }
-            
-            console.log('\n' + '='.repeat(50));
-            
-            if (this.capturedData.passId) {
-                console.log('PASS_ID (前100字符):');
-                console.log(this.capturedData.passId.substring(0, 100) + '...');
-            } else {
-                console.log('PASS_ID: 未捕获到');
-            }            
+       
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
             
@@ -686,6 +660,7 @@ async function updateAccount(username, password, verificationCode) {
             pass_id: crawler.capturedData.passId,
             cookie_string: crawler.capturedData.cookieString,
             expires_at: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
+            updated_at: new Date().toISOString(),
             last_success: true
         };
         
