@@ -257,6 +257,7 @@ class PDDAntiContentPlanCrawler {
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('⚠️  页面已离开预估销量页面，尝试重新访问...');
+                console.log(`   当前URL: ${currentUrl}`);
                 try {
                     await this.page.goto(CONFIG.planPageUrl, {
                         waitUntil: 'domcontentloaded',
