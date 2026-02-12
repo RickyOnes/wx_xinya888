@@ -162,7 +162,16 @@ class PDDAntiContentPlanCrawler {
             // 检查是否成功进入预估销量页面
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('✅ 会话有效，已直接进入预估销量页面');
-                return true;
+                // 等待3秒，确保没有发生重定向
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                const finalUrl = this.page.url();
+                if (finalUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                    console.log('✅ 会话稳定，仍在预估销量页面');
+                    return true;
+                } else {
+                    console.log(`⚠️  页面已重定向到: ${finalUrl}`);
+                    // 继续执行后续登录流程
+                }
             }
             
             // 如果不在预估销量页面，可能是登录页面，尝试使用直接登录URL
@@ -245,6 +254,77 @@ class PDDAntiContentPlanCrawler {
         }
     }
 
+    // 在登录页面填写表单并提交
+    async fillLoginFormAndSubmit() {
+        console.log('📝 检测到登录页面，尝试自动填写登录表单...');
+        
+        const loginFormWaitStart = Date.now();
+        while (Date.now() - loginFormWaitStart < CONFIG.timeouts.loginWait) {
+            const currentUrl = this.page.url();
+            
+            // 如果已经跳转到预估销量页面，登录成功
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                console.log('✅ 登录成功，已进入预估销量页面');
+                return true;
+            }
+            
+            // 检查登录表单是否存在
+            const usernameInput = await this.page.$('#usernameId');
+            const passwordInput = await this.page.$('#passwordId');
+            
+            if (usernameInput && passwordInput) {
+                console.log('   📝 检测到登录表单，尝试自动填写...');
+                
+                // 填充用户名
+                try {
+                    const existingUser = await this.page.evaluate(el => el.value, usernameInput).catch(() => '');
+                    if (!existingUser && this.loginCredentials.username) {
+                        await usernameInput.type(this.loginCredentials.username, { delay: 50 });
+                        console.log('   ✅ 已输入用户名');
+                    }
+                } catch (e) {}
+                
+                // 填充密码
+                try {
+                    const existingPass = await this.page.evaluate(el => el.value, passwordInput).catch(() => '');
+                    if (!existingPass && this.loginCredentials.password) {
+                        await passwordInput.type(this.loginCredentials.password, { delay: 50 });
+                        console.log('   ✅ 已输入密码');
+                    }
+                } catch (e) {}
+                
+                // 尝试点击登录按钮
+                try {
+                    let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
+                    if (!loginButton) {
+                        const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
+                        if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
+                    }
+                    
+                    if (loginButton) {
+                        await loginButton.click().catch(() => {});
+                        console.log('   ✅ 尝试点击登录按钮');
+                    }
+                } catch (e) {}
+                
+                // 等待登录完成
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            // 检查是否出现验证码输入框（如果出现，需要退出，因为这是"不需要验证码"的情况）
+            const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+            if (verificationCodeInput) {
+                console.log('❌ 检测到需要验证码，快速脚本无法处理，退出');
+                return false;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        console.log('❌ 登录超时或失败');
+        return false;
+    }
+
     async capturePlanAntiContent() {
         console.log('\n⏳ 等待预估销量查询API请求...');
         const startTime = Date.now();
@@ -256,15 +336,26 @@ class PDDAntiContentPlanCrawler {
             // 检查当前URL是否仍在预估销量页面
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                console.log('⚠️  页面已离开预估销量页面，尝试重新访问...');
-                console.log(`   当前URL: ${currentUrl}`);
-                try {
-                    await this.page.goto(CONFIG.planPageUrl, {
-                        waitUntil: 'domcontentloaded',
-                        timeout: CONFIG.timeouts.pageLoad
-                    });
-                } catch (refreshError) {
-                    console.log('   ⚠️  重新访问失败:', refreshError.message);
+                console.log('⚠️  页面已离开预估销量页面，当前URL:', currentUrl);
+                
+                // 检查是否是登录页面
+                if (currentUrl.includes('mms.pinduoduo.com/login/')) {
+                    console.log('📝 检测到登录页面，尝试自动登录...');
+                    const loginResult = await this.fillLoginFormAndSubmit();
+                    if (!loginResult) {
+                        console.log('❌ 登录失败，继续尝试...');
+                    }
+                } else {
+                    // 其他情况，重新访问目标页面
+                    console.log('   🔄 尝试重新访问预估销量页面...');
+                    try {
+                        await this.page.goto(CONFIG.planPageUrl, {
+                            waitUntil: 'domcontentloaded',
+                            timeout: CONFIG.timeouts.pageLoad
+                        });
+                    } catch (refreshError) {
+                        console.log('   ⚠️  重新访问失败:', refreshError.message);
+                    }
                 }
             }
         }
