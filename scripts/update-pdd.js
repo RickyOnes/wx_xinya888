@@ -606,7 +606,7 @@ class PDDOrderCrawler {
     async captureDateAntiContent() {
         console.log('\n📅 跳转到生产日期查询页面...');
         try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-supplier-product/goods-manage', {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-supplier-product/goods-schedule', {
                 waitUntil: 'networkidle0',
                 timeout: 30000
             });
