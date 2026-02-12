@@ -9,6 +9,8 @@ puppeteer.use(StealthPlugin());
 const CONFIG = {
     loginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Forder%2Fmanagement',
     targetApiEndpoint: 'cartman-mms/orderManagement/pageQueryDetail',
+    targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
+    targetApiEndpointDate: 'orianna-mms/goods/schedule/pageQuery',
     
     // 浏览器配置
     browserOptions: {
@@ -58,8 +60,8 @@ class PDDOrderCrawler {
         this.page = null;
         this.capturedData = {
             antiContent: null,
-            windowsAppShopToken23: null,
-            passId: null,
+            antiContentPlan: null,
+            antiContentDate: null,
             allCookies: [],
             orderRequestHeaders: null,
             orderRequestBody: null,
@@ -165,6 +167,32 @@ class PDDOrderCrawler {
                 }
                 
                 this.capturedData.orderRequestHeaders = headers;
+            }
+            // 捕获预估销量查询API的请求
+            else if (url.includes(CONFIG.targetApiEndpointPlan)) {
+                console.log('\n🎯 捕获到预估销量查询请求:');
+                console.log('   URL:', url);
+                console.log('   方法:', request.method());
+                
+                // 获取请求头
+                const headers = request.headers();
+                if (headers['anti-content']) {
+                    this.capturedData.antiContentPlan = headers['anti-content'];
+                    console.log('   ✅ 捕获到 anti-content (预估销量):', this.capturedData.antiContentPlan);
+                }
+            }
+            // 捕获生产日期查询API的请求
+            else if (url.includes(CONFIG.targetApiEndpointDate)) {
+                console.log('\n🎯 捕获到生产日期查询请求:');
+                console.log('   URL:', url);
+                console.log('   方法:', request.method());
+                
+                // 获取请求头
+                const headers = request.headers();
+                if (headers['anti-content']) {
+                    this.capturedData.antiContentDate = headers['anti-content'];
+                    console.log('   ✅ 捕获到 anti-content (生产日期):', this.capturedData.antiContentDate);
+                }
             }
             // 继续请求
             request.continue();
@@ -475,45 +503,6 @@ class PDDOrderCrawler {
         const cookies = await this.page.cookies();
         this.capturedData.allCookies = cookies;
         
-        // 查找特定的cookie
-        let foundShopToken = false;
-        let foundPassId = false;
-        
-        for (const cookie of cookies) {
-            if (cookie.name === 'windows_app_shop_token_23') {
-                this.capturedData.windowsAppShopToken23 = cookie.value;
-                foundShopToken = true;
-                console.log(`   ✅ 捕获到 windows_app_shop_token_23 (长度: ${cookie.value.length})`);
-            }
-            if (cookie.name === 'PASS_ID') {
-                this.capturedData.passId = cookie.value;
-                foundPassId = true;
-                console.log(`   ✅ 捕获到 PASS_ID (长度: ${cookie.value.length})`);
-            }
-        }
-        
-        if (!foundShopToken) {
-            console.log('   ⚠️  未找到 windows_app_shop_token_23');
-            // 尝试从localStorage获取
-            const shopTokenFromStorage = await this.page.evaluate(() => {
-                try {
-                    return localStorage.getItem('windows_app_shop_token_23') || 
-                           sessionStorage.getItem('windows_app_shop_token_23');
-                } catch (e) {
-                    return null;
-                }
-            });
-            
-            if (shopTokenFromStorage) {
-                this.capturedData.windowsAppShopToken23 = shopTokenFromStorage;
-                console.log('   ✅ 从localStorage捕获到 windows_app_shop_token_23');
-            }
-        }
-        
-        if (!foundPassId) {
-            console.log('   ⚠️  未找到 PASS_ID');
-        }
-        
         // 构建cookie字符串
         let cookieStr = '';
         cookies.forEach((cookie, index) => {
@@ -580,6 +569,74 @@ class PDDOrderCrawler {
         }
     }
 
+    async capturePlanAntiContent() {
+        console.log('\n📊 跳转到预估销量查询页面...');
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/appointment-delivery', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
+            console.log('✅ 已进入预估销量查询页面');
+            
+            // 等待API请求
+            console.log('⏳ 等待预估销量查询API请求...');
+            const startTime = Date.now();
+            const maxWaitTime = 300000; // 5分钟
+            while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
+                    console.log(`   已等待 ${elapsedSeconds} 秒...`);
+                }
+            }
+            
+            if (this.capturedData.antiContentPlan) {
+                console.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
+                return true;
+            } else {
+                console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到预估销量查询API请求`);
+                return false;
+            }
+        } catch (error) {
+            console.log('⚠️ 跳转到预估销量查询页面失败:', error.message);
+            return false;
+        }
+    }
+
+    async captureDateAntiContent() {
+        console.log('\n📅 跳转到生产日期查询页面...');
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-supplier-product/goods-manage', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
+            console.log('✅ 已进入生产日期查询页面');
+            
+            // 等待API请求
+            console.log('⏳ 等待生产日期查询API请求...');
+            const startTime = Date.now();
+            const maxWaitTime = 300000; // 5分钟
+            while (!this.capturedData.antiContentDate && (Date.now() - startTime) < maxWaitTime) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
+                    console.log(`   已等待 ${elapsedSeconds} 秒...`);
+                }
+            }
+            
+            if (this.capturedData.antiContentDate) {
+                console.log(`✅ 已捕获到生产日期查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentDate.length}）`);
+                return true;
+            } else {
+                console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到生产日期查询API请求`);
+                return false;
+            }
+        } catch (error) {
+            console.log('⚠️ 跳转到生产日期查询页面失败:', error.message);
+            return false;
+        }
+    }
+
     async run() {
         try {
             console.log('🎬 开始执行拼多多订单数据捕获脚本');
@@ -608,7 +665,21 @@ class PDDOrderCrawler {
                 throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
             
-            // 6. 捕获Cookies
+            // 6. 捕获预估销量查询的anti-content
+            console.log('\n📊 开始捕获预估销量查询参数...');
+            const planCaptured = await this.capturePlanAntiContent();
+            if (!planCaptured) {
+                console.log('⚠️ 预估销量查询参数捕获失败，继续执行...');
+            }
+            
+            // 7. 捕获生产日期查询的anti-content
+            console.log('\n📅 开始捕获生产日期查询参数...');
+            const dateCaptured = await this.captureDateAntiContent();
+            if (!dateCaptured) {
+                console.log('⚠️ 生产日期查询参数捕获失败，继续执行...');
+            }
+            
+            // 8. 捕获Cookies
             await this.captureCookies();
        
         } catch (error) {
@@ -656,8 +727,8 @@ async function updateAccount(username, password, verificationCode) {
         const accountData = {
             username,
             anti_content: crawler.capturedData.antiContent,
-            windows_app_shop_token_23: crawler.capturedData.windowsAppShopToken23,
-            pass_id: crawler.capturedData.passId,
+            anti_content_plan: crawler.capturedData.antiContentPlan,
+            anti_content_date: crawler.capturedData.antiContentDate,
             cookie_string: crawler.capturedData.cookieString,
             expires_at: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
             updated_at: new Date().toISOString(),
