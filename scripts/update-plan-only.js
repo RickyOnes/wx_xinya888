@@ -50,9 +50,10 @@ const CONFIG = {
     
     // 等待超时配置（毫秒）- 尽可能缩短以减少用户等待时间
     timeouts: {
-        pageLoad: 8000,           // 8秒页面加载超时
-        apiRequest: 10000,        // 10秒API请求等待超时（5分钟有效期，需要快速获取）
-        loginWait: 20000,         // 20秒登录等待超时
+        // 在 CI / GitHub Actions 网络情况下需要放宽时间
+        pageLoad: 30000,          // 30秒页面加载超时
+        apiRequest: 120000,       // 120秒 API 请求等待超时（预估销量页面可能较慢）
+        loginWait: 120000,        // 120秒登录等待超时
     }
 };
 
@@ -231,59 +232,114 @@ class PDDAntiContentPlanCrawler {
                 return true;
             }
             
-            // 等待登录表单出现
+            // 有些登录页默认展示二维码或其它方式，需要先尝试切换到“账号登录”标签
+            try {
+                const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
+                if (tabContainer) {
+                    const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
+                    if (items && items.length >= 2) {
+                        // 第二个通常是"账号登录"
+                        const secondClass = await this.page.evaluate(el => el.className, items[1]).catch(() => '');
+                        if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
+                            await items[1].click().catch(() => {});
+                            console.log('   ✅ 已尝试切换到账号登录标签');
+                            await new Promise(r => setTimeout(r, 800));
+                        }
+                    }
+                } else {
+                    // 备用：尝试通过包含文字的按钮切换（例如按钮文本包含"账号登录"或"账号"）
+                    const btnXpath = await this.page.$x("//button[contains(., '账号登录') or contains(., '帐号登录') or contains(., '账号')]");
+                    if (btnXpath && btnXpath.length > 0) {
+                        await btnXpath[0].click().catch(() => {});
+                        console.log('   ✅ 已尝试通过文本切换到账号登录');
+                        await new Promise(r => setTimeout(r, 800));
+                    }
+                }
+            } catch (e) {
+                // 忽略切换标签时的错误
+            }
+
+            // 等待登录表单出现（兼容不同表单结构，尝试多个选择器）
             console.log('   ⏳ 等待登录表单加载...');
-            const usernameInput = await this.page.waitForSelector('#usernameId', { timeout: 5000 }).catch(() => null);
-            const passwordInput = await this.page.waitForSelector('#passwordId', { timeout: 5000 }).catch(() => null);
-            
+            const usernameSelectors = [
+                '#usernameId',
+                'input[name="username"]',
+                'input[name="account"]',
+                'input[name="loginName"]',
+                'input[placeholder*="账号"]',
+                'input[placeholder*="用户名"]',
+                'input[type="text"]'
+            ];
+            const passwordSelectors = [
+                '#passwordId',
+                'input[name="password"]',
+                'input[name="pass"]',
+                'input[placeholder*="密码"]',
+                'input[type="password"]'
+            ];
+
+            let usernameInput = null;
+            let passwordInput = null;
+            // 多次尝试寻找输入框（考虑慢加载）
+            const searchStart = Date.now();
+            const searchTimeout = 8000; // 8s 在切换标签后再等一会儿寻找元素
+            while ((!usernameInput || !passwordInput) && (Date.now() - searchStart) < searchTimeout) {
+                for (const sel of usernameSelectors) {
+                    if (!usernameInput) usernameInput = await this.page.$(sel).catch(() => null);
+                }
+                for (const sel of passwordSelectors) {
+                    if (!passwordInput) passwordInput = await this.page.$(sel).catch(() => null);
+                }
+                if (usernameInput && passwordInput) break;
+                await new Promise(r => setTimeout(r, 300));
+            }
+
             if (!usernameInput || !passwordInput) {
                 console.log('❌ 未找到登录表单元素，登录失败');
                 return false;
             }
-            
+
             console.log('   ✅ 登录表单已加载');
             
-            // 填写用户名 - 尝试多种方式
+            // 填写用户名 - 尝试多种方式（更健壮地清空并输入）
             console.log('   ⏳ 填写用户名...');
             let usernameFilled = false;
             const username = this.loginCredentials.username;
-            
-            // 方式1: 直接使用type方法（最自然的方式）
+
             try {
-                await usernameInput.type(username, { delay: 30 });
-                console.log('   ✅ 已输入用户名 (方式1)');
+                await usernameInput.click({ clickCount: 3 }).catch(() => {});
+                await usernameInput.press && usernameInput.press('Backspace').catch(() => {});
+            } catch (e) {}
+
+            try {
+                await usernameInput.type(username, { delay: 40 });
                 usernameFilled = true;
+                console.log('   ✅ 已输入用户名 (type)');
             } catch (e) {
-                console.log('   ⚠️  方式1失败:', e.message);
+                console.log('   ⚠️  使用 type 输入用户名失败:', e.message);
             }
-            
-            // 方式2: 使用JavaScript设置value属性
+
             if (!usernameFilled) {
                 try {
-                    await this.page.evaluate((input, value) => {
-                        input.value = value;
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                        input.dispatchEvent(new Event('change', { bubbles: true }));
-                    }, usernameInput, username);
-                    console.log('   ✅ 已输入用户名 (方式2: JS设置)');
+                    await this.page.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, usernameInput, username);
                     usernameFilled = true;
+                    console.log('   ✅ 已输入用户名 (js set)');
                 } catch (e) {
-                    console.log('   ⚠️  方式2失败:', e.message);
+                    console.log('   ⚠️  JS 设置用户名失败:', e.message);
                 }
             }
-            
-            // 方式3: 使用focus后type
+
             if (!usernameFilled) {
                 try {
                     await usernameInput.focus();
-                    await this.page.keyboard.type(username, { delay: 30 });
-                    console.log('   ✅ 已输入用户名 (方式3: 键盘输入)');
+                    await this.page.keyboard.type(username, { delay: 40 });
                     usernameFilled = true;
+                    console.log('   ✅ 已输入用户名 (keyboard)');
                 } catch (e) {
-                    console.log('   ⚠️  方式3失败:', e.message);
+                    console.log('   ⚠️  keyboard 输入用户名失败:', e.message);
                 }
             }
-            
+
             if (!usernameFilled) {
                 console.log('❌ 无法填写用户名，登录失败');
                 return false;
@@ -293,43 +349,40 @@ class PDDAntiContentPlanCrawler {
             console.log('   ⏳ 填写密码...');
             let passwordFilled = false;
             const password = this.loginCredentials.password;
-            
-            // 方式1: 直接使用type方法
+
             try {
-                await passwordInput.type(password, { delay: 30 });
-                console.log('   ✅ 已输入密码 (方式1)');
+                await passwordInput.click({ clickCount: 3 }).catch(() => {});
+            } catch (e) {}
+
+            try {
+                await passwordInput.type(password, { delay: 40 });
                 passwordFilled = true;
+                console.log('   ✅ 已输入密码 (type)');
             } catch (e) {
-                console.log('   ⚠️  方式1失败:', e.message);
+                console.log('   ⚠️  使用 type 输入密码失败:', e.message);
             }
-            
-            // 方式2: 使用JavaScript设置value属性
+
             if (!passwordFilled) {
                 try {
-                    await this.page.evaluate((input, value) => {
-                        input.value = value;
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                        input.dispatchEvent(new Event('change', { bubbles: true }));
-                    }, passwordInput, password);
-                    console.log('   ✅ 已输入密码 (方式2: JS设置)');
+                    await this.page.evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, passwordInput, password);
                     passwordFilled = true;
+                    console.log('   ✅ 已输入密码 (js set)');
                 } catch (e) {
-                    console.log('   ⚠️  方式2失败:', e.message);
+                    console.log('   ⚠️  JS 设置密码失败:', e.message);
                 }
             }
-            
-            // 方式3: 使用focus后type
+
             if (!passwordFilled) {
                 try {
                     await passwordInput.focus();
-                    await this.page.keyboard.type(password, { delay: 30 });
-                    console.log('   ✅ 已输入密码 (方式3: 键盘输入)');
+                    await this.page.keyboard.type(password, { delay: 40 });
                     passwordFilled = true;
+                    console.log('   ✅ 已输入密码 (keyboard)');
                 } catch (e) {
-                    console.log('   ⚠️  方式3失败:', e.message);
+                    console.log('   ⚠️  keyboard 输入密码失败:', e.message);
                 }
             }
-            
+
             if (!passwordFilled) {
                 console.log('❌ 无法填写密码，登录失败');
                 return false;
