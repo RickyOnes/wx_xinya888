@@ -150,51 +150,36 @@ class PDDAntiContentPlanCrawler {
     }
 
     async checkAndLogin() {
-        console.log('\n🔍 尝试直接访问预估销量页面...');
-        
+        console.log('\n🔍 使用统一登录入口尝试登录（先到订单管理页）...');
+
         try {
-            // 先尝试直接访问预估销量页面
-            await this.page.goto(CONFIG.planPageUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: CONFIG.timeouts.pageLoad
-            });
+            // 直接访问通用登录入口（订单管理页的重定向），与 update-pdd.js 保持一致
+            await this.page.goto(CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeouts.pageLoad });
 
             let currentUrl = this.page.url();
             console.log(`   当前URL: ${currentUrl}`);
 
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                console.log('✅ 会话有效，已直接进入预估销量页面');
-                await new Promise(resolve => setTimeout(resolve, 3000));
+            // 如果已在任一目标页面（订单管理或预估销量），认为会话有效
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management') || currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                console.log('✅ 会话有效，已登录或已进入目标页面');
                 return true;
             }
 
-            // 如果被重定向到登录页面或未进入目标域名，使用统一登录入口进行登录
-            if (currentUrl.includes('mms.pinduoduo.com/login/') || !currentUrl.includes('mc.pinduoduo.com')) {
-                console.log('📝 需要登录，使用统一登录入口进行登录...');
-                await this.page.goto(CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeouts.pageLoad });
+            // 如果在登录页或需要登录，则尝试填写并提交登录表单
+            if (currentUrl.includes('mms.pinduoduo.com/login/')) {
+                console.log('📝 当前处于登录页，尝试自动登录...');
                 const loginOk = await this.fillLoginFormAndSubmit();
                 if (!loginOk) return false;
-
-                // 登录成功后跳转到预估销量页面
-                try {
-                    await this.page.goto(CONFIG.planPageUrl, { waitUntil: 'networkidle0', timeout: CONFIG.timeouts.pageLoad });
-                    console.log('✅ 登录后已跳转到预估销量页面');
-                    return true;
-                } catch (e) {
-                    console.log('⚠️ 登录后跳转到预估销量页面失败:', e.message);
-                    return false;
-                }
+                return true;
             }
 
-            // 兜底：尝试使用 directLoginUrl
-            console.log('⚠️  使用备用登录链接登录...');
+            // 兜底：尝试备用登录链接
+            console.log('⚠️  未进入目标页面，尝试备用登录链接...');
             await this.page.goto(CONFIG.directLoginUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeouts.pageLoad });
             return await this.fillLoginFormAndSubmit();
 
         } catch (error) {
             console.log(`⚠️  页面访问或登录失败: ${error.message}`);
-
-            // 在异常时截图以便调试
             try {
                 if (this.page && !this.page.isClosed()) {
                     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -206,7 +191,6 @@ class PDDAntiContentPlanCrawler {
             } catch (screenshotError) {
                 console.log('   ⚠️  截图失败:', screenshotError.message);
             }
-
             return false;
         }
     }
@@ -684,6 +668,8 @@ class PDDAntiContentPlanCrawler {
         console.log('\n⏳ 等待预估销量查询API请求...');
         const startTime = Date.now();
         const maxWaitTime = CONFIG.timeouts.apiRequest;
+        let redirectRetries = 0;
+        const maxRedirectRetries = 3;
         
         while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
             await new Promise(resolve => setTimeout(resolve, 500)); // 更频繁的检查
@@ -695,7 +681,13 @@ class PDDAntiContentPlanCrawler {
 
                 // 如果跳转到登录页面，说明会话已过期，尝试重新登录并返回目标页面
                 if (currentUrl.includes('mms.pinduoduo.com/login/')) {
-                    console.log('⚠️  检测到被重定向到登录页，尝试重新登录...');
+                    redirectRetries++;
+                    console.log(`⚠️  检测到被重定向到登录页，尝试重新登录... (重试 ${redirectRetries}/${maxRedirectRetries})`);
+
+                    if (redirectRetries > maxRedirectRetries) {
+                        console.log('❌ 超过最大重定向重试次数，停止重试');
+                        return false;
+                    }
 
                     try {
                         const loginOk = await this.checkAndLogin();
