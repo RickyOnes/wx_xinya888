@@ -15,6 +15,8 @@ const CONFIG = {
     
     // 直接登录URL（登录后重定向到预估销量页面）
     directLoginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Fappointment-delivery',
+    // 通用登录入口（与 update-pdd.js 保持一致，便于复用登录/验证码逻辑）
+    loginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Forder%2Fmanagement',
     
     // 浏览器配置
     browserOptions: {
@@ -151,53 +153,47 @@ class PDDAntiContentPlanCrawler {
         console.log('\n🔍 尝试直接访问预估销量页面...');
         
         try {
-            // 尝试直接访问预估销量页面
+            // 先尝试直接访问预估销量页面
             await this.page.goto(CONFIG.planPageUrl, {
                 waitUntil: 'domcontentloaded',
                 timeout: CONFIG.timeouts.pageLoad
             });
-            
-            const currentUrl = this.page.url();
+
+            let currentUrl = this.page.url();
             console.log(`   当前URL: ${currentUrl}`);
-            
-            // 检查是否成功进入预估销量页面
+
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('✅ 会话有效，已直接进入预估销量页面');
-                // 等待3秒，确保没有发生重定向
                 await new Promise(resolve => setTimeout(resolve, 3000));
-                const finalUrl = this.page.url();
-                if (finalUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                    console.log('✅ 会话稳定，仍在预估销量页面');
+                return true;
+            }
+
+            // 如果被重定向到登录页面或未进入目标域名，使用统一登录入口进行登录
+            if (currentUrl.includes('mms.pinduoduo.com/login/') || !currentUrl.includes('mc.pinduoduo.com')) {
+                console.log('📝 需要登录，使用统一登录入口进行登录...');
+                await this.page.goto(CONFIG.loginUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeouts.pageLoad });
+                const loginOk = await this.fillLoginFormAndSubmit();
+                if (!loginOk) return false;
+
+                // 登录成功后跳转到预估销量页面
+                try {
+                    await this.page.goto(CONFIG.planPageUrl, { waitUntil: 'networkidle0', timeout: CONFIG.timeouts.pageLoad });
+                    console.log('✅ 登录后已跳转到预估销量页面');
                     return true;
-                } else {
-                    console.log(`⚠️  页面已重定向到: ${finalUrl}`);
-                    // 页面已跳转到登录页面，直接处理登录
-                    if (finalUrl.includes('mms.pinduoduo.com/login/')) {
-                        console.log('📝 检测到登录页面，尝试自动登录...');
-                        return await this.fillLoginFormAndSubmit();
-                    }
+                } catch (e) {
+                    console.log('⚠️ 登录后跳转到预估销量页面失败:', e.message);
+                    return false;
                 }
             }
-            
-            // 如果不在预估销量页面，检查当前是否已经在登录页面
-            if (currentUrl.includes('mms.pinduoduo.com/login/')) {
-                console.log('📝 当前已在登录页面，尝试自动登录...');
-                return await this.fillLoginFormAndSubmit();
-            }
-            
-            // 如果既不是预估销量页面也不是登录页面，尝试使用直接登录URL
-            console.log('⚠️  当前不在预估销量页面，尝试使用直接登录URL...');
-            await this.page.goto(CONFIG.directLoginUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: CONFIG.timeouts.pageLoad
-            });
-            
-            // 使用统一的登录处理方法
+
+            // 兜底：尝试使用 directLoginUrl
+            console.log('⚠️  使用备用登录链接登录...');
+            await this.page.goto(CONFIG.directLoginUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.timeouts.pageLoad });
             return await this.fillLoginFormAndSubmit();
-            
+
         } catch (error) {
             console.log(`⚠️  页面访问或登录失败: ${error.message}`);
-            
+
             // 在异常时截图以便调试
             try {
                 if (this.page && !this.page.isClosed()) {
@@ -210,7 +206,7 @@ class PDDAntiContentPlanCrawler {
             } catch (screenshotError) {
                 console.log('   ⚠️  截图失败:', screenshotError.message);
             }
-            
+
             return false;
         }
     }
@@ -463,8 +459,107 @@ class PDDAntiContentPlanCrawler {
                 // 检查是否需要验证码
                 const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 if (verificationCodeInput) {
-                    console.log('❌ 检测到需要验证码，快速脚本无法处理，退出');
-                    return false;
+                    console.log('📱 检测到验证码输入框，尝试从 Supabase 获取验证码...');
+
+                    // 查找确认按钮（多种备用方式）
+                    let confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]').catch(() => null);
+                    if (!confirmButton) {
+                        const btns = await this.page.$x("//button[contains(., '确认') or contains(., '确定') or contains(., '登录')]");
+                        if (btns && btns.length > 0) confirmButton = btns[0];
+                    }
+
+                    let verificationCode = null;
+                    if (this.supabaseClient) {
+                        try {
+                            const { data, error } = await this.supabaseClient
+                                .from('pdd_verification_codes')
+                                .select('code, updated_at')
+                                .eq('username', this.loginCredentials.username)
+                                .single();
+                            if (!error && data && data.code) {
+                                const updatedAt = new Date(data.updated_at);
+                                const now = new Date();
+                                const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+                                if (updatedAt > tenMinutesAgo) {
+                                    verificationCode = data.code;
+                                    console.log(`   🔑 从 Supabase 获取验证码: ${verificationCode}`);
+                                } else {
+                                    console.log('   ⚠️ Supabase 中的验证码已过期');
+                                }
+                            } else if (error && error.code !== 'PGRST116') {
+                                console.log('   ⚠️ 查询 Supabase 失败:', error.message);
+                            }
+                        } catch (e) {
+                            console.log('   ⚠️ 从 Supabase 获取验证码异常:', e.message);
+                        }
+                    } else {
+                        console.log('❌ Supabase 客户端未初始化，无法获取验证码');
+                    }
+
+                    // 如果没有验证码，轮询等待短时间
+                    if (!verificationCode && this.supabaseClient) {
+                        const waitStart = Date.now();
+                        const maxWait = 120000; // 120s
+                        const poll = 5000;
+                        while (!verificationCode && (Date.now() - waitStart) < maxWait) {
+                            await new Promise(r => setTimeout(r, poll));
+                            try {
+                                const { data, error } = await this.supabaseClient
+                                    .from('pdd_verification_codes')
+                                    .select('code, updated_at')
+                                    .eq('username', this.loginCredentials.username)
+                                    .single();
+                                if (!error && data && data.code) {
+                                    const updatedAt = new Date(data.updated_at);
+                                    const now = new Date();
+                                    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+                                    if (updatedAt > tenMinutesAgo) {
+                                        verificationCode = data.code;
+                                        console.log(`   🔑 从 Supabase 获取验证码: ${verificationCode}`);
+                                        break;
+                                    }
+                                }
+                            } catch (e) {}
+                            console.log('   ⏳ 等待 Supabase 更新验证码...');
+                        }
+                    }
+
+                    if (!verificationCode) {
+                        console.log('❌ 未获取到有效验证码，登录失败');
+                        return false;
+                    }
+
+                    // 填写验证码并点击确认
+                    try {
+                        await verificationCodeInput.click({ clickCount: 3 }).catch(() => {});
+                        await this.page.keyboard.press('Backspace').catch(() => {});
+                        await verificationCodeInput.type(verificationCode, { delay: 50 });
+                        console.log('   ✅ 已输入验证码');
+                        if (confirmButton) {
+                            await confirmButton.click().catch(() => {});
+                            console.log('   ✅ 已点击确认按钮');
+                        } else {
+                            await this.page.keyboard.press('Enter').catch(() => {});
+                        }
+
+                        // 等待短时间看看是否成功
+                        const startVerifyWait = Date.now();
+                        const maxVerifyWait = 30000;
+                        while (Date.now() - startVerifyWait < maxVerifyWait) {
+                            await new Promise(r => setTimeout(r, 1000));
+                            const nowUrl = this.page.url();
+                            if (nowUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery') || nowUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                                console.log('✅ 验证码正确，登录成功');
+                                return true;
+                            }
+                        }
+
+                        console.log('❌ 验证码可能错误或已过期，继续等待或失败');
+                        return false;
+                    } catch (e) {
+                        console.log('   ⚠️ 自动填写验证码失败:', e.message);
+                        return false;
+                    }
                 }
                 
                 // 检查是否有错误消息（提前退出）
