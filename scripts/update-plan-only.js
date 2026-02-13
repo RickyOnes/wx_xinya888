@@ -692,19 +692,41 @@ class PDDAntiContentPlanCrawler {
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                 console.log('⚠️  页面已离开预估销量页面，当前URL:', currentUrl);
-                
-                // 如果跳转到登录页面，说明会话已过期，快速失败
+
+                // 如果跳转到登录页面，说明会话已过期，尝试重新登录并返回目标页面
                 if (currentUrl.includes('mms.pinduoduo.com/login/')) {
-                    console.log('❌ 会话已过期，在等待API请求期间跳转到登录页面');
-                    return false;
+                    console.log('⚠️  检测到被重定向到登录页，尝试重新登录...');
+
+                    try {
+                        const loginOk = await this.checkAndLogin();
+                        if (!loginOk) {
+                            console.log('❌ 重新登录失败，停止等待API请求');
+                            return false;
+                        }
+
+                        // 登录成功后重试访问预估销量页面
+                        try {
+                            await this.page.goto(CONFIG.planPageUrl, { waitUntil: 'networkidle0', timeout: CONFIG.timeouts.pageLoad });
+                            console.log('✅ 登录后已重访预估销量页面');
+                            // 等待页面稳定后继续循环等待 API
+                            await new Promise(r => setTimeout(r, 1000));
+                            continue;
+                        } catch (navErr) {
+                            console.log('   ⚠️ 登录后跳回预估销量页面失败:', navErr.message);
+                            return false;
+                        }
+                    } catch (e) {
+                        console.log('   ⚠️ 重新登录过程中出错:', e.message);
+                        return false;
+                    }
                 }
-                
-                // 其他情况，重新访问目标页面（快速重试）
+
+                // 其他情况，尝试快速重新访问目标页面（重试）
                 console.log('   🔄 重新访问预估销量页面...');
                 try {
                     await this.page.goto(CONFIG.planPageUrl, {
                         waitUntil: 'domcontentloaded',
-                        timeout: 3000 // 更短的超时
+                        timeout: 5000 // 稍长一点的超时
                     });
                 } catch (refreshError) {
                     console.log('   ⚠️  重新访问失败:', refreshError.message);
