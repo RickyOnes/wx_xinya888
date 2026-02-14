@@ -1,7 +1,7 @@
 ﻿name: 更新拼多多参数
 on:
   schedule:
-    - cron: '48 21 * * *'  # 每天UTC 21点18分（北京时间点48分）
+    - cron: '18 21 * * *'  # 每天UTC 21点18分（北京时间5点18分）
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
 
 jobs:
@@ -15,6 +15,7 @@ jobs:
       with:
         node-version: '24.7.0'
         cache: 'npm'
+        cache-dependency-path: 'package.json'
     
     # 缓存npm包和puppeteer浏览器，减少安装时间
     - name: 缓存puppeteer、npm、node_modules
@@ -24,7 +25,7 @@ jobs:
           ~/.npm
           ~/.cache/puppeteer
           node_modules
-        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+        key: ${{ runner.os }}-node-${{ hashFiles('**/package.json') }}
         restore-keys: |
           ${{ runner.os }}-node-
     
