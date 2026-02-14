@@ -14,6 +14,8 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '24.7.0'
+        cache: 'npm'
+        cache-dependency-path: '**/package.json'
     
     # 缓存npm包和puppeteer浏览器，减少安装时间
     - name: 缓存npm依赖
