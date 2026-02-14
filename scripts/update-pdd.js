@@ -234,14 +234,34 @@ class PDDOrderCrawler {
         console.log('🌐 会话无效或已过期，开始登录流程...');
         console.log('   访问登录页面（带重定向）...');
         
-        try {
-            // 不设超时，初次加载可能很慢
-            await this.page.goto(CONFIG.loginUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: 0
-            });
-        } catch (error) {
-            console.log('⚠️ 页面导航出现问题，但继续等待...:', error.message);
+        let pageLoadRetryCount = 0;
+        const maxPageLoadRetries = 3;
+        let pageLoaded = false;
+        
+        while (pageLoadRetryCount < maxPageLoadRetries && !pageLoaded) {
+            try {
+                // 设置合理的超时时间，避免无限等待
+                await this.page.goto(CONFIG.loginUrl, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 30000  // 30秒超时
+                });
+                pageLoaded = true;
+                console.log('✅ 登录页面加载成功');
+            } catch (error) {
+                pageLoadRetryCount++;
+                console.log(`⚠️ 页面导航出现问题 (重试 ${pageLoadRetryCount}/${maxPageLoadRetries}):`, error.message);
+                if (pageLoadRetryCount < maxPageLoadRetries) {
+                    console.log('   ⏳ 等待5秒后重试...');
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                } else {
+                    console.log('❌ 页面加载失败，达到最大重试次数');
+                }
+            }
+        }
+        
+        if (!pageLoaded) {
+            console.log('❌ 无法加载登录页面，登录失败');
+            return false;
         }
 
         // 页面打开后尝试切换到“账号登录”标签（如果存在）
@@ -268,6 +288,13 @@ class PDDOrderCrawler {
         const pollInterval = 2000;
         const statusLogInterval = 5000;
         let lastStatusLog = 0;
+        
+        // 新增：无进展检测和重试机制
+        let lastUrl = this.page.url();
+        let sameUrlCount = 0;
+        const maxSameUrlCount = 30; // 连续30次检查URL无变化（约60秒）则重新加载
+        let reloadCount = 0;
+        const maxReloadCount = 3; // 最多重新加载3次
 
         // 持续轮询，直到页面跳转到订单管理页面
         while (true) {
@@ -275,6 +302,58 @@ class PDDOrderCrawler {
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log('✅ 已处于订单管理页面：',currentUrl);
                 return true;
+            }
+
+            // 检查是否为错误页面（网络错误等）
+            if (currentUrl.startsWith('chrome-error://') || 
+                currentUrl.startsWith('about:blank') || 
+                currentUrl.startsWith('data:') ||
+                currentUrl.includes('error') ||
+                currentUrl.includes('failed')) {
+                console.log(`⚠️  检测到错误页面: ${currentUrl}，尝试重新加载...`);
+                try {
+                    await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                    console.log('✅ 错误页面重新加载成功');
+                    // 重新加载后等待一段时间再继续
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    continue;
+                } catch (reloadError) {
+                    console.log('⚠️ 错误页面重新加载失败:', reloadError.message);
+                }
+            }
+
+            // 检查URL是否有变化
+            if (currentUrl === lastUrl) {
+                sameUrlCount++;
+                // 如果URL长时间无变化，可能是页面卡住了
+                if (sameUrlCount >= maxSameUrlCount) {
+                    console.log(`⚠️  URL连续${sameUrlCount}次无变化，可能页面卡住，尝试重新加载...`);
+                    try {
+                        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+                        console.log('✅ 页面重新加载成功');
+                        sameUrlCount = 0;
+                        reloadCount++;
+                        lastUrl = this.page.url(); // 更新上次URL
+                        
+                        // 检查是否达到最大重载次数
+                        if (reloadCount >= maxReloadCount) {
+                            console.log('❌ 达到最大重新加载次数，登录失败');
+                            return false;
+                        }
+                        
+                        // 重新加载后等待一段时间再继续
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        continue;
+                    } catch (reloadError) {
+                        console.log('⚠️ 页面重新加载失败:', reloadError.message);
+                        // 继续执行，可能网络有问题
+                    }
+                }
+            } else {
+                // URL有变化，重置计数器
+                sameUrlCount = 0;
+                lastUrl = currentUrl;
+                console.log(`   🔄 URL变化: ${currentUrl}`);
             }
 
             const now = Date.now();
@@ -486,9 +565,9 @@ class PDDOrderCrawler {
                 // 忽略查询表单时的错误
             }
 
-            // 等待一段时间然后再次检查（设置30分钟超时）
-            if (Date.now() - startTime > 15 * 60 * 1000) {
-                console.log('❌ 登录超时（15分钟），退出');
+            // 等待一段时间然后再次检查（设置10分钟超时）
+            if (Date.now() - startTime > 5 * 60 * 1000) {
+                console.log('❌ 登录超时（5分钟），退出');
                 return false;
             }
             
