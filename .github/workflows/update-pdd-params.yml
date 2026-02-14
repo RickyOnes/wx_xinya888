@@ -10,15 +10,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: 安装 Node.js
+    - name: 安装 Node.js并缓存
       uses: actions/setup-node@v4
       with:
         node-version: '24.7.0'
         cache: 'npm'
-        cache-dependency-path: '**/package.json'
     
     # 缓存npm包和puppeteer浏览器，减少安装时间
-    - name: 缓存npm依赖
+    - name: 缓存puppeteer、npm、node_modules
       uses: actions/cache@v4
       with:
         path: |
