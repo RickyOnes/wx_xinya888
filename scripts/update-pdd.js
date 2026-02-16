@@ -237,11 +237,15 @@ class PDDOrderCrawler {
             // 关键会话Cookie名称（根据拼多多实际情况调整）
             const sessionCookies = [
                 'PASS_ID',
-                'PDDAccessToken', 
-                'pdd_user_id',
-                'pdd_vds',
-                'csrfToken',
-                'JSESSIONID'
+                'ru2k',
+                '_nano_fp',
+                'api_uid',
+                'ru1k',
+                '_a42',
+                'windows_app_shop_token_23',
+                '_f77',
+                'rckk',
+                '_bee'
             ];
             
             let validSession = false;
@@ -930,11 +934,15 @@ class PDDOrderCrawler {
             // 关键会话Cookie名称
             const sessionCookies = [
                 'PASS_ID',
-                'PDDAccessToken', 
-                'pdd_user_id',
-                'pdd_vds',
-                'csrfToken',
-                'JSESSIONID'
+                'ru2k',
+                '_nano_fp',
+                'api_uid',
+                'ru1k',
+                '_a42',
+                'windows_app_shop_token_23',
+                '_f77',
+                'rckk',
+                '_bee'
             ];
             
             // 计算最早过期时间
@@ -966,8 +974,7 @@ class PDDOrderCrawler {
                     cookie_string: cookieString
                 },
                 refreshed_at: new Date().toISOString(),
-                estimated_expiry: earliestExpiry.toISOString(),
-                user_agent: await this.page.evaluate(() => navigator.userAgent)
+                estimated_expiry: earliestExpiry.toISOString()
             };
             
             // 保存到Supabase（假设有pdd_sessions表）
