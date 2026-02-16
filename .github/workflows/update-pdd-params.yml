@@ -12,7 +12,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: 安装 Node.js并缓存
+    # 缓存 Node.js 二进制文件
+    - name: 缓存 Node.js 二进制
+      uses: actions/cache@v4
+      id: node-binary-cache
+      with:
+        path: /opt/hostedtoolcache/node
+        key: ${{ runner.os }}-node-binary-24.7.0
+        restore-keys: |
+          ${{ runner.os }}-node-binary-
+    
+    - name: 缓存|安装 Node.js及npm
       uses: actions/setup-node@v4
       with:
         node-version: '24.7.0'
@@ -20,7 +30,7 @@ jobs:
         cache-dependency-path: 'package.json'
     
     # 缓存npm包和puppeteer浏览器，减少安装时间
-    - name: 缓存puppeteer、npm、node_modules
+    - name: 缓存|安装 puppeteer、npm、node_modules
       uses: actions/cache@v4
       with:
         path: |
@@ -58,9 +68,7 @@ jobs:
           echo "⏭️  当前UTC时间 $CURRENT_HOUR:00 跳过上传缓存（对应北京时间 $(((CURRENT_HOUR + 8) % 24)):00）"
         fi
 
-
-    
-    - name: 安装系统依赖
+    - name: 下载并安装系统依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y \
