@@ -11,7 +11,7 @@ const CONFIG = {
     targetApiEndpoint: 'cartman-mms/orderManagement/pageQueryDetail',
     targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
     targetApiEndpointDate: 'orianna-mms/goods/schedule/pageQuery',
-    
+
     // 浏览器配置
     browserOptions: {
         headless: true,
@@ -20,7 +20,7 @@ const CONFIG = {
             height: 768
         },
         args: [
-            '--no-sandbox', 
+            '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-web-security',
             '--disable-features=IsolateOrigins,site-per-process',
@@ -32,18 +32,18 @@ const CONFIG = {
             '--remote-debugging-port=9222',
             '--disable-site-isolation-trials',
             '--disable-blink-features=AutomationControlled',
-            '--allow-running-insecure-content',// 允许运行不安全的内容
-            '--disable-features=BlockInsecurePrivateNetworkRequests',// 禁用不安全的私有网络请求
+            '--allow-running-insecure-content',
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
             '--use-gl=swiftshader',  // 固定WebGL渲染器
-            '--disable-software-rasterizer',// 禁用软件光栅器
-            '--disable-webgl',// 禁用WebGL
+            '--disable-software-rasterizer',
+            '--disable-webgl',
             '--disable-canvas-aa',  // 禁用画布抗锯齿
-            '--disable-2d-canvas-clip-aa',// 禁用2D画布剪切抗锯齿
-            '--disable-gl-drawing-for-tests'// 禁用GL绘制测试
+            '--disable-2d-canvas-clip-aa',
+            '--disable-gl-drawing-for-tests'
         ],
         ignoreDefaultArgs: ['--enable-automation']
     },
-    
+
     // 等待超时配置（毫秒）
     timeouts: {
         pageLoad: 30000,
@@ -80,47 +80,19 @@ class PDDOrderCrawler {
         this.supabaseClient = supabaseClient || null;
     }
 
-    parseCookieString(cookieStr) {
-        if (!cookieStr || cookieStr.trim() === '') {
-            return [];
-        }
-        
-        const cookies = [];
-        const pairs = cookieStr.split(';').map(pair => pair.trim()).filter(pair => pair.length > 0);
-        
-        for (const pair of pairs) {
-            const [name, ...valueParts] = pair.split('=');
-            const value = valueParts.join('='); // 处理值中可能包含的等号
-            
-            if (name && value !== undefined) {
-                cookies.push({
-                    name: name.trim(),
-                    value: value.trim(),
-                    domain: '.pinduoduo.com',
-                    path: '/',
-                    secure: true,
-                    httpOnly: false,
-                    sameSite: 'Lax'
-                });
-            }
-        }
-        
-        return cookies;
-    }
-
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-        
+
         // 在GitHub Actions中使用puppeteer
         const launchOptions = {
             ...CONFIG.browserOptions,
             userDataDir: this.userDataDir
         };
 
-        this.browser = await puppeteer.launch(launchOptions);// 启动浏览器
-        this.page = await this.browser.newPage();// 创建新页面
-        
+        this.browser = await puppeteer.launch(launchOptions);
+        this.page = await this.browser.newPage();
+
         // 设置用户代理
         await this.page.setUserAgent(
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
@@ -137,28 +109,28 @@ class PDDOrderCrawler {
             bitness: '64',
           }
         );
-        
+
         // 设置额外的请求头
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
         });
-        
+
         // 注入JavaScript来绕过自动化检测
         await this.page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => false,
             });
-            
+
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5],
             });
-            
+
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['zh-CN', 'zh'],
             });
         });
-        
+
         console.log('✅ 浏览器启动成功');
         // 检查Puppeteer版本
         const version = await this.browser.version();
@@ -168,16 +140,16 @@ class PDDOrderCrawler {
     async setupRequestInterception() {
         // 启用请求拦截
         await this.page.setRequestInterception(true);
-        
+
         this.page.on('request', async (request) => {
             const url = request.url();
-            
+
             // 捕获订单查询API的请求
             if (url.includes(CONFIG.targetApiEndpoint)) {
                 console.log('\n🎯 捕获到订单查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
-                
+
                 // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
@@ -185,7 +157,7 @@ class PDDOrderCrawler {
                     this.capturedData.apiRequestCaptured = true;
                     console.log('   ✅ 捕获到 anti-content:', this.capturedData.antiContent);
                 }
-                
+
                 // 获取请求体（对于POST请求）
                 if (request.method() === 'POST') {
                     const postData = request.postData();
@@ -193,7 +165,7 @@ class PDDOrderCrawler {
                         this.capturedData.orderRequestBody = postData;
                     }
                 }
-                
+
                 this.capturedData.orderRequestHeaders = headers;
             }
             // 捕获预估销量查询API的请求
@@ -201,7 +173,7 @@ class PDDOrderCrawler {
                 console.log('\n🎯 捕获到预估销量查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
-                
+
                 // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
@@ -214,7 +186,7 @@ class PDDOrderCrawler {
                 console.log('\n🎯 捕获到生产日期查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
-                
+
                 // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
@@ -226,332 +198,41 @@ class PDDOrderCrawler {
             request.continue();
         });
     }
-    
-    async checkSessionValidity() {
-        console.log('\n🔍 检查会话有效性...');
-        
-        try {
-            // 获取所有Cookie
-            const cookies = await this.page.cookies();
-            console.log(`   📝 总共找到 ${cookies.length} 个Cookie`);
-            
-            // 打印前5个Cookie的详细信息用于调试
-            if (cookies.length > 0) {
-                console.log(`   🔍 前5个Cookie名称:`);
-                for (let i = 0; i < Math.min(5, cookies.length); i++) {
-                    const cookie = cookies[i];
-                    console.log(`      ${i+1}. ${cookie.name} (domain: ${cookie.domain})`);
-                }
-            }
-            
-            // 关键会话Cookie名称（根据拼多多实际情况调整）
-            const sessionCookies = [
-                'PASS_ID',
-                'ru2k',
-                '_nano_fp',
-                'api_uid',
-                'ru1k',
-                '_a42',
-                'windows_app_shop_token_23',
-                '_f77',
-                'rckk',
-                '_bee'
-            ];
-            
-            let validSession = false;
-            let expiresSoon = false;
-            const now = Date.now();
-            let earliestExpiry = Infinity;
-            
-            // 检查关键Cookie
-            for (const cookie of cookies) {
-                if (sessionCookies.includes(cookie.name)) {
-                    console.log(`   📝 ${cookie.name}: ${cookie.value ? '存在' : '不存在'}`);
-                    
-                    // 检查过期时间
-                    if (cookie.expires) {
-                        const expiresTime = cookie.expires * 1000; // 转换为毫秒
-                        const timeLeft = expiresTime - now;
-                        
-                        console.log(`      ⏰ 过期时间: ${new Date(expiresTime).toLocaleString()}`);
-                        console.log(`      ⏳ 剩余时间: ${Math.floor(timeLeft / 3600000)}小时${Math.floor((timeLeft % 3600000) / 60000)}分钟`);
-                        
-                        // 更新最早过期时间
-                        if (expiresTime < earliestExpiry) {
-                            earliestExpiry = expiresTime;
-                        }
-                        
-                        // 判断有效性
-                        if (timeLeft > 0) {
-                            validSession = true;
-                            
-                            // 检查是否即将过期（4小时内）
-                            if (timeLeft < 4 * 3600000) {
-                                expiresSoon = true;
-                                console.log('      ⚠️  会话即将过期（4小时内）');
-                            }
-                        } else {
-                            console.log(`      ❌ 会话已过期`);
-                        }
-                    } else {
-                        console.log(`      ℹ️  会话Cookie（无过期时间）`);
-                        validSession = true; // 无过期时间视为有效
-                    }
-                }
-            }
-            
-            // 检查是否有足够的关键Cookie
-            const foundCookies = cookies.filter(c => sessionCookies.includes(c.name)).length;
-            console.log(`   📊 找到 ${foundCookies}/${sessionCookies.length} 个关键会话Cookie`);
-            
-            // 如果没找到关键Cookie，打印所有Cookie名称帮助调试
-            if (foundCookies === 0 && cookies.length > 0) {
-                console.log(`   🔍 所有Cookie名称列表:`);
-                const cookieNames = cookies.map(c => c.name).join(', ');
-                console.log(`      ${cookieNames}`);
-            }
-            
-            // 判断会话是否真正有效（至少2个关键Cookie且未过期）
-            const isActuallyValid = validSession && foundCookies >= 2;
-            
-            return {
-                isValid: isActuallyValid,
-                expiresSoon: expiresSoon,
-                earliestExpiry: earliestExpiry !== Infinity ? new Date(earliestExpiry) : null,
-                cookies: cookies
-            };
-            
-        } catch (error) {
-            console.log(`   ⚠️  会话检查失败: ${error.message}`);
-            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookies: [] };
-        }
-    }
-    
-    async checkSavedSessionValidity() {
-        console.log('\n🔍 检查保存的会话有效性（从数据库）...');
-        
-        if (!this.supabaseClient) {
-            console.log('   ⚠️  Supabase客户端未初始化，跳过检查');
-            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
-        }
-        
-        const username = this.loginCredentials.username;
-        console.log(`   🔍 查询用户: ${username}`);
-        
-        try {
-            // 从pdd_sessions表获取最新会话信息
-            const { data, error } = await this.supabaseClient
-                .from('pdd_sessions')
-                .select('cookies, estimated_expiry, refreshed_at')
-                .eq('username', username)
-                .order('refreshed_at', { ascending: false })
-                .limit(1)
-                .single();
-            
-            if (error) {
-                if (error.code === 'PGRST116') { // 未找到记录
-                    console.log(`   ℹ️  数据库中未找到用户 ${username} 的会话记录`);
-                    console.log(`   💡 可能原因: 1) 首次运行 2) 会话未保存成功 3) 用户名不匹配`);
-                } else {
-                    console.log(`   ⚠️  查询会话信息失败 (用户: ${username}): ${error.message}`);
-                    console.log(`   🔍 错误代码: ${error.code}`);
-                }
-                return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
-            }
-            
-            if (!data) {
-                console.log(`   ℹ️  数据库中未找到用户 ${username} 的会话记录`);
-                return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
-            }
-            
-            // 解析会话数据
-            const cookiesData = data.cookies;
-            const estimatedExpiry = new Date(data.estimated_expiry);
-            const refreshedAt = new Date(data.refreshed_at);
-            const now = new Date();
-            
-            console.log(`   📅 会话刷新时间: ${refreshedAt.toLocaleString()}`);
-            console.log(`   ⏰ 预计过期时间: ${estimatedExpiry.toLocaleString()}`);
-            
-            // 检查是否已过期
-            const timeLeft = estimatedExpiry.getTime() - now.getTime();
-            const hoursLeft = timeLeft / 3600000;
-            
-            console.log(`   ⏳ 剩余时间: ${hoursLeft.toFixed(1)} 小时`);
-            
-            let isValid = false;
-            let expiresSoon = false;
-            let cookieString = null;
-            
-            // 检查cookie_string是否存在
-            if (cookiesData && cookiesData.cookie_string) {
-                cookieString = cookiesData.cookie_string;
-                console.log(`   📝 找到cookie字符串 (${cookieString.length} 字符)`);
-                
-                // 检查是否还有原始cookies
-                if (cookiesData.raw_cookies && cookiesData.raw_cookies.length > 0) {
-                    console.log(`   📊 找到 ${cookiesData.raw_cookies.length} 个原始Cookie`);
-                }
-            }
-            
-            // 根据用户要求调整：只有剩余时间大于4小时才视为有效
-            if (timeLeft > 4 * 3600000) {
-                isValid = true;
-                console.log('   ✅ 保存的会话有效（剩余时间大于4小时）');
-            } else if (timeLeft > 0) {
-                // 剩余时间在0-4小时之间，视为即将过期，需要重新登录
-                expiresSoon = true;
-                console.log('   ⚠️  保存的会话即将过期（剩余时间小于4小时）');
-            } else {
-                console.log('   ❌ 保存的会话已过期');
-            }
-            
-            return {
-                isValid,
-                expiresSoon,
-                earliestExpiry: estimatedExpiry,
-                cookieString,
-                refreshedAt
-            };
-            
-        } catch (error) {
-            console.log(`   ⚠️  检查保存的会话失败: ${error.message}`);
-            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
-        }
-    }
-    
-    async refreshSession() {
-        console.log('\n🔄 执行会话续期...');
-        
-        const refreshStrategies = [
-            {
-                name: '访问主页',
-                action: async () => {
-                    await this.page.goto('https://mc.pinduoduo.com/ddmc-mms', {
-                        waitUntil: 'networkidle0',
-                        timeout: 20000
-                    });
-                }
-            }
-        ];
-        
-        let refreshSuccess = false;
-        let lastError = null;
-        
-        // 尝试每种刷新策略
-        for (const strategy of refreshStrategies) {
-            console.log(`   🔧 尝试策略: ${strategy.name}`);
-            
-            try {
-                await strategy.action();
-                console.log(`     ✅ ${strategy.name} 成功`);
-                
-                // 短暂等待让Cookie更新
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                // 验证会话是否仍然有效
-                const sessionCheck = await this.checkSessionValidity();
-                if (sessionCheck.isValid) {
-                    console.log(`     ✅ 会话验证成功`);
-                    refreshSuccess = true;
-                    
-                    // 检查过期时间是否已延长
-                    if (sessionCheck.earliestExpiry) {
-                        const now = new Date();
-                        const hoursUntilExpiry = (sessionCheck.earliestExpiry.getTime() - now.getTime()) / 3600000;
-                        console.log(`     📅 新过期时间: ${sessionCheck.earliestExpiry.toLocaleString()} (剩余 ${hoursUntilExpiry.toFixed(1)} 小时)`);
-                    }
-                    
-                    break; // 成功则退出循环
-                } else {
-                    console.log(`     ⚠️  会话验证失败，继续尝试其他策略`);
-                }
-            } catch (error) {
-                lastError = error;
-                console.log(`     ⚠️  ${strategy.name} 失败: ${error.message}`);
-                // 继续尝试下一个策略
-            }
-        }
-        
-        if (refreshSuccess) {
-            console.log('✅ 会话续期成功');
-            return true;
-        } else {
-            console.log(`❌ 所有会话续期策略均失败`);
-            if (lastError) {
-                console.log(`   💡 最后错误: ${lastError.message}`);
-            }
-            return false;
-        }
-    }
-    
-    async tryDirectAccess() {
-        console.log('   🔄 尝试直接访问订单管理页面...');
-        try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'networkidle0',
-                timeout: 10000
-            });
-            
-            const currentUrl = this.page.url();
-            console.log(`   当前URL: ${currentUrl}`);
-            
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 已直接进入订单管理页面');
-                // 等待页面稳定
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                return true;
-            } else {
-                console.log(`⚠️  访问订单管理页面失败，URL跳转到: ${currentUrl}`);
-                return false;
-            }
-        } catch (error) {
-            console.log(`⚠️  直接访问失败: ${error.message}`);
-            return false;
-        }
-    }
 
     async autoLogin() {
         console.log('\n🔍 检查现有会话...');
-        
-        // 第一步：检查保存的会话有效性（从数据库） - 根据用户要求，只有剩余时间大于4小时才视为有效
-        const savedSessionCheck = await this.checkSavedSessionValidity();
-        
-        // 第二步：如果数据库中的会话有效（剩余时间>4小时），尝试直接访问订单管理页面
-        if (savedSessionCheck.isValid && savedSessionCheck.cookieString) {
-            console.log('✅ 保存的会话有效，尝试设置Cookie并直接访问订单管理页面...');
-            
-            // 解析并设置Cookie
-            const parsedCookies = this.parseCookieString(savedSessionCheck.cookieString);
-            
-            if (parsedCookies.length > 0) {
-                try {
-                    await this.page.setCookie(...parsedCookies);
-                    console.log(`   ✅ 已设置 ${parsedCookies.length} 个恢复的Cookies`);
-                    
-                    // 直接访问订单管理页面
-                    const directAccessSuccess = await this.tryDirectAccess();
-                    if (directAccessSuccess) {
-                        console.log('✅ 成功使用保存的会话访问订单管理页面');
-                        return true;
-                    } else {
-                        console.log('⚠️  直接访问失败，可能Cookie已失效，继续完整登录流程');
-                    }
-                } catch (cookieError) {
-                    console.log(`   ⚠️  设置恢复的Cookies失败: ${cookieError.message}`);
-                    console.log('ℹ️  Cookie设置失败，继续完整登录流程');
+
+        // 首先尝试直接访问订单管理页面，使用现有cookies
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                waitUntil: 'networkidle0',
+                timeout: 15000  // 15秒超时
+            });
+
+            // 检查是否成功进入订单管理页面
+            const currentUrl = this.page.url();
+            console.log(`   当前URL: ${currentUrl}`);
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                console.log('✅ 会话有效，已直接进入订单管理页面');
+                // 等待页面完全稳定，确保任何自动跳转已完成
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                // 再次检查URL，确保仍在订单管理页面
+                const stableUrl = this.page.url();
+                if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                    console.log(`⚠️  页面跳转到: ${stableUrl}，需要重新登录`);
+                    // 继续登录流程
+                } else {
+                    console.log(`✅ 页面稳定在订单管理页面`);
+                    return true;
                 }
-            } else {
-                console.log('⚠️  没有可用的Cookie，继续完整登录流程');
             }
-        } else {
-            console.log('❌ 数据库中没有有效的会话（或剩余时间不足4小时），需要完整登录');
+        } catch (error) {
+            // 忽略导航错误，继续登录流程
+            console.log(`⚠️  会话检查导航错误: ${error.message}`);
         }
-        
-        // 第三步：执行完整登录流程
-        console.log('🌐 开始完整登录流程...');
+
+        console.log('🌐 会话无效或已过期，开始登录流程...');
         console.log('   访问登录页面（带重定向）...');
-        
         let pageLoadRetryCount = 0;
         const maxPageLoadRetries = 3;
         let pageLoaded = false;
@@ -582,7 +263,7 @@ class PDDOrderCrawler {
             return false;
         }
 
-        // 页面打开后尝试切换到"账号登录"标签（如果存在）
+        // 页面打开后尝试切换到“账号登录”标签（如果存在）
         try {
             const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
             if (tabContainer) {
@@ -724,17 +405,17 @@ class PDDOrderCrawler {
                         // 忽略点击失败
                     }
                 }
-                
+
                 // 检查是否出现验证码输入框（用户提供的元素结构）
                 const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
-                    
+
                     // 检查确认按钮是否存在
                     const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
-                    
+
                     let verificationCode = null;
-                    
+
                     // 只从Supabase获取验证码
                     if (this.supabaseClient) {
                         console.log('🔍 从Supabase获取验证码...');
@@ -744,13 +425,13 @@ class PDDOrderCrawler {
                                 .select('code, updated_at')
                                 .eq('username', this.loginCredentials.username)
                                 .single();
-                            
+
                             if (!error && data && data.code) {
                                 // 检查验证码是否新鲜（10分钟内）
                                 const updatedAt = new Date(data.updated_at);
                                 const now = new Date();
                                 const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
-                                
+
                                 if (updatedAt > tenMinutesAgo) {
                                     verificationCode = data.code;
                                     console.log(`   🔑 从Supabase获取验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
@@ -767,23 +448,23 @@ class PDDOrderCrawler {
                         console.log('❌ Supabase客户端未初始化，无法获取验证码');
                         return false;
                     }
-                    
+
                     // 如果没有有效的验证码，等待用户更新（轮询Supabase）
                     if (!verificationCode) {
                         console.log('⏳ 未找到有效验证码，等待用户更新...');
                         console.log('   📝 请更新Supabase表 pdd_verification_codes (字段: username, code)');
                         console.log('   ⏰ 等待120秒（拼多多验证码有效期10分钟）...');
-                        
+
                         const waitStartTime = Date.now();
                         const maxWaitTime = 120000; // 120秒
                         const pollInterval = 5000; // 每5秒检查一次
-                        
+
                         while (Date.now() - waitStartTime < maxWaitTime && !verificationCode) {
                             // 等待一段时间
                             await new Promise(resolve => setTimeout(resolve, pollInterval));
-                            
+
                             console.log(`   🔍 第${Math.floor((Date.now() - waitStartTime) / pollInterval)}次检查更新...`);
-                            
+
                             // 检查Supabase
                             if (this.supabaseClient) {
                                 try {
@@ -792,13 +473,13 @@ class PDDOrderCrawler {
                                         .select('code, updated_at')
                                         .eq('username', this.loginCredentials.username)
                                         .single();
-                                    
+
                                     if (!error && data && data.code) {
                                         // 检查验证码是否新鲜
                                         const updatedAt = new Date(data.updated_at);
                                         const now = new Date();
                                         const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
-                                        
+
                                         if (updatedAt > tenMinutesAgo) {
                                             verificationCode = data.code;
                                             console.log(`   🔑 从Supabase获取到更新后的验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
@@ -810,33 +491,33 @@ class PDDOrderCrawler {
                                 }
                             }
                         }
-                        
+
                         if (!verificationCode) {
                             console.log('❌ 等待超时，未获取到验证码');
                             console.log('   ℹ️  请更新验证码后重新运行脚本');
                             return false;
                         }
                     }
-                    
+
                     // 4. 使用获取到的验证码进行自动填写
                     console.log(`   🔑 使用验证码: ${verificationCode}`);
-                    
+
                     try {
                         // 清空输入框并填写验证码
                         await verificationCodeInput.click({ clickCount: 3 }); // 全选
                         await verificationCodeInput.press('Backspace'); // 删除
                         await verificationCodeInput.type(verificationCode, { delay: 50 });
                         console.log('   ✅ 已输入验证码');
-                        
+
                         // 点击确认按钮
                         if (confirmButton) {
                             await confirmButton.click();
                             console.log('   ✅ 已点击确认按钮');
-                            
+
                             // 等待一段时间（30秒）看看是否自动跳转
                             const verificationCodeWaitStart = Date.now();
                             const maxVerificationCodeWait = 30000; // 30秒
-                            
+
                             while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
                                 // 检查是否已跳转到订单管理页面
                                 const currentUrl = this.page.url();
@@ -844,14 +525,14 @@ class PDDOrderCrawler {
                                     console.log('✅ 验证码正确，成功跳转到订单管理页面');
                                     return true;
                                 }
-                                
+
                                 // 检查是否出现错误提示或验证码输入框是否消失
                                 const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
                                 if (!stillExists) {
                                     console.log('✅ 验证码输入框已消失，可能已自动处理');
                                     break;
                                 }
-                                
+
                                 // 检查是否有错误提示
                                 const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
                                 if (errorElement) {
@@ -861,10 +542,10 @@ class PDDOrderCrawler {
                                         return false;
                                     }
                                 }
-                                
+
                                 await new Promise(resolve => setTimeout(resolve, 1000));
                             }
-                            
+
                             // 如果30秒后仍然在验证码页面，返回false
                             const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
                             if (stillOnVerificationPage) {
@@ -875,31 +556,30 @@ class PDDOrderCrawler {
                     } catch (e) {
                         console.log('   ⚠️  自动填写验证码失败:', e.message);
                     }
-                    
+
                     // 标记需要验证码
                     this.capturedData.requiresVerificationCode = true;
                 }
             } catch (e) {
                 // 忽略查询表单时的错误
             }
-
             // 等待一段时间然后再次检查（设置10分钟超时）
             if (Date.now() - startTime > 5 * 60 * 1000) {
                 console.log('❌ 登录超时（5分钟），退出');
                 return false;
             }
-            
+
             await new Promise(resolve => setTimeout(resolve, pollInterval));
         }
     }
 
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
-        
+
         // 获取所有cookies
         const cookies = await this.page.cookies();
         this.capturedData.allCookies = cookies;
-        
+
         // 构建cookie字符串
         let cookieStr = '';
         cookies.forEach((cookie, index) => {
@@ -910,111 +590,17 @@ class PDDOrderCrawler {
         console.log('   ✅  已构造 Cookie字符串');
         return cookies;
     }
-    
-    async saveSessionInfo() {
-        console.log('\n💾 保存会话信息...');
-        
-        if (!this.supabaseClient) {
-            console.log('   ⚠️  Supabase客户端未初始化，跳过保存');
-            return false;
-        }
-        
-        try {
-            // 获取当前Cookie
-            const cookies = await this.page.cookies();
-            
-            // 关键会话Cookie名称
-            const sessionCookies = [
-                'PASS_ID',
-                'ru2k',
-                '_nano_fp',
-                'api_uid',
-                'ru1k',
-                '_a42',
-                'windows_app_shop_token_23',
-                '_f77',
-                'rckk',
-                '_bee'
-            ];
-            
-            // 计算最早过期时间
-            let earliestExpiry = null;
-            const now = Date.now();
-            
-            for (const cookie of cookies) {
-                if (sessionCookies.includes(cookie.name) && cookie.expires) {
-                    const expiresTime = cookie.expires * 1000;
-                    if (!earliestExpiry || expiresTime < earliestExpiry.getTime()) {
-                        earliestExpiry = new Date(expiresTime);
-                    }
-                }
-            }
-            
-            // 如果找不到过期时间，默认24小时后
-            if (!earliestExpiry) {
-                earliestExpiry = new Date(now + 24 * 3600000);
-            }
-            
-            // 获取cookie字符串（从capturedData）
-            const cookieString = this.capturedData.cookieString || '';
-            
-            // 提取Cookie对象的可序列化属性，避免Puppeteer对象序列化问题
-            const serializableCookies = cookies.map(cookie => ({
-                name: cookie.name,
-                value: cookie.value,
-                domain: cookie.domain,
-                path: cookie.path,
-                expires: cookie.expires,
-                size: cookie.size,
-                httpOnly: cookie.httpOnly,
-                secure: cookie.secure,
-                session: cookie.session,
-                sameSite: cookie.sameSite
-            }));
-            
-            console.log(`   🔍 序列化 ${serializableCookies.length} 个Cookie用于保存`);
-            
-            // 准备会话数据 - 包含cookie字符串和原始cookies
-            const sessionData = {
-                username: this.loginCredentials.username,
-                cookies: {
-                    raw_cookies: serializableCookies,
-                    cookie_string: cookieString
-                },
-                refreshed_at: new Date().toISOString(),
-                estimated_expiry: earliestExpiry.toISOString()
-            };
-            
-            // 保存到Supabase（假设有pdd_sessions表）
-            const { error } = await this.supabaseClient
-                .from('pdd_sessions')
-                .upsert(sessionData, { onConflict: 'username' });
-            
-            if (error) {
-                console.log(`   ⚠️  保存会话信息失败: ${error.message}`);
-                return false;
-            } else {
-                console.log(`✅ 会话信息已保存，预计过期时间: ${earliestExpiry.toLocaleString()}`);
-                console.log(`   📝 Cookie字符串长度: ${cookieString.length} 字符`);
-                return true;
-            }
-            
-        } catch (error) {
-            console.log(`   ⚠️  保存会话信息异常: ${error.message}`);
-            return false;
-        }
-    }
-    
+
     async waitForAPIRequest() {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
         console.log(`   初始URL: ${this.page.url()}`);
-        
+
         // 等待API请求被捕获 - 增加到15分钟
         const startTime = Date.now();
         const maxWaitTime = 900000; // 15分钟
         let retryCount = 0;
         const maxRetries = 1;
-        
+
         while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
             // 检查页面是否仍在订单管理页面
             const currentUrl = this.page.url();
@@ -1040,17 +626,17 @@ class PDDOrderCrawler {
                     break;
                 }
             }
-            
+
             // 等待1秒后再次检查
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
+
             // 每30秒显示一次状态
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
             if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
                 console.log(`   已等待 ${elapsedSeconds} 秒...`);
             }
         }
-        
+
         if (this.capturedData.antiContent) {
             console.log(`✅ 已捕获到订单查询API请求，获取到anti-content（长度: ${this.capturedData.antiContent.length}）`);
             return true;
@@ -1068,7 +654,7 @@ class PDDOrderCrawler {
                 timeout: 30000
             });
             console.log('✅ 已进入预估销量查询页面');
-            
+
             // 等待API请求
             console.log('⏳ 等待预估销量查询API请求...');
             const startTime = Date.now();
@@ -1080,7 +666,7 @@ class PDDOrderCrawler {
                     console.log(`   已等待 ${elapsedSeconds} 秒...`);
                 }
             }
-            
+
             if (this.capturedData.antiContentPlan) {
                 console.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
                 return true;
@@ -1102,7 +688,7 @@ class PDDOrderCrawler {
                 timeout: 30000
             });
             console.log('✅ 已进入生产日期查询页面');
-            
+
             // 等待API请求
             console.log('⏳ 等待生产日期查询API请求...');
             const startTime = Date.now();
@@ -1114,7 +700,7 @@ class PDDOrderCrawler {
                     console.log(`   已等待 ${elapsedSeconds} 秒...`);
                 }
             }
-            
+
             if (this.capturedData.antiContentDate) {
                 console.log(`✅ 已捕获到生产日期查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentDate.length}）`);
                 return true;
@@ -1131,54 +717,51 @@ class PDDOrderCrawler {
     async run() {
         try {
             console.log('🎬 开始执行拼多多订单数据捕获脚本');
-            
+
             // 1. 初始化浏览器
             await this.init();
-            
+
             // 2. 设置请求拦截
             await this.setupRequestInterception();
-            
+
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
-            
+
             // 3. 自动登录
             const loginSuccess = await this.autoLogin();
-            
+
             // 4. 检查登录是否成功
             if (!loginSuccess) {
                 console.log('❌ 登录失败，程序退出');
                 return;
             }
-            
+
             // 5. 等待API请求，捕获anti-content参数
             const apiCaptured = await this.waitForAPIRequest();
 
             if (!apiCaptured) {
                 throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
-            
+
             // 6. 捕获预估销量查询的anti-content
             console.log('\n📊 开始捕获预估销量查询参数...');
             const planCaptured = await this.capturePlanAntiContent();
             if (!planCaptured) {
                 console.log('⚠️ 预估销量查询参数捕获失败，继续执行...');
             }
-            
+
             // 7. 捕获生产日期查询的anti-content
             console.log('\n📅 开始捕获生产日期查询参数...');
             const dateCaptured = await this.captureDateAntiContent();
             if (!dateCaptured) {
                 console.log('⚠️ 生产日期查询参数捕获失败，继续执行...');
             }
-            
+
             // 8. 捕获Cookies
             await this.captureCookies();
-            
-            // 9. 保存会话信息
-            await this.saveSessionInfo();
-       
+
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
-            
+
         } finally {
             if (this.browser) {
                 try {
@@ -1199,24 +782,24 @@ async function updateAccount(username, password, verificationCode) {
     if (verificationCode) {
         console.log(`   🔑 使用验证码: ${verificationCode}`);
     }
-    
+
     // 获取Supabase客户端
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    
+
     if (!supabaseUrl || !supabaseKey) {
         console.log('❌ Supabase配置缺失，跳过数据上传');
         return;
     }
-    
+
     const supabase = createClient(supabaseUrl, supabaseKey);
-    
+
     try {
         // 开始浏览器登录流程
         console.log(`🔍 开始浏览器登录流程...`);
         const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
         await crawler.run();
-        
+
         // 4. 准备要上传的数据
         const accountData = {
             username,
@@ -1228,19 +811,19 @@ async function updateAccount(username, password, verificationCode) {
             updated_at: new Date().toISOString(),
             last_success: true
         };
-        
+
         // 5. 上传到Supabase
         const { error } = await supabase
             .from('pdd_accounts')
             .upsert(accountData, { onConflict: 'username' });
-            
+
         if (error) {
             console.log(`❌ 上传失败: ${error.message}`);
         } else {
             console.log(`✅ 账号 ${username} 数据已更新到Supabase`);
             console.log('\n' + '='.repeat(50));
         }
-        
+
     } catch (error) {
         console.log(`❌ 更新账号 ${username} 失败:`, error.message);
         console.error(error.stack);
@@ -1254,10 +837,10 @@ async function main() {
         console.log('❌ PDD_ACCOUNTS_JSON环境变量未设置');
         return;
     }
-    
+
     try {
         const accounts = JSON.parse(accountsJson).accounts;
-        
+
         for (const account of accounts) {
             const username = account.username;
             const password = process.env[`PASSWORD_${username.toUpperCase()}`]; // 全大写
@@ -1265,13 +848,13 @@ async function main() {
                 console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
                 continue;
             }
-            
+
             // 验证码只从Supabase获取，不传递验证码参数
             await updateAccount(username, password, null);
         }
-        
+
         console.log('\n🎉 所有账号更新完成');
-        
+
     } catch (error) {
         console.log('❌ 解析账号信息失败:', error.message);
     }
