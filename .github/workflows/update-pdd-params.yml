@@ -1,7 +1,7 @@
 ﻿name: 更新拼多多参数
 on:
   schedule:
-    - cron: '45 22,23,0,3,4,6,7,9,10,13,14 * * *'  # 北京时的6:45、7:45、8:45、11:45、12:45、14:45、15:45、17:45、18:45、21:45、22:45触发
+    - cron: '18 22,23,0,3,4,6,7,9,10,13,14 * * *'  # 北京时的6:18、7:18、8:18、11:18、12:18、14:18、15:18、17:18、18:18、21:18、22:18触发
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
   repository_dispatch:   # 新增:支持外部API触发
     types: [external_cron_trigger]
@@ -31,13 +31,34 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-node-
     
-    - name: 缓存puppeteer用户数据
-      uses: actions/cache@v4
+    # 恢复缓存（总是尝试）
+    - name: 恢复puppeteer用户数据
+      uses: actions/cache/restore@v4
+      id: restore-cache
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-${{ hashFiles('**/scripts/update-pdd.js') }}
-        restore-keys: |
-          ${{ runner.os }}-pdd-user-data-
+        key: ${{ runner.os }}-pdd-user-data-latest
+
+    # 判断是否上传缓存（只在关键时间点上传）
+    - name: 检查是否需要上传缓存
+      id: check-upload
+      run: |
+        # 获取当前UTC小时
+        CURRENT_HOUR=$(date -u +%H)
+        
+        # 定义需要上传的UTC小时（对应北京时间6,11,14,17,22点）
+        UPLOAD_HOURS="22 03 06 09 14"
+        
+        # 检查当前小时是否在需要上传的列表中
+        if [[ " $UPLOAD_HOURS " =~ " $CURRENT_HOUR " ]]; then
+          echo "upload_cache=true" >> $GITHUB_OUTPUT
+          echo "✅ 当前UTC时间 $CURRENT_HOUR:00 需要上传缓存（对应北京时间 $(((CURRENT_HOUR + 8) % 24)):00）"
+        else
+          echo "upload_cache=false" >> $GITHUB_OUTPUT
+          echo "⏭️  当前UTC时间 $CURRENT_HOUR:00 跳过上传缓存（对应北京时间 $(((CURRENT_HOUR + 8) % 24)):00）"
+        fi
+
+
     
     - name: 安装系统依赖
       run: |
@@ -94,3 +115,11 @@ jobs:
 
         TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/update-pdd.js
+    
+    # 条件保存缓存（只在关键时间点上传）
+    - name: 保存puppeteer用户数据
+      if: steps.check-upload.outputs.upload_cache == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ./puppeteer_user_data
+        key: ${{ runner.os }}-pdd-user-data-latest
