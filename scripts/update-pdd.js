@@ -202,7 +202,8 @@ class PDDOrderCrawler {
     async autoLogin() {
         console.log('\n🔍 检查登录时间间隔...');
         
-        const COUNTER_USERNAME = 'global_daily_login_counter';
+        // 为每个用户创建独立的计数器记录，使用用户名加后缀
+        const COUNTER_USERNAME = `${this.loginCredentials.username}_force_login`;
         let forceLogin = false;
         let lastUpdated = null;
         
@@ -216,12 +217,10 @@ class PDDOrderCrawler {
                     .single();
                 
                 if (error && error.code === 'PGRST116') {
-                    // 记录不存在，创建新记录
-                    console.log('📝 计数器记录不存在，创建新记录并强制登录');
+                    // 记录不存在，需要强制登录
+                    console.log(`📝 用户 ${this.loginCredentials.username} 的计数器记录不存在，需要强制登录`);
                     forceLogin = true;
                     lastUpdated = new Date();
-                    
-                    // 不创建记录，等待登录成功后创建
                         
                 } else if (!error && data) {
                     // 记录存在，检查时间间隔
@@ -232,12 +231,12 @@ class PDDOrderCrawler {
                     
                     if (timeDiff > eightHours) {
                         forceLogin = true;
-                        console.log(`🔄 需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，已过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
+                        console.log(`🔄 用户 ${this.loginCredentials.username} 需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，已过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
                     } else {
-                        console.log(`⏸️ 不需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，仅过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
+                        console.log(`⏸️ 用户 ${this.loginCredentials.username} 不需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，仅过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
                     }
                 } else if (error) {
-                    console.log('⚠️ 查询计数器失败:', error.message);
+                    console.log(`⚠️ 查询用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
                     forceLogin = true; // 出错时强制登录以确保业务连续性
                     
                     // 尝试创建记录，即使查询失败
@@ -250,13 +249,13 @@ class PDDOrderCrawler {
                                 code: '强制登录',
                                 updated_at: now
                             }, { onConflict: 'username' });
-                        console.log(`📝 查询失败，已创建计数器记录: ${now} (UTC)`);
+                        console.log(`📝 查询失败，已为用户 ${this.loginCredentials.username} 创建计数器记录: ${now} (UTC)`);
                     } catch (createError) {
-                        console.log('⚠️ 创建计数器记录失败:', createError.message);
+                        console.log(`⚠️ 为用户 ${this.loginCredentials.username} 创建计数器记录失败:`, createError.message);
                     }
                 }
             } catch (error) {
-                console.log('⚠️ 计数器操作异常:', error.message);
+                console.log(`⚠️ 用户 ${this.loginCredentials.username} 计数器操作异常:`, error.message);
                 forceLogin = true;
                 
                 // 尝试创建记录，即使操作异常
@@ -270,9 +269,9 @@ class PDDOrderCrawler {
                                 code: '强制登录',
                                 updated_at: now
                             }, { onConflict: 'username' });
-                        console.log(`📝 计数器操作异常，已创建记录: ${now} (UTC)`);
+                        console.log(`📝 计数器操作异常，已为用户 ${this.loginCredentials.username} 创建记录: ${now} (UTC)`);
                     } catch (createError) {
-                        console.log('⚠️ 创建计数器记录失败:', createError.message);
+                        console.log(`⚠️ 为用户 ${this.loginCredentials.username} 创建计数器记录失败:`, createError.message);
                     }
                 }
             }
@@ -400,12 +399,12 @@ class PDDOrderCrawler {
                             }, { onConflict: 'username' });
                         
                         if (error) {
-                            console.log('⚠️ 更新计数器失败:', error.message);
+                            console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
                         } else {
-                            console.log(`✅ 强制登录成功，计数器已更新: ${now} (UTC)`);
+                            console.log(`✅ 用户 ${this.loginCredentials.username} 强制登录成功，计数器已更新: ${now} (UTC)`);
                         }
                     } catch (error) {
-                        console.log('⚠️ 更新计数器异常:', error.message);
+                        console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器异常:`, error.message);
                     }
                 }
                 
@@ -646,12 +645,12 @@ class PDDOrderCrawler {
                                                 }, { onConflict: 'username' });
                                             
                                             if (error) {
-                                                console.log('⚠️ 更新计数器失败:', error.message);
+                                                console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
                                             } else {
-                                                console.log(`✅ 强制登录成功，计数器已更新: ${now} (UTC)`);
+                                                console.log(`✅ 用户 ${this.loginCredentials.username} 强制登录成功，计数器已更新: ${now} (UTC)`);
                                             }
                                         } catch (error) {
-                                            console.log('⚠️ 更新计数器异常:', error.message);
+                                            console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器异常:`, error.message);
                                         }
                                     }
                                     
