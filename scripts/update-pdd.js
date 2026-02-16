@@ -394,15 +394,14 @@ class PDDOrderCrawler {
                 }
             }
             
-            if (timeLeft > 0) {
+            // 根据用户要求调整：只有剩余时间大于4小时才视为有效
+            if (timeLeft > 4 * 3600000) {
                 isValid = true;
-                // 检查是否即将过期（4小时内）
-                if (timeLeft < 4 * 3600000) {
-                    expiresSoon = true;
-                    console.log('   ⚠️  保存的会话即将过期（4小时内）');
-                } else {
-                    console.log('   ✅ 保存的会话有效');
-                }
+                console.log('   ✅ 保存的会话有效（剩余时间大于4小时）');
+            } else if (timeLeft > 0) {
+                // 剩余时间在0-4小时之间，视为即将过期，需要重新登录
+                expiresSoon = true;
+                console.log('   ⚠️  保存的会话即将过期（剩余时间小于4小时）');
             } else {
                 console.log('   ❌ 保存的会话已过期');
             }
@@ -515,70 +514,41 @@ class PDDOrderCrawler {
     async autoLogin() {
         console.log('\n🔍 检查现有会话...');
         
-        // 第一步：检查保存的会话有效性（从数据库）
+        // 第一步：检查保存的会话有效性（从数据库） - 根据用户要求，只有剩余时间大于4小时才视为有效
         const savedSessionCheck = await this.checkSavedSessionValidity();
         
-        // 第二步：检查当前浏览器会话有效性
-        const sessionCheck = await this.checkSessionValidity();
-        
-        // 第二步：根据会话状态采取不同策略
-        if (sessionCheck.isValid && !sessionCheck.expiresSoon) {
-            // 会话有效且未即将过期，尝试直接访问订单管理页面
-            console.log('✅ 会话有效，尝试直接访问订单管理页面...');
-            const directAccessSuccess = await this.tryDirectAccess();
-            if (directAccessSuccess) {
-                return true;
-            }
-            // 继续登录流程
-        } else if (sessionCheck.isValid && sessionCheck.expiresSoon) {
-            // 会话即将过期，先尝试刷新会话
-            console.log('🔄 会话即将过期，尝试刷新会话...');
-            const refreshSuccess = await this.refreshSession();
+        // 第二步：如果数据库中的会话有效（剩余时间>4小时），尝试直接访问订单管理页面
+        if (savedSessionCheck.isValid && savedSessionCheck.cookieString) {
+            console.log('✅ 保存的会话有效，尝试设置Cookie并直接访问订单管理页面...');
             
-            if (refreshSuccess) {
-                // 刷新成功后尝试访问订单管理页面
-                console.log('✅ 会话刷新成功，尝试访问订单管理页面...');
-                const directAccessSuccess = await this.tryDirectAccess();
-                if (directAccessSuccess) {
-                    return true;
+            // 解析并设置Cookie
+            const parsedCookies = this.parseCookieString(savedSessionCheck.cookieString);
+            
+            if (parsedCookies.length > 0) {
+                try {
+                    await this.page.setCookie(...parsedCookies);
+                    console.log(`   ✅ 已设置 ${parsedCookies.length} 个恢复的Cookies`);
+                    
+                    // 直接访问订单管理页面
+                    const directAccessSuccess = await this.tryDirectAccess();
+                    if (directAccessSuccess) {
+                        console.log('✅ 成功使用保存的会话访问订单管理页面');
+                        return true;
+                    } else {
+                        console.log('⚠️  直接访问失败，可能Cookie已失效，继续完整登录流程');
+                    }
+                } catch (cookieError) {
+                    console.log(`   ⚠️  设置恢复的Cookies失败: ${cookieError.message}`);
+                    console.log('ℹ️  Cookie设置失败，继续完整登录流程');
                 }
-                // 继续登录流程
             } else {
-                console.log('⚠️  会话刷新失败，继续完整登录流程');
+                console.log('⚠️  没有可用的Cookie，继续完整登录流程');
             }
         } else {
-            // 会话无效，记录状态
-            console.log('❌ 浏览器会话无效或已过期');
-            
-            // 检查是否可以从保存的会话恢复
-            if (savedSessionCheck.isValid && !savedSessionCheck.expiresSoon && savedSessionCheck.cookieString) {
-                console.log('🔄 尝试从保存的会话恢复...');
-                const parsedCookies = this.parseCookieString(savedSessionCheck.cookieString);
-                
-                if (parsedCookies.length > 0) {
-                    try {
-                        await this.page.setCookie(...parsedCookies);
-                        console.log(`   ✅ 已设置 ${parsedCookies.length} 个恢复的Cookies`);
-                        
-                        // 重新检查会话有效性
-                        const renewedSessionCheck = await this.checkSessionValidity();
-                        if (renewedSessionCheck.isValid && !renewedSessionCheck.expiresSoon) {
-                            console.log('✅ 会话恢复成功，尝试访问订单管理页面...');
-                            const directAccessSuccess = await this.tryDirectAccess();
-                            if (directAccessSuccess) {
-                                return true;
-                            }
-                        } else {
-                            console.log('⚠️  会话恢复失败，保存的Cookies可能已失效');
-                        }
-                    } catch (cookieError) {
-                        console.log(`   ⚠️  设置恢复的Cookies失败: ${cookieError.message}`);
-                    }
-                }
-            }
+            console.log('❌ 数据库中没有有效的会话（或剩余时间不足4小时），需要完整登录');
         }
         
-        // 第三步：如果上述策略都失败，执行完整登录流程
+        // 第三步：执行完整登录流程
         console.log('🌐 开始完整登录流程...');
         console.log('   访问登录页面（带重定向）...');
         
