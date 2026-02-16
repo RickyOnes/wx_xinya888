@@ -233,6 +233,16 @@ class PDDOrderCrawler {
         try {
             // 获取所有Cookie
             const cookies = await this.page.cookies();
+            console.log(`   📝 总共找到 ${cookies.length} 个Cookie`);
+            
+            // 打印前5个Cookie的详细信息用于调试
+            if (cookies.length > 0) {
+                console.log(`   🔍 前5个Cookie名称:`);
+                for (let i = 0; i < Math.min(5, cookies.length); i++) {
+                    const cookie = cookies[i];
+                    console.log(`      ${i+1}. ${cookie.name} (domain: ${cookie.domain})`);
+                }
+            }
             
             // 关键会话Cookie名称（根据拼多多实际情况调整）
             const sessionCookies = [
@@ -294,6 +304,13 @@ class PDDOrderCrawler {
             const foundCookies = cookies.filter(c => sessionCookies.includes(c.name)).length;
             console.log(`   📊 找到 ${foundCookies}/${sessionCookies.length} 个关键会话Cookie`);
             
+            // 如果没找到关键Cookie，打印所有Cookie名称帮助调试
+            if (foundCookies === 0 && cookies.length > 0) {
+                console.log(`   🔍 所有Cookie名称列表:`);
+                const cookieNames = cookies.map(c => c.name).join(', ');
+                console.log(`      ${cookieNames}`);
+            }
+            
             // 判断会话是否真正有效（至少2个关键Cookie且未过期）
             const isActuallyValid = validSession && foundCookies >= 2;
             
@@ -318,27 +335,32 @@ class PDDOrderCrawler {
             return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
         }
         
+        const username = this.loginCredentials.username;
+        console.log(`   🔍 查询用户: ${username}`);
+        
         try {
             // 从pdd_sessions表获取最新会话信息
             const { data, error } = await this.supabaseClient
                 .from('pdd_sessions')
                 .select('cookies, estimated_expiry, refreshed_at')
-                .eq('username', this.loginCredentials.username)
+                .eq('username', username)
                 .order('refreshed_at', { ascending: false })
                 .limit(1)
                 .single();
             
             if (error) {
                 if (error.code === 'PGRST116') { // 未找到记录
-                    console.log('   ℹ️  数据库中未找到会话记录');
+                    console.log(`   ℹ️  数据库中未找到用户 ${username} 的会话记录`);
+                    console.log(`   💡 可能原因: 1) 首次运行 2) 会话未保存成功 3) 用户名不匹配`);
                 } else {
-                    console.log(`   ⚠️  查询会话信息失败: ${error.message}`);
+                    console.log(`   ⚠️  查询会话信息失败 (用户: ${username}): ${error.message}`);
+                    console.log(`   🔍 错误代码: ${error.code}`);
                 }
                 return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
             }
             
             if (!data) {
-                console.log('   ℹ️  数据库中未找到会话记录');
+                console.log(`   ℹ️  数据库中未找到用户 ${username} 的会话记录`);
                 return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
             }
             
@@ -966,11 +988,27 @@ class PDDOrderCrawler {
             // 获取cookie字符串（从capturedData）
             const cookieString = this.capturedData.cookieString || '';
             
+            // 提取Cookie对象的可序列化属性，避免Puppeteer对象序列化问题
+            const serializableCookies = cookies.map(cookie => ({
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path,
+                expires: cookie.expires,
+                size: cookie.size,
+                httpOnly: cookie.httpOnly,
+                secure: cookie.secure,
+                session: cookie.session,
+                sameSite: cookie.sameSite
+            }));
+            
+            console.log(`   🔍 序列化 ${serializableCookies.length} 个Cookie用于保存`);
+            
             // 准备会话数据 - 包含cookie字符串和原始cookies
             const sessionData = {
                 username: this.loginCredentials.username,
                 cookies: {
-                    raw_cookies: cookies,
+                    raw_cookies: serializableCookies,
                     cookie_string: cookieString
                 },
                 refreshed_at: new Date().toISOString(),
