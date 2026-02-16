@@ -20,7 +20,7 @@ const CONFIG = {
             height: 768
         },
         args: [
-            '--no-sandbox',
+            '--no-sandbox', 
             '--disable-setuid-sandbox',
             '--disable-web-security',
             '--disable-features=IsolateOrigins,site-per-process',
@@ -32,14 +32,14 @@ const CONFIG = {
             '--remote-debugging-port=9222',
             '--disable-site-isolation-trials',
             '--disable-blink-features=AutomationControlled',
-            '--allow-running-insecure-content',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
+            '--allow-running-insecure-content',// 允许运行不安全的内容
+            '--disable-features=BlockInsecurePrivateNetworkRequests',// 禁用不安全的私有网络请求
             '--use-gl=swiftshader',  // 固定WebGL渲染器
-            '--disable-software-rasterizer',
-            '--disable-webgl',
+            '--disable-software-rasterizer',// 禁用软件光栅器
+            '--disable-webgl',// 禁用WebGL
             '--disable-canvas-aa',  // 禁用画布抗锯齿
-            '--disable-2d-canvas-clip-aa',
-            '--disable-gl-drawing-for-tests'
+            '--disable-2d-canvas-clip-aa',// 禁用2D画布剪切抗锯齿
+            '--disable-gl-drawing-for-tests'// 禁用GL绘制测试
         ],
         ignoreDefaultArgs: ['--enable-automation']
     },
@@ -80,6 +80,34 @@ class PDDOrderCrawler {
         this.supabaseClient = supabaseClient || null;
     }
 
+    parseCookieString(cookieStr) {
+        if (!cookieStr || cookieStr.trim() === '') {
+            return [];
+        }
+        
+        const cookies = [];
+        const pairs = cookieStr.split(';').map(pair => pair.trim()).filter(pair => pair.length > 0);
+        
+        for (const pair of pairs) {
+            const [name, ...valueParts] = pair.split('=');
+            const value = valueParts.join('='); // 处理值中可能包含的等号
+            
+            if (name && value !== undefined) {
+                cookies.push({
+                    name: name.trim(),
+                    value: value.trim(),
+                    domain: '.pinduoduo.com',
+                    path: '/',
+                    secure: true,
+                    httpOnly: false,
+                    sameSite: 'Lax'
+                });
+            }
+        }
+        
+        return cookies;
+    }
+
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
@@ -90,8 +118,8 @@ class PDDOrderCrawler {
             userDataDir: this.userDataDir
         };
 
-        this.browser = await puppeteer.launch(launchOptions);
-        this.page = await this.browser.newPage();
+        this.browser = await puppeteer.launch(launchOptions);// 启动浏览器
+        this.page = await this.browser.newPage();// 创建新页面
         
         // 设置用户代理
         await this.page.setUserAgent(
@@ -198,40 +226,334 @@ class PDDOrderCrawler {
             request.continue();
         });
     }
+    
+    async checkSessionValidity() {
+        console.log('\n🔍 检查会话有效性...');
+        
+        try {
+            // 获取所有Cookie
+            const cookies = await this.page.cookies();
+            
+            // 关键会话Cookie名称（根据拼多多实际情况调整）
+            const sessionCookies = [
+                'PASS_ID',
+                'PDDAccessToken', 
+                'pdd_user_id',
+                'pdd_vds',
+                'csrfToken',
+                'JSESSIONID'
+            ];
+            
+            let validSession = false;
+            let expiresSoon = false;
+            const now = Date.now();
+            let earliestExpiry = Infinity;
+            
+            // 检查关键Cookie
+            for (const cookie of cookies) {
+                if (sessionCookies.includes(cookie.name)) {
+                    console.log(`   📝 ${cookie.name}: ${cookie.value ? '存在' : '不存在'}`);
+                    
+                    // 检查过期时间
+                    if (cookie.expires) {
+                        const expiresTime = cookie.expires * 1000; // 转换为毫秒
+                        const timeLeft = expiresTime - now;
+                        
+                        console.log(`      ⏰ 过期时间: ${new Date(expiresTime).toLocaleString()}`);
+                        console.log(`      ⏳ 剩余时间: ${Math.floor(timeLeft / 3600000)}小时${Math.floor((timeLeft % 3600000) / 60000)}分钟`);
+                        
+                        // 更新最早过期时间
+                        if (expiresTime < earliestExpiry) {
+                            earliestExpiry = expiresTime;
+                        }
+                        
+                        // 判断有效性
+                        if (timeLeft > 0) {
+                            validSession = true;
+                            
+                            // 检查是否即将过期（4小时内）
+                            if (timeLeft < 4 * 3600000) {
+                                expiresSoon = true;
+                                console.log('      ⚠️  会话即将过期（4小时内）');
+                            }
+                        } else {
+                            console.log(`      ❌ 会话已过期`);
+                        }
+                    } else {
+                        console.log(`      ℹ️  会话Cookie（无过期时间）`);
+                        validSession = true; // 无过期时间视为有效
+                    }
+                }
+            }
+            
+            // 检查是否有足够的关键Cookie
+            const foundCookies = cookies.filter(c => sessionCookies.includes(c.name)).length;
+            console.log(`   📊 找到 ${foundCookies}/${sessionCookies.length} 个关键会话Cookie`);
+            
+            // 判断会话是否真正有效（至少2个关键Cookie且未过期）
+            const isActuallyValid = validSession && foundCookies >= 2;
+            
+            return {
+                isValid: isActuallyValid,
+                expiresSoon: expiresSoon,
+                earliestExpiry: earliestExpiry !== Infinity ? new Date(earliestExpiry) : null,
+                cookies: cookies
+            };
+            
+        } catch (error) {
+            console.log(`   ⚠️  会话检查失败: ${error.message}`);
+            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookies: [] };
+        }
+    }
+    
+    async checkSavedSessionValidity() {
+        console.log('\n🔍 检查保存的会话有效性（从数据库）...');
+        
+        if (!this.supabaseClient) {
+            console.log('   ⚠️  Supabase客户端未初始化，跳过检查');
+            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
+        }
+        
+        try {
+            // 从pdd_sessions表获取最新会话信息
+            const { data, error } = await this.supabaseClient
+                .from('pdd_sessions')
+                .select('cookies, estimated_expiry, refreshed_at')
+                .eq('username', this.loginCredentials.username)
+                .order('refreshed_at', { ascending: false })
+                .limit(1)
+                .single();
+            
+            if (error) {
+                if (error.code === 'PGRST116') { // 未找到记录
+                    console.log('   ℹ️  数据库中未找到会话记录');
+                } else {
+                    console.log(`   ⚠️  查询会话信息失败: ${error.message}`);
+                }
+                return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
+            }
+            
+            if (!data) {
+                console.log('   ℹ️  数据库中未找到会话记录');
+                return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
+            }
+            
+            // 解析会话数据
+            const cookiesData = data.cookies;
+            const estimatedExpiry = new Date(data.estimated_expiry);
+            const refreshedAt = new Date(data.refreshed_at);
+            const now = new Date();
+            
+            console.log(`   📅 会话刷新时间: ${refreshedAt.toLocaleString()}`);
+            console.log(`   ⏰ 预计过期时间: ${estimatedExpiry.toLocaleString()}`);
+            
+            // 检查是否已过期
+            const timeLeft = estimatedExpiry.getTime() - now.getTime();
+            const hoursLeft = timeLeft / 3600000;
+            
+            console.log(`   ⏳ 剩余时间: ${hoursLeft.toFixed(1)} 小时`);
+            
+            let isValid = false;
+            let expiresSoon = false;
+            let cookieString = null;
+            
+            // 检查cookie_string是否存在
+            if (cookiesData && cookiesData.cookie_string) {
+                cookieString = cookiesData.cookie_string;
+                console.log(`   📝 找到cookie字符串 (${cookieString.length} 字符)`);
+                
+                // 检查是否还有原始cookies
+                if (cookiesData.raw_cookies && cookiesData.raw_cookies.length > 0) {
+                    console.log(`   📊 找到 ${cookiesData.raw_cookies.length} 个原始Cookie`);
+                }
+            }
+            
+            if (timeLeft > 0) {
+                isValid = true;
+                // 检查是否即将过期（4小时内）
+                if (timeLeft < 4 * 3600000) {
+                    expiresSoon = true;
+                    console.log('   ⚠️  保存的会话即将过期（4小时内）');
+                } else {
+                    console.log('   ✅ 保存的会话有效');
+                }
+            } else {
+                console.log('   ❌ 保存的会话已过期');
+            }
+            
+            return {
+                isValid,
+                expiresSoon,
+                earliestExpiry: estimatedExpiry,
+                cookieString,
+                refreshedAt
+            };
+            
+        } catch (error) {
+            console.log(`   ⚠️  检查保存的会话失败: ${error.message}`);
+            return { isValid: false, expiresSoon: false, earliestExpiry: null, cookieString: null };
+        }
+    }
+    
+    async refreshSession() {
+        console.log('\n🔄 执行会话续期...');
+        
+        const refreshStrategies = [
+            {
+                name: '访问主页',
+                action: async () => {
+                    await this.page.goto('https://mc.pinduoduo.com/ddmc-mms', {
+                        waitUntil: 'networkidle0',
+                        timeout: 20000
+                    });
+                }
+            }
+        ];
+        
+        let refreshSuccess = false;
+        let lastError = null;
+        
+        // 尝试每种刷新策略
+        for (const strategy of refreshStrategies) {
+            console.log(`   🔧 尝试策略: ${strategy.name}`);
+            
+            try {
+                await strategy.action();
+                console.log(`     ✅ ${strategy.name} 成功`);
+                
+                // 短暂等待让Cookie更新
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // 验证会话是否仍然有效
+                const sessionCheck = await this.checkSessionValidity();
+                if (sessionCheck.isValid) {
+                    console.log(`     ✅ 会话验证成功`);
+                    refreshSuccess = true;
+                    
+                    // 检查过期时间是否已延长
+                    if (sessionCheck.earliestExpiry) {
+                        const now = new Date();
+                        const hoursUntilExpiry = (sessionCheck.earliestExpiry.getTime() - now.getTime()) / 3600000;
+                        console.log(`     📅 新过期时间: ${sessionCheck.earliestExpiry.toLocaleString()} (剩余 ${hoursUntilExpiry.toFixed(1)} 小时)`);
+                    }
+                    
+                    break; // 成功则退出循环
+                } else {
+                    console.log(`     ⚠️  会话验证失败，继续尝试其他策略`);
+                }
+            } catch (error) {
+                lastError = error;
+                console.log(`     ⚠️  ${strategy.name} 失败: ${error.message}`);
+                // 继续尝试下一个策略
+            }
+        }
+        
+        if (refreshSuccess) {
+            console.log('✅ 会话续期成功');
+            return true;
+        } else {
+            console.log(`❌ 所有会话续期策略均失败`);
+            if (lastError) {
+                console.log(`   💡 最后错误: ${lastError.message}`);
+            }
+            return false;
+        }
+    }
+    
+    async tryDirectAccess() {
+        console.log('   🔄 尝试直接访问订单管理页面...');
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                waitUntil: 'networkidle0',
+                timeout: 10000
+            });
+            
+            const currentUrl = this.page.url();
+            console.log(`   当前URL: ${currentUrl}`);
+            
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                console.log('✅ 已直接进入订单管理页面');
+                // 等待页面稳定
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                return true;
+            } else {
+                console.log(`⚠️  访问订单管理页面失败，URL跳转到: ${currentUrl}`);
+                return false;
+            }
+        } catch (error) {
+            console.log(`⚠️  直接访问失败: ${error.message}`);
+            return false;
+        }
+    }
 
     async autoLogin() {
         console.log('\n🔍 检查现有会话...');
         
-        // 首先尝试直接访问订单管理页面，使用现有cookies
-        try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'networkidle0',
-                timeout: 15000  // 15秒超时
-            });
+        // 第一步：检查保存的会话有效性（从数据库）
+        const savedSessionCheck = await this.checkSavedSessionValidity();
+        
+        // 第二步：检查当前浏览器会话有效性
+        const sessionCheck = await this.checkSessionValidity();
+        
+        // 第二步：根据会话状态采取不同策略
+        if (sessionCheck.isValid && !sessionCheck.expiresSoon) {
+            // 会话有效且未即将过期，尝试直接访问订单管理页面
+            console.log('✅ 会话有效，尝试直接访问订单管理页面...');
+            const directAccessSuccess = await this.tryDirectAccess();
+            if (directAccessSuccess) {
+                return true;
+            }
+            // 继续登录流程
+        } else if (sessionCheck.isValid && sessionCheck.expiresSoon) {
+            // 会话即将过期，先尝试刷新会话
+            console.log('🔄 会话即将过期，尝试刷新会话...');
+            const refreshSuccess = await this.refreshSession();
             
-            // 检查是否成功进入订单管理页面
-            const currentUrl = this.page.url();
-            console.log(`   当前URL: ${currentUrl}`);
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 会话有效，已直接进入订单管理页面');
-                // 等待页面完全稳定，确保任何自动跳转已完成
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                // 再次检查URL，确保仍在订单管理页面
-                const stableUrl = this.page.url();
-                if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                    console.log(`⚠️  页面跳转到: ${stableUrl}，需要重新登录`);
-                    // 继续登录流程
-                } else {
-                    console.log(`✅ 页面稳定在订单管理页面`);
+            if (refreshSuccess) {
+                // 刷新成功后尝试访问订单管理页面
+                console.log('✅ 会话刷新成功，尝试访问订单管理页面...');
+                const directAccessSuccess = await this.tryDirectAccess();
+                if (directAccessSuccess) {
                     return true;
                 }
+                // 继续登录流程
+            } else {
+                console.log('⚠️  会话刷新失败，继续完整登录流程');
             }
-        } catch (error) {
-            // 忽略导航错误，继续登录流程
-            console.log(`⚠️  会话检查导航错误: ${error.message}`);
+        } else {
+            // 会话无效，记录状态
+            console.log('❌ 浏览器会话无效或已过期');
+            
+            // 检查是否可以从保存的会话恢复
+            if (savedSessionCheck.isValid && !savedSessionCheck.expiresSoon && savedSessionCheck.cookieString) {
+                console.log('🔄 尝试从保存的会话恢复...');
+                const parsedCookies = this.parseCookieString(savedSessionCheck.cookieString);
+                
+                if (parsedCookies.length > 0) {
+                    try {
+                        await this.page.setCookie(...parsedCookies);
+                        console.log(`   ✅ 已设置 ${parsedCookies.length} 个恢复的Cookies`);
+                        
+                        // 重新检查会话有效性
+                        const renewedSessionCheck = await this.checkSessionValidity();
+                        if (renewedSessionCheck.isValid && !renewedSessionCheck.expiresSoon) {
+                            console.log('✅ 会话恢复成功，尝试访问订单管理页面...');
+                            const directAccessSuccess = await this.tryDirectAccess();
+                            if (directAccessSuccess) {
+                                return true;
+                            }
+                        } else {
+                            console.log('⚠️  会话恢复失败，保存的Cookies可能已失效');
+                        }
+                    } catch (cookieError) {
+                        console.log(`   ⚠️  设置恢复的Cookies失败: ${cookieError.message}`);
+                    }
+                }
+            }
         }
         
-        console.log('🌐 会话无效或已过期，开始登录流程...');
+        // 第三步：如果上述策略都失败，执行完整登录流程
+        console.log('🌐 开始完整登录流程...');
         console.log('   访问登录页面（带重定向）...');
         
         let pageLoadRetryCount = 0;
@@ -264,7 +586,7 @@ class PDDOrderCrawler {
             return false;
         }
 
-        // 页面打开后尝试切换到“账号登录”标签（如果存在）
+        // 页面打开后尝试切换到"账号登录"标签（如果存在）
         try {
             const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
             if (tabContainer) {
@@ -592,7 +914,82 @@ class PDDOrderCrawler {
         console.log('   ✅  已构造 Cookie字符串');
         return cookies;
     }
-
+    
+    async saveSessionInfo() {
+        console.log('\n💾 保存会话信息...');
+        
+        if (!this.supabaseClient) {
+            console.log('   ⚠️  Supabase客户端未初始化，跳过保存');
+            return false;
+        }
+        
+        try {
+            // 获取当前Cookie
+            const cookies = await this.page.cookies();
+            
+            // 关键会话Cookie名称
+            const sessionCookies = [
+                'PASS_ID',
+                'PDDAccessToken', 
+                'pdd_user_id',
+                'pdd_vds',
+                'csrfToken',
+                'JSESSIONID'
+            ];
+            
+            // 计算最早过期时间
+            let earliestExpiry = null;
+            const now = Date.now();
+            
+            for (const cookie of cookies) {
+                if (sessionCookies.includes(cookie.name) && cookie.expires) {
+                    const expiresTime = cookie.expires * 1000;
+                    if (!earliestExpiry || expiresTime < earliestExpiry.getTime()) {
+                        earliestExpiry = new Date(expiresTime);
+                    }
+                }
+            }
+            
+            // 如果找不到过期时间，默认24小时后
+            if (!earliestExpiry) {
+                earliestExpiry = new Date(now + 24 * 3600000);
+            }
+            
+            // 获取cookie字符串（从capturedData）
+            const cookieString = this.capturedData.cookieString || '';
+            
+            // 准备会话数据 - 包含cookie字符串和原始cookies
+            const sessionData = {
+                username: this.loginCredentials.username,
+                cookies: {
+                    raw_cookies: cookies,
+                    cookie_string: cookieString
+                },
+                refreshed_at: new Date().toISOString(),
+                estimated_expiry: earliestExpiry.toISOString(),
+                user_agent: await this.page.evaluate(() => navigator.userAgent)
+            };
+            
+            // 保存到Supabase（假设有pdd_sessions表）
+            const { error } = await this.supabaseClient
+                .from('pdd_sessions')
+                .upsert(sessionData, { onConflict: 'username' });
+            
+            if (error) {
+                console.log(`   ⚠️  保存会话信息失败: ${error.message}`);
+                return false;
+            } else {
+                console.log(`✅ 会话信息已保存，预计过期时间: ${earliestExpiry.toLocaleString()}`);
+                console.log(`   📝 Cookie字符串长度: ${cookieString.length} 字符`);
+                return true;
+            }
+            
+        } catch (error) {
+            console.log(`   ⚠️  保存会话信息异常: ${error.message}`);
+            return false;
+        }
+    }
+    
     async waitForAPIRequest() {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
         console.log(`   初始URL: ${this.page.url()}`);
@@ -760,6 +1157,9 @@ class PDDOrderCrawler {
             
             // 8. 捕获Cookies
             await this.captureCookies();
+            
+            // 9. 保存会话信息
+            await this.saveSessionInfo();
        
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
