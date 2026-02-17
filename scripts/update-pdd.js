@@ -297,7 +297,7 @@ class PDDOrderCrawler {
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                     console.log('✅ 会话有效，已直接进入订单管理页面');
                     // 等待页面完全稳定，确保任何自动跳转已完成
-                    await new Promise(resolve => setTimeout(resolve, 3000));
+                   /* await new Promise(resolve => setTimeout(resolve, 3000));
                     // 再次检查URL，确保仍在订单管理页面
                     const stableUrl = this.page.url();
                     if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
@@ -306,7 +306,7 @@ class PDDOrderCrawler {
                     } else {
                         console.log(`✅ 页面稳定在订单管理页面`);
                         return true;
-                    }
+                    }*/
                 }
             } catch (error) {
                 // 忽略导航错误，继续登录流程
@@ -316,10 +316,9 @@ class PDDOrderCrawler {
             console.log('🚀 跳过会话检查，直接执行强制登录流程...');
         }
 
-        console.log('🌐 会话无效或已过期，开始登录流程...');
-        console.log('   访问登录页面（带重定向）...');
+        console.log('🌐 会话无效或已过期，访问登录页面（带重定向），开始登录流程...');
         let pageLoadRetryCount = 0;
-        const maxPageLoadRetries = 3;
+        const maxPageLoadRetries = 2;
         let pageLoaded = false;
         
         while (pageLoadRetryCount < maxPageLoadRetries && !pageLoaded) {
