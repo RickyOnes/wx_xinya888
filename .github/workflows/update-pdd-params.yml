@@ -1,4 +1,4 @@
-﻿name: 更新拼多多参数
+name: 更新拼多多参数
 concurrency:
   group: update-pdd-params-${{ github.ref }}
   cancel-in-progress: false
@@ -60,17 +60,33 @@ jobs:
       run: |
         # 获取当前UTC小时
         CURRENT_HOUR=$(date -u +%H)
+        # 去除前导零（避免八进制解析问题）
+        CURRENT_HOUR=${CURRENT_HOUR#0}
+        # 如果去除后为空，说明原始值是"0"或"00"
+        if [ -z "$CURRENT_HOUR" ]; then
+          CURRENT_HOUR="0"
+        fi
         
-        # 定义需要上传的UTC小时（对应北京时间6,11,14,15,17,21点）
-        UPLOAD_HOURS="22 03 06 07 09 13"
+        # 定义需要上传的UTC小时（对应北京时间6,11,14,15,16,17,21点）
+        UPLOAD_HOURS="22 03 06 07 08 09 13"
         
         # 检查当前小时是否在需要上传的列表中
-        if [[ " $UPLOAD_HOURS " =~ " $CURRENT_HOUR " ]]; then
+        UPLOAD=false
+        for hour in $UPLOAD_HOURS; do
+          # 去除小时的前导零以便比较
+          clean_hour=${hour#0}
+          if [ "$clean_hour" = "$CURRENT_HOUR" ]; then
+            UPLOAD=true
+            break
+          fi
+        done
+        
+        if [ "$UPLOAD" = true ]; then
           echo "upload_cache=true" >> $GITHUB_OUTPUT
-          echo "✅ 当前UTC时间 $CURRENT_HOUR:00 需要上传缓存（对应北京时间 $(((CURRENT_HOUR + 8) % 24)):00）"
+          echo "✅ 当前UTC时间 ${CURRENT_HOUR}:00 需要上传缓存（对应北京时间 $(( (10#$CURRENT_HOUR + 8) % 24 )):00）"
         else
           echo "upload_cache=false" >> $GITHUB_OUTPUT
-          echo "⏭️  当前UTC时间 $CURRENT_HOUR:00 跳过上传缓存（对应北京时间 $(((CURRENT_HOUR + 8) % 24)):00）"
+          echo "⏭️  当前UTC时间 ${CURRENT_HOUR}:00 跳过上传缓存（对应北京时间 $(( (10#$CURRENT_HOUR + 8) % 24 )):00）"
         fi
 
     - name: 下载并安装系统依赖
