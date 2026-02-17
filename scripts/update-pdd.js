@@ -200,120 +200,27 @@ class PDDOrderCrawler {
     }
 
     async autoLogin() {
-        console.log('\n🔍 检查登录时间间隔...');
-        
-        // 为每个用户创建独立的计数器记录，使用用户名加后缀
-        const COUNTER_USERNAME = `${this.loginCredentials.username}_force_login`;
-        let forceLogin = false;
-        let lastUpdated = null;
-        
-        // 计数器检查逻辑
-        if (this.supabaseClient) {
-            try {
-                const { data, error } = await this.supabaseClient
-                    .from('pdd_verification_codes')
-                    .select('updated_at')
-                    .eq('username', COUNTER_USERNAME)
-                    .single();
-                
-                if (error && error.code === 'PGRST116') {
-                    // 记录不存在，需要强制登录
-                    console.log(`📝 用户 ${this.loginCredentials.username} 的计数器记录不存在，需要强制登录`);
-                    forceLogin = true;
-                    lastUpdated = new Date();
-                        
-                } else if (!error && data) {
-                    // 记录存在，检查时间间隔
-                    lastUpdated = new Date(data.updated_at);
-                    const now = new Date();
-                    const timeDiff = now.getTime() - lastUpdated.getTime();
-                    const eightHours = 8 * 60 * 60 * 1000; // 8小时 = 28,800,000毫秒
-                    
-                    if (timeDiff > eightHours) {
-                        forceLogin = true;
-                        console.log(`🔄 用户 ${this.loginCredentials.username} 需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，已过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
-                    } else {
-                        console.log(`⏸️ 用户 ${this.loginCredentials.username} 不需要强制登录：上次强制登录时间 ${lastUpdated.toISOString()} (UTC)，仅过去 ${Math.floor(timeDiff/1000/60)} 分钟`);
-                    }
-                } else if (error) {
-                    console.log(`⚠️ 查询用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
-                    forceLogin = true; // 出错时强制登录以确保业务连续性
-                    
-                    // 尝试创建记录，即使查询失败
-                    try {
-                        const now = new Date().toISOString();
-                        await this.supabaseClient
-                            .from('pdd_verification_codes')
-                            .upsert({
-                                username: COUNTER_USERNAME,
-                                code: '强制登录',
-                                updated_at: now
-                            }, { onConflict: 'username' });
-                        console.log(`📝 查询失败，已为用户 ${this.loginCredentials.username} 创建计数器记录: ${now} (UTC)`);
-                    } catch (createError) {
-                        console.log(`⚠️ 为用户 ${this.loginCredentials.username} 创建计数器记录失败:`, createError.message);
-                    }
-                }
-            } catch (error) {
-                console.log(`⚠️ 用户 ${this.loginCredentials.username} 计数器操作异常:`, error.message);
-                forceLogin = true;
-                
-                // 尝试创建记录，即使操作异常
-                if (this.supabaseClient) {
-                    try {
-                        const now = new Date().toISOString();
-                        await this.supabaseClient
-                            .from('pdd_verification_codes')
-                            .upsert({
-                                username: COUNTER_USERNAME,
-                                code: '强制登录',
-                                updated_at: now
-                            }, { onConflict: 'username' });
-                        console.log(`📝 计数器操作异常，已为用户 ${this.loginCredentials.username} 创建记录: ${now} (UTC)`);
-                    } catch (createError) {
-                        console.log(`⚠️ 为用户 ${this.loginCredentials.username} 创建计数器记录失败:`, createError.message);
-                    }
-                }
-            }
-        } else {
-            console.log('⚠️ Supabase客户端未初始化，无法检查计数器');
-            forceLogin = true;
-        }
-        
-        // 如果不需要强制登录，则执行原有会话检查
-        if (!forceLogin) {
-            console.log('\n🔍 检查现有会话...');
 
-            // 首先尝试直接访问订单管理页面，使用现有cookies
-            try {
-                await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                    waitUntil: 'networkidle0',
-                    timeout: 15000  // 15秒超时
-                });
+        
+        console.log('\n🔍 检查现有会话...');
 
-                // 检查是否成功进入订单管理页面
-                const currentUrl = this.page.url();
-                console.log(`   当前URL: ${currentUrl}`);
-                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                    console.log('✅ 会话有效，已直接进入订单管理页面');
-                    // 等待页面完全稳定，确保任何自动跳转已完成
-                   /* await new Promise(resolve => setTimeout(resolve, 3000));
-                    // 再次检查URL，确保仍在订单管理页面
-                    const stableUrl = this.page.url();
-                    if (!stableUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                        console.log(`⚠️  页面跳转到: ${stableUrl}，需要重新登录`);
-                        // 继续登录流程
-                    } else {
-                        console.log(`✅ 页面稳定在订单管理页面`);
-                        return true;
-                    }*/
-                }
-            } catch (error) {
-                // 忽略导航错误，继续登录流程
-                console.log(`⚠️  会话检查导航错误: ${error.message}`);
+        // 首先尝试直接访问订单管理页面，使用现有cookies
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                waitUntil: 'networkidle0',
+                timeout: 15000  // 15秒超时
+            });
+
+            // 检查是否成功进入订单管理页面
+            const currentUrl = this.page.url();
+            console.log(`   当前URL: ${currentUrl}`);
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                console.log('✅ 会话有效，已直接进入订单管理页面');
+                return true;
             }
-        } else {
-            console.log('🚀 跳过会话检查，直接执行强制登录流程...');
+        } catch (error) {
+            // 忽略导航错误，继续登录流程
+            console.log(`⚠️  会话检查导航错误: ${error.message}`);
         }
 
         console.log('🌐 会话无效或已过期，访问登录页面（带重定向），开始登录流程...');
@@ -385,27 +292,7 @@ class PDDOrderCrawler {
             if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log('✅ 已处于订单管理页面：',currentUrl);
                 
-                // 如果是强制登录，更新Supabase记录
-                if (forceLogin && this.supabaseClient) {
-                    try {
-                        const now = new Date().toISOString();
-                        const { error } = await this.supabaseClient
-                            .from('pdd_verification_codes')
-                            .upsert({
-                                username: COUNTER_USERNAME,
-                                code: '强制登录',
-                                updated_at: now
-                            }, { onConflict: 'username' });
-                        
-                        if (error) {
-                            console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
-                        } else {
-                            console.log(`✅ 用户 ${this.loginCredentials.username} 强制登录成功，计数器已更新: ${now} (UTC)`);
-                        }
-                    } catch (error) {
-                        console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器异常:`, error.message);
-                    }
-                }
+
                 
                 return true;
             }
@@ -631,27 +518,7 @@ class PDDOrderCrawler {
                                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                                     console.log('✅ 验证码正确，成功跳转到订单管理页面');
                                     
-                                    // 如果是强制登录，更新Supabase记录
-                                    if (forceLogin && this.supabaseClient) {
-                                        try {
-                                            const now = new Date().toISOString();
-                                            const { error } = await this.supabaseClient
-                                                .from('pdd_verification_codes')
-                                                .upsert({
-                                                    username: COUNTER_USERNAME,
-                                                    code: '强制登录',
-                                                    updated_at: now
-                                                }, { onConflict: 'username' });
-                                            
-                                            if (error) {
-                                                console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器失败:`, error.message);
-                                            } else {
-                                                console.log(`✅ 用户 ${this.loginCredentials.username} 强制登录成功，计数器已更新: ${now} (UTC)`);
-                                            }
-                                        } catch (error) {
-                                            console.log(`⚠️ 更新用户 ${this.loginCredentials.username} 计数器异常:`, error.message);
-                                        }
-                                    }
+
                                     
                                     return true;
                                 }

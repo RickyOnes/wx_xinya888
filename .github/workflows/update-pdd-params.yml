@@ -1,10 +1,7 @@
 name: 更新拼多多参数
-concurrency:
-  group: update-pdd-params-${{ github.ref }}
-  cancel-in-progress: false
 on:
   schedule:
-    - cron: '18 22,23,0,3,4,6,7,9,10,13,14 * * *'  # 北京时的6:18、7:18、8:18、11:18、12:18、14:18、15:18、17:18、18:18、21:18、22:18触发
+    - cron: '45 22,23,0,3,4,6,7,9,10,13,14 * * *'  # 北京时的6:45、7:45、8:45、11:45、12:45、14:45、15:45、17:45、18:45、21:45、22:45触发
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
   repository_dispatch:   # 新增:支持外部API触发
     types: [external_cron_trigger]
@@ -15,17 +12,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 缓存 Node.js 二进制文件
-    - name: 缓存 Node.js 二进制
-      uses: actions/cache@v4
-      id: node-binary-cache
-      with:
-        path: /opt/hostedtoolcache/node
-        key: ${{ runner.os }}-node-binary-24.7.0
-        restore-keys: |
-          ${{ runner.os }}-node-binary-
-    
-    - name: 缓存|安装 Node.js及npm
+    - name: 安装 Node.js并缓存
       uses: actions/setup-node@v4
       with:
         node-version: '24.7.0'
@@ -33,7 +20,7 @@ jobs:
         cache-dependency-path: 'package.json'
     
     # 缓存npm包和puppeteer浏览器，减少安装时间
-    - name: 缓存|安装 puppeteer、npm、node_modules
+    - name: 缓存puppeteer、npm、node_modules
       uses: actions/cache@v4
       with:
         path: |
@@ -44,52 +31,15 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-node-
     
-    # 恢复缓存（总是尝试）
-    - name: 恢复puppeteer用户数据
-      uses: actions/cache/restore@v4
-      id: restore-cache
+    - name: 缓存puppeteer用户数据
+      uses: actions/cache@v4
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-${{ github.run_id }}
+        key: ${{ runner.os }}-pdd-user-data-${{ hashFiles('**/scripts/update-pdd.js') }}
         restore-keys: |
           ${{ runner.os }}-pdd-user-data-
-
-    # 判断是否上传缓存（只在关键时间点上传）
-    - name: 检查是否需要上传缓存
-      id: check-upload
-      run: |
-        # 获取当前UTC小时
-        CURRENT_HOUR=$(date -u +%H)
-        # 去除前导零（避免八进制解析问题）
-        CURRENT_HOUR=${CURRENT_HOUR#0}
-        # 如果去除后为空，说明原始值是"0"或"00"
-        if [ -z "$CURRENT_HOUR" ]; then
-          CURRENT_HOUR="0"
-        fi
-        
-        # 定义需要上传的UTC小时（对应北京时间6,11,14,15,16,17,21点）
-        UPLOAD_HOURS="22 03 06 07 08 09 13"
-        
-        # 检查当前小时是否在需要上传的列表中
-        UPLOAD=false
-        for hour in $UPLOAD_HOURS; do
-          # 去除小时的前导零以便比较
-          clean_hour=${hour#0}
-          if [ "$clean_hour" = "$CURRENT_HOUR" ]; then
-            UPLOAD=true
-            break
-          fi
-        done
-        
-        if [ "$UPLOAD" = true ]; then
-          echo "upload_cache=true" >> $GITHUB_OUTPUT
-          echo "✅ 当前UTC时间 ${CURRENT_HOUR}:00 需要上传缓存（对应北京时间 $(( (10#$CURRENT_HOUR + 8) % 24 )):00）"
-        else
-          echo "upload_cache=false" >> $GITHUB_OUTPUT
-          echo "⏭️  当前UTC时间 ${CURRENT_HOUR}:00 跳过上传缓存（对应北京时间 $(( (10#$CURRENT_HOUR + 8) % 24 )):00）"
-        fi
-
-    - name: 下载并安装系统依赖
+    
+    - name: 安装系统依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -144,12 +94,3 @@ jobs:
 
         TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/update-pdd.js
-    
-    # 条件保存缓存（只在关键时间点上传）
-    - name: 保存puppeteer用户数据
-      if: steps.check-upload.outputs.upload_cache == 'true'
-      continue-on-error: true
-      uses: actions/cache/save@v4
-      with:
-        path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-${{ github.run_id }}
