@@ -59,8 +59,8 @@ jobs:
         # 获取当前UTC小时
         CURRENT_HOUR=$(date -u +%H)
         
-        # 定义需要上传的UTC小时（对应北京时间6,11,14,17,21点）
-        UPLOAD_HOURS="22 03 06 09 13"
+        # 定义需要上传的UTC小时（对应北京时间6,11,14,15,17,21点）
+        UPLOAD_HOURS="22 03 06 07 09 13"
         
         # 检查当前小时是否在需要上传的列表中
         if [[ " $UPLOAD_HOURS " =~ " $CURRENT_HOUR " ]]; then
