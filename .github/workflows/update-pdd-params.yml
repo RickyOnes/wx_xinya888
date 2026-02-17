@@ -1,6 +1,6 @@
 ﻿name: 更新拼多多参数
 concurrency:
-  group: update-pdd-params
+  group: update-pdd-params-${{ github.ref }}
   cancel-in-progress: false
 on:
   schedule:
@@ -50,7 +50,9 @@ jobs:
       id: restore-cache
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-latest
+        key: ${{ runner.os }}-pdd-user-data-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-pdd-user-data-
 
     # 判断是否上传缓存（只在关键时间点上传）
     - name: 检查是否需要上传缓存
@@ -134,4 +136,4 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-latest
+        key: ${{ runner.os }}-pdd-user-data-${{ github.run_id }}
