@@ -30,15 +30,14 @@ jobs:
           ${{ runner.os }}-node-
 
     # 只恢复最近的用户数据缓存，不保存新缓存（节约存储空间）
-    - name: 恢复 puppeteer 用户数据缓存
-      uses: actions/cache@v4
+    - name: 恢复 puppeteer 用户数据缓存（只读）
+      uses: actions/cache/restore@v4  # ✅ 使用 restore 专用 action
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-quick-plan-user-data-readonly  # 静态key，仅用于查找
+        key: ${{ runner.os }}-user-data-readonly  # 永不命中
         restore-keys: |
           ${{ runner.os }}-pdd-user-data-
-        lookup-only: true  # 只查找缓存，不保存新缓存
-        fail-on-cache-miss: false  # 缓存未命中时不失败
+        # 没有 post 步骤，不会保存
                     
     - name: 安装系统依赖
       run: |
