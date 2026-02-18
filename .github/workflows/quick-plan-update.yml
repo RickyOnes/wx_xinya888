@@ -34,10 +34,10 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-quick-plan
+        key: ${{ runner.os }}-pdd-user-data-quick-plan-no-save  # 静态key，不保存新缓存
         restore-keys: |
           ${{ runner.os }}-pdd-user-data-
-        save-always: false
+        save: false  # 禁用缓存保存
         fail-on-cache-miss: false
                     
     - name: 安装系统依赖
