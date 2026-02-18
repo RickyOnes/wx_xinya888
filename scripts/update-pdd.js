@@ -263,8 +263,20 @@ class PDDOrderCrawler {
                     }
 
                     if (loginButton) {
+                        // 点击前设置导航等待
+                        const navigationPromise = this.page.waitForNavigation({
+                            waitUntil: 'domcontentloaded',
+                            timeout: 5000
+                        }).catch(() => {
+                            // 导航可能不会立即发生（比如需要验证码）
+                            return null;
+                        });
+                        
                         await loginButton.click().catch(() => {});
                         console.log('   ✅ 尝试点击登录按钮进行自动登录');
+                        
+                        // 等待可能的导航（最多5秒）
+                        await navigationPromise;
                     } else {
                         await this.page.keyboard.press('Enter').catch(() => {});
                         console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
@@ -276,12 +288,26 @@ class PDDOrderCrawler {
 
             // 4. 等待登录结果，检查是否跳转或需要验证码
             console.log('⏳ 等待登录处理...');
+            // 给页面一点时间稳定，避免导航期间访问页面属性
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
             const startTime = Date.now();
             const maxWaitTime = 300000; // 5分钟超时，与原逻辑一致
             const pollInterval = 2000; // 检查间隔2秒
             
             while (Date.now() - startTime < maxWaitTime) {
-                const currentUrl = this.page.url();
+                let currentUrl = '';
+                let verificationCodeInput = null;
+                
+                try {
+                    // 安全地获取当前URL
+                    currentUrl = await this.page.url();
+                } catch (urlError) {
+                    // 如果页面正在导航，url()可能失败，等待后重试
+                    console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
                 
                 // 检查是否已跳转到订单管理页面
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
@@ -290,7 +316,13 @@ class PDDOrderCrawler {
                 }
                 
                 // 检查是否需要验证码
-                const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+                try {
+                    verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+                } catch (elementError) {
+                    // 元素查找可能失败，继续下一次循环
+                    verificationCodeInput = null;
+                }
+                
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
                     // 调用验证码处理逻辑
@@ -413,8 +445,20 @@ class PDDOrderCrawler {
 
             // 点击确认按钮
             if (confirmButton) {
+                // 点击前设置导航等待
+                const navigationPromise = this.page.waitForNavigation({
+                    waitUntil: 'domcontentloaded',
+                    timeout: 5000
+                }).catch(() => {
+                    // 导航可能不会立即发生（比如验证码错误）
+                    return null;
+                });
+                
                 await confirmButton.click();
                 console.log('   ✅ 已点击确认按钮');
+                
+                // 等待可能的导航（最多5秒）
+                await navigationPromise;
 
                 // 等待一段时间（30秒）看看是否自动跳转
                 const verificationCodeWaitStart = Date.now();
@@ -422,7 +466,15 @@ class PDDOrderCrawler {
 
                 while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
                     // 检查是否已跳转到订单管理页面
-                    const currentUrl = this.page.url();
+                    let currentUrl = '';
+                    try {
+                        currentUrl = await this.page.url();
+                    } catch (urlError) {
+                        // 页面可能正在导航，等待后重试
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        continue;
+                    }
+                    
                     if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                         console.log('✅ 验证码正确，成功跳转到订单管理页面');
                         return true;
