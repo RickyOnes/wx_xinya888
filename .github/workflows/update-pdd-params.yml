@@ -1,7 +1,7 @@
 name: 更新拼多多参数
 on:
   schedule:
-    - cron: '45 22,23,0,3,4,6,7,9,10,13,14 * * *'  # 北京时的6:45、7:45、8:45、11:45、12:45、14:45、15:45、17:45、18:45、21:45、22:45触发
+    - cron: '18 22,23,3,6,9,13,14 * * *'  # 北京时的6:18、7:18、11:18、14:18、17:18、21:18、22:18触发
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
   repository_dispatch:   # 新增:支持外部API触发
     types: [external_cron_trigger]
@@ -30,15 +30,16 @@ jobs:
         key: ${{ runner.os }}-node-${{ hashFiles('**/package.json') }}
         restore-keys: |
           ${{ runner.os }}-node-
-    
-    - name: 缓存puppeteer用户数据
+
+    # 动态 Key(每次运行都保存缓存，且恢复最近的缓存）
+    - name: 动态 Key 缓存 puppeteer 用户数据
       uses: actions/cache@v4
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-pdd-user-data-${{ hashFiles('**/scripts/update-pdd.js') }}
+        key: ${{ runner.os }}-pdd-user-data-${{ github.run_id }}
         restore-keys: |
           ${{ runner.os }}-pdd-user-data-
-    
+                    
     - name: 安装系统依赖
       run: |
         sudo apt-get update

@@ -200,374 +200,269 @@ class PDDOrderCrawler {
     }
 
     async autoLogin() {
-
+        console.log('\n🌐 开始登录流程，从loginUrl直接登录...');
         
-        console.log('\n🔍 检查现有会话...');
-
-        // 首先尝试直接访问订单管理页面，使用现有cookies
         try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'networkidle0',
-                timeout: 15000  // 15秒超时
+            // 1. 直接访问登录页面（一次尝试，无重试）
+            console.log(`📝 导航到登录URL: ${CONFIG.loginUrl}`);
+            await this.page.goto(CONFIG.loginUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: CONFIG.timeouts.pageLoad
             });
+            console.log('✅ 登录页面加载成功');
 
-            // 检查是否成功进入订单管理页面
-            const currentUrl = this.page.url();
-            console.log(`   当前URL: ${currentUrl}`);
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 会话有效，已直接进入订单管理页面');
-                return true;
-            }
-        } catch (error) {
-            // 忽略导航错误，继续登录流程
-            console.log(`⚠️  会话检查导航错误: ${error.message}`);
-        }
-
-        console.log('🌐 会话无效或已过期，访问登录页面（带重定向），开始登录流程...');
-        let pageLoadRetryCount = 0;
-        const maxPageLoadRetries = 2;
-        let pageLoaded = false;
-        
-        while (pageLoadRetryCount < maxPageLoadRetries && !pageLoaded) {
+            // 2. 保留原版：切换到“账号登录”标签（第258-275行）
             try {
-                // 设置合理的超时时间，避免无限等待
-                await this.page.goto(CONFIG.loginUrl, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 30000  // 30秒超时
-                });
-                pageLoaded = true;
-                console.log('✅ 登录页面加载成功');
-            } catch (error) {
-                pageLoadRetryCount++;
-                console.log(`⚠️ 页面导航出现问题 (重试 ${pageLoadRetryCount}/${maxPageLoadRetries}):`, error.message);
-                if (pageLoadRetryCount < maxPageLoadRetries) {
-                    console.log('   ⏳ 等待5秒后重试...');
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                } else {
-                    console.log('❌ 页面加载失败，达到最大重试次数');
-                }
-            }
-        }
-        
-        if (!pageLoaded) {
-            console.log('❌ 无法加载登录页面，登录失败');
-            return false;
-        }
-
-        // 页面打开后尝试切换到“账号登录”标签（如果存在）
-        try {
-            const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
-            if (tabContainer) {
-                const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
-                if (items && items.length >= 2) {
-                    // 第二个通常是"账号登录"
-                    const secondClass = await this.page.evaluate(el => el.className, items[1]);
-                    if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
-                        await items[1].click().catch(() => {});
-                        console.log('   ✅ 已切换到账号登录标签');
-                        // 等待表单渲染
-                        await new Promise(r => setTimeout(r, 500));
+                const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
+                if (tabContainer) {
+                    const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
+                    if (items && items.length >= 2) {
+                        // 第二个通常是"账号登录"
+                        const secondClass = await this.page.evaluate(el => el.className, items[1]);
+                        if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
+                            await items[1].click().catch(() => {});
+                            console.log('   ✅ 已切换到账号登录标签');
+                            // 等待表单渲染
+                            await new Promise(r => setTimeout(r, 500));
+                        }
                     }
                 }
-            }
-        } catch (e) {
-            // 忽略切换标签时的错误
-        }
-
-        const startTime = Date.now();
-        const pollInterval = 2000;
-        const statusLogInterval = 5000;
-        let lastStatusLog = 0;
-        
-        // 新增：无进展检测和重试机制
-        let lastUrl = this.page.url();
-        let sameUrlCount = 0;
-        const maxSameUrlCount = 30; // 连续30次检查URL无变化（约60秒）则重新加载
-        let reloadCount = 0;
-        const maxReloadCount = 3; // 最多重新加载3次
-
-        // 持续轮询，直到页面跳转到订单管理页面
-        while (true) {
-            const currentUrl = this.page.url();
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 已处于订单管理页面：',currentUrl);
-                
-
-                
-                return true;
+            } catch (e) {
+                // 忽略切换标签时的错误
             }
 
-            // 检查是否为错误页面（网络错误等）
-            if (currentUrl.startsWith('chrome-error://') || 
-                currentUrl.startsWith('about:blank') || 
-                currentUrl.startsWith('data:') ||
-                currentUrl.includes('error') ||
-                currentUrl.includes('failed')) {
-                console.log(`⚠️  检测到错误页面: ${currentUrl}，尝试重新加载...`);
+            // 3. 保留原版：填写用户名和密码（第359-401行）
+            const usernameEl = await this.page.$('#usernameId');
+            const passwordEl = await this.page.$('#passwordId');
+
+            if (usernameEl && passwordEl) {
+                // 填充用户名
                 try {
-                    await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-                    console.log('✅ 错误页面重新加载成功');
-                    // 重新加载后等待一段时间再继续
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    continue;
-                } catch (reloadError) {
-                    console.log('⚠️ 错误页面重新加载失败:', reloadError.message);
-                }
-            }
-
-            // 检查URL是否有变化
-            if (currentUrl === lastUrl) {
-                sameUrlCount++;
-                // 如果URL长时间无变化，可能是页面卡住了
-                if (sameUrlCount >= maxSameUrlCount) {
-                    console.log(`⚠️  URL连续${sameUrlCount}次无变化，可能页面卡住，尝试重新加载...`);
-                    try {
-                        await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-                        console.log('✅ 页面重新加载成功');
-                        sameUrlCount = 0;
-                        reloadCount++;
-                        lastUrl = this.page.url(); // 更新上次URL
-                        
-                        // 检查是否达到最大重载次数
-                        if (reloadCount >= maxReloadCount) {
-                            console.log('❌ 达到最大重新加载次数，登录失败');
-                            return false;
-                        }
-                        
-                        // 重新加载后等待一段时间再继续
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        continue;
-                    } catch (reloadError) {
-                        console.log('⚠️ 页面重新加载失败:', reloadError.message);
-                        // 继续执行，可能网络有问题
+                    const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
+                    if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
+                        await usernameEl.type(this.loginCredentials.username, { delay: 50 });
+                        console.log('   ✅ 已输入用户名');
                     }
-                }
-            } else {
-                // URL有变化，重置计数器
-                sameUrlCount = 0;
-                lastUrl = currentUrl;
-                console.log(`   🔄 URL变化: ${currentUrl}`);
-            }
+                } catch (e) {}
 
-            const now = Date.now();
-            if (now - lastStatusLog > statusLogInterval) {
-                const elapsed = Math.floor((now - startTime) / 1000);
-                console.log(`⏳ 等待登录或页面跳转中... 已等待 ${elapsed} 秒。`);
-                lastStatusLog = now;
-            }
-
-            // 如果出现登录表单，尝试自动填写
-            try {
-                const usernameEl = await this.page.$('#usernameId');
-                const passwordEl = await this.page.$('#passwordId');
-
-                if (usernameEl && passwordEl) {
-                    // 填充用户名
-                    try {
-                        const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
-                        if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
-                            await usernameEl.type(this.loginCredentials.username, { delay: 50 });
-                            console.log('   ✅ 已输入用户名');
-                        }
-                    } catch (e) {}
-
-                    // 填充密码
-                    try {
-                        const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
-                        if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
-                            await passwordEl.type(this.loginCredentials.password, { delay: 50 });
-                            console.log('   ✅ 已输入密码');
-                        }
-                    } catch (e) {}
-
-                    // 尝试点击登录按钮或按回车
-                    try {
-                        let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
-                        if (!loginButton) {
-                            const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
-                            if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
-                        }
-
-                        if (loginButton) {
-                            await loginButton.click().catch(() => {});
-                            console.log('   ✅ 尝试点击登录按钮进行自动登录');
-                        } else {
-                            await this.page.keyboard.press('Enter').catch(() => {});
-                            console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
-                        }
-                    } catch (e) {
-                        // 忽略点击失败
+                // 填充密码
+                try {
+                    const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
+                    if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
+                        await passwordEl.type(this.loginCredentials.password, { delay: 50 });
+                        console.log('   ✅ 已输入密码');
                     }
-                }
+                } catch (e) {}
 
-                // 检查是否出现验证码输入框（用户提供的元素结构）
+                // 尝试点击登录按钮或按回车
+                try {
+                    let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
+                    if (!loginButton) {
+                        const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
+                        if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
+                    }
+
+                    if (loginButton) {
+                        await loginButton.click().catch(() => {});
+                        console.log('   ✅ 尝试点击登录按钮进行自动登录');
+                    } else {
+                        await this.page.keyboard.press('Enter').catch(() => {});
+                        console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
+                    }
+                } catch (e) {
+                    // 忽略点击失败
+                }
+            }
+
+            // 4. 等待登录结果，检查是否跳转或需要验证码
+            console.log('⏳ 等待登录处理...');
+            const startTime = Date.now();
+            const maxWaitTime = 300000; // 5分钟超时，与原逻辑一致
+            const pollInterval = 2000; // 检查间隔2秒
+            
+            while (Date.now() - startTime < maxWaitTime) {
+                const currentUrl = this.page.url();
+                
+                // 检查是否已跳转到订单管理页面
+                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                    console.log('✅ 登录成功，已进入订单管理页面');
+                    return true;
+                }
+                
+                // 检查是否需要验证码
                 const verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
+                    // 调用验证码处理逻辑
+                    return await this.handleVerificationCode(verificationCodeInput);
+                }
+                
+                // 等待2秒后再次检查
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+            
+            console.log('❌ 登录超时（5分钟），退出');
+            return false;
+            
+        } catch (error) {
+            console.log('❌ 登录过程出现错误:', error.message);
+            return false;
+        }
+    }
 
-                    // 检查确认按钮是否存在
-                    const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
+    async handleVerificationCode(verificationCodeInput) {
+        console.log('📱 检测到验证码输入框，可能需要短信验证码');
 
-                    let verificationCode = null;
+        // 检查确认按钮是否存在
+        const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
 
-                    // 只从Supabase获取验证码
-                    if (this.supabaseClient) {
-                        console.log('🔍 从Supabase获取验证码...');
-                        try {
-                            const { data, error } = await this.supabaseClient
-                                .from('pdd_verification_codes')
-                                .select('code, updated_at')
-                                .eq('username', this.loginCredentials.username)
-                                .single();
+        let verificationCode = null;
 
-                            if (!error && data && data.code) {
-                                // 检查验证码是否新鲜（10分钟内）
-                                const updatedAt = new Date(data.updated_at);
-                                const now = new Date();
-                                const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+        // 只从Supabase获取验证码
+        if (this.supabaseClient) {
+            console.log('🔍 从Supabase获取验证码...');
+            try {
+                const { data, error } = await this.supabaseClient
+                    .from('pdd_verification_codes')
+                    .select('code, updated_at')
+                    .eq('username', this.loginCredentials.username)
+                    .single();
 
-                                if (updatedAt > tenMinutesAgo) {
-                                    verificationCode = data.code;
-                                    console.log(`   🔑 从Supabase获取验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
-                                } else {
-                                    console.log(`   ⚠️  Supabase中的验证码已过期 (更新时间: ${updatedAt.toLocaleString()})`);
-                                }
-                            } else if (error && error.code !== 'PGRST116') { // PGRST116是"未找到行"的错误
-                                console.log(`   ⚠️  查询Supabase失败: ${error.message}`);
-                            }
-                        } catch (e) {
-                            console.log(`   ⚠️  从Supabase获取验证码异常: ${e.message}`);
-                        }
+                if (!error && data && data.code) {
+                    // 检查验证码是否新鲜（10分钟内）
+                    const updatedAt = new Date(data.updated_at);
+                    const now = new Date();
+                    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+
+                    if (updatedAt > tenMinutesAgo) {
+                        verificationCode = data.code;
+                        console.log(`   🔑 从Supabase获取验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
                     } else {
-                        console.log('❌ Supabase客户端未初始化，无法获取验证码');
-                        return false;
+                        console.log(`   ⚠️  Supabase中的验证码已过期 (更新时间: ${updatedAt.toLocaleString()})`);
+                    }
+                } else if (error && error.code !== 'PGRST116') { // PGRST116是"未找到行"的错误
+                    console.log(`   ⚠️  查询Supabase失败: ${error.message}`);
+                }
+            } catch (e) {
+                console.log(`   ⚠️  从Supabase获取验证码异常: ${e.message}`);
+            }
+        } else {
+            console.log('❌ Supabase客户端未初始化，无法获取验证码');
+            return false;
+        }
+
+        // 如果没有有效的验证码，等待用户更新（轮询Supabase）
+        if (!verificationCode) {
+            console.log('⏳ 未找到有效验证码，等待用户更新...');
+            console.log('   📝 请更新Supabase表 pdd_verification_codes (字段: username, code)');
+            console.log('   ⏰ 等待120秒（拼多多验证码有效期10分钟）...');
+
+            const waitStartTime = Date.now();
+            const maxWaitTime = 120000; // 120秒
+            const pollInterval = 5000; // 每5秒检查一次
+
+            while (Date.now() - waitStartTime < maxWaitTime && !verificationCode) {
+                // 等待一段时间
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+                console.log(`   🔍 第${Math.floor((Date.now() - waitStartTime) / pollInterval)}次检查更新...`);
+
+                // 检查Supabase
+                if (this.supabaseClient) {
+                    try {
+                        const { data, error } = await this.supabaseClient
+                            .from('pdd_verification_codes')
+                            .select('code, updated_at')
+                            .eq('username', this.loginCredentials.username)
+                            .single();
+
+                        if (!error && data && data.code) {
+                            // 检查验证码是否新鲜
+                            const updatedAt = new Date(data.updated_at);
+                            const now = new Date();
+                            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+
+                            if (updatedAt > tenMinutesAgo) {
+                                verificationCode = data.code;
+                                console.log(`   🔑 从Supabase获取到更新后的验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
+                                break;
+                            }
+                        }
+                    } catch (e) {
+                        // 忽略Supabase查询错误
+                    }
+                }
+            }
+
+            if (!verificationCode) {
+                console.log('❌ 等待超时，未获取到验证码');
+                console.log('   ℹ️  请更新验证码后重新运行脚本');
+                return false;
+            }
+        }
+
+        // 4. 使用获取到的验证码进行自动填写
+        console.log(`   🔑 使用验证码: ${verificationCode}`);
+
+        try {
+            // 清空输入框并填写验证码
+            await verificationCodeInput.click({ clickCount: 3 }); // 全选
+            await verificationCodeInput.press('Backspace'); // 删除
+            await verificationCodeInput.type(verificationCode, { delay: 50 });
+            console.log('   ✅ 已输入验证码');
+
+            // 点击确认按钮
+            if (confirmButton) {
+                await confirmButton.click();
+                console.log('   ✅ 已点击确认按钮');
+
+                // 等待一段时间（30秒）看看是否自动跳转
+                const verificationCodeWaitStart = Date.now();
+                const maxVerificationCodeWait = 30000; // 30秒
+
+                while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
+                    // 检查是否已跳转到订单管理页面
+                    const currentUrl = this.page.url();
+                    if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                        console.log('✅ 验证码正确，成功跳转到订单管理页面');
+                        return true;
                     }
 
-                    // 如果没有有效的验证码，等待用户更新（轮询Supabase）
-                    if (!verificationCode) {
-                        console.log('⏳ 未找到有效验证码，等待用户更新...');
-                        console.log('   📝 请更新Supabase表 pdd_verification_codes (字段: username, code)');
-                        console.log('   ⏰ 等待120秒（拼多多验证码有效期10分钟）...');
+                    // 检查是否出现错误提示或验证码输入框是否消失
+                    const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                    if (!stillExists) {
+                        console.log('✅ 验证码输入框已消失，可能已自动处理');
+                        break;
+                    }
 
-                        const waitStartTime = Date.now();
-                        const maxWaitTime = 120000; // 120秒
-                        const pollInterval = 5000; // 每5秒检查一次
-
-                        while (Date.now() - waitStartTime < maxWaitTime && !verificationCode) {
-                            // 等待一段时间
-                            await new Promise(resolve => setTimeout(resolve, pollInterval));
-
-                            console.log(`   🔍 第${Math.floor((Date.now() - waitStartTime) / pollInterval)}次检查更新...`);
-
-                            // 检查Supabase
-                            if (this.supabaseClient) {
-                                try {
-                                    const { data, error } = await this.supabaseClient
-                                        .from('pdd_verification_codes')
-                                        .select('code, updated_at')
-                                        .eq('username', this.loginCredentials.username)
-                                        .single();
-
-                                    if (!error && data && data.code) {
-                                        // 检查验证码是否新鲜
-                                        const updatedAt = new Date(data.updated_at);
-                                        const now = new Date();
-                                        const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
-
-                                        if (updatedAt > tenMinutesAgo) {
-                                            verificationCode = data.code;
-                                            console.log(`   🔑 从Supabase获取到更新后的验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
-                                            break;
-                                        }
-                                    }
-                                } catch (e) {
-                                    // 忽略Supabase查询错误
-                                }
-                            }
-                        }
-
-                        if (!verificationCode) {
-                            console.log('❌ 等待超时，未获取到验证码');
-                            console.log('   ℹ️  请更新验证码后重新运行脚本');
+                    // 检查是否有错误提示
+                    const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
+                    if (errorElement) {
+                        const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
+                        if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
+                            console.log(`❌ 验证码错误: ${errorText}`);
                             return false;
                         }
                     }
 
-                    // 4. 使用获取到的验证码进行自动填写
-                    console.log(`   🔑 使用验证码: ${verificationCode}`);
-
-                    try {
-                        // 清空输入框并填写验证码
-                        await verificationCodeInput.click({ clickCount: 3 }); // 全选
-                        await verificationCodeInput.press('Backspace'); // 删除
-                        await verificationCodeInput.type(verificationCode, { delay: 50 });
-                        console.log('   ✅ 已输入验证码');
-
-                        // 点击确认按钮
-                        if (confirmButton) {
-                            await confirmButton.click();
-                            console.log('   ✅ 已点击确认按钮');
-
-                            // 等待一段时间（30秒）看看是否自动跳转
-                            const verificationCodeWaitStart = Date.now();
-                            const maxVerificationCodeWait = 30000; // 30秒
-
-                            while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
-                                // 检查是否已跳转到订单管理页面
-                                const currentUrl = this.page.url();
-                                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                                    console.log('✅ 验证码正确，成功跳转到订单管理页面');
-                                    
-
-                                    
-                                    return true;
-                                }
-
-                                // 检查是否出现错误提示或验证码输入框是否消失
-                                const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                                if (!stillExists) {
-                                    console.log('✅ 验证码输入框已消失，可能已自动处理');
-                                    break;
-                                }
-
-                                // 检查是否有错误提示
-                                const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
-                                if (errorElement) {
-                                    const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
-                                    if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
-                                        console.log(`❌ 验证码错误: ${errorText}`);
-                                        return false;
-                                    }
-                                }
-
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-                            }
-
-                            // 如果30秒后仍然在验证码页面，返回false
-                            const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                            if (stillOnVerificationPage) {
-                                console.log('❌ 验证码可能错误或已过期，页面未跳转');
-                                return false;
-                            }
-                        }
-                    } catch (e) {
-                        console.log('   ⚠️  自动填写验证码失败:', e.message);
-                    }
-
-                    // 标记需要验证码
-                    this.capturedData.requiresVerificationCode = true;
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                 }
-            } catch (e) {
-                // 忽略查询表单时的错误
-            }
-            // 等待一段时间然后再次检查（设置10分钟超时）
-            if (Date.now() - startTime > 5 * 60 * 1000) {
-                console.log('❌ 登录超时（5分钟），退出');
-                return false;
-            }
 
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
+                // 如果30秒后仍然在验证码页面，返回false
+                const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                if (stillOnVerificationPage) {
+                    console.log('❌ 验证码可能错误或已过期，页面未跳转');
+                    return false;
+                }
+            }
+        } catch (e) {
+            console.log('   ⚠️  自动填写验证码失败:', e.message);
         }
+
+        // 标记需要验证码
+        this.capturedData.requiresVerificationCode = true;
+        // 如果执行到这里，说明验证码处理未成功跳转，返回false
+        return false;
     }
 
     async captureCookies() {
