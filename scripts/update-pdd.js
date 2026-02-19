@@ -460,10 +460,13 @@ class PDDOrderCrawler {
                 // 等待可能的导航（最多5秒）
                 await navigationPromise;
 
-                // 等待一段时间（30秒）看看是否自动跳转
+                // 等待一段时间（60秒）看看是否自动跳转
                 const verificationCodeWaitStart = Date.now();
-                const maxVerificationCodeWait = 30000; // 30秒
+                const maxVerificationCodeWait = 60000; // 60秒
 
+                let verificationCodeAccepted = false;
+                let verificationCodeDisappearTime = null;
+                
                 while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
                     // 检查是否已跳转到订单管理页面
                     let currentUrl = '';
@@ -480,19 +483,29 @@ class PDDOrderCrawler {
                         return true;
                     }
 
-                    // 检查是否出现错误提示或验证码输入框是否消失
-                    const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                    if (!stillExists) {
-                        console.log('✅ 验证码输入框已消失，可能已自动处理');
-                        break;
-                    }
-
-                    // 检查是否有错误提示
+                    // 始终检查错误提示（无论输入框状态如何）
                     const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
                     if (errorElement) {
                         const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
                         if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
                             console.log(`❌ 验证码错误: ${errorText}`);
+                            return false;
+                        }
+                    }
+                    
+                    // 只在验证码输入框未被接受时检查输入框状态
+                    if (!verificationCodeAccepted) {
+                        const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                        if (!stillExists) {
+                            console.log('✅ 验证码输入框已消失，可能已自动处理');
+                            verificationCodeAccepted = true;
+                            verificationCodeDisappearTime = Date.now();
+                        }
+                    } else {
+                        // 验证码已被接受，继续等待跳转
+                        // 如果验证码输入框消失后已经过了30秒仍未跳转，返回false
+                        if (verificationCodeDisappearTime && Date.now() - verificationCodeDisappearTime > 30000) {
+                            console.log('❌ 验证码已接受，但页面长时间未跳转，可能登录失败');
                             return false;
                         }
                     }
