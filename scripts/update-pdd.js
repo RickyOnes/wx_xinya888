@@ -227,8 +227,14 @@ class PDDOrderCrawler {
             const initialUrl = this.page.url();
             console.log(`   初始URL: ${initialUrl}`);
             
-            // 等待5秒，每1秒检查一次URL是否变化
+            // 等待5秒，每1秒检查一次URL是否变化，同时检查是否已捕获到anti-content
             for (let i = 0; i < 5; i++) {
+                // 检查是否已经捕获到anti-content，如果是则提前结束等待
+                if (this.capturedData.antiContent) {
+                    console.log(`   ✅ 已捕获到anti-content，提前结束等待`);
+                    return true;
+                }
+                
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 let currentUrl = '';
                 try {
@@ -289,7 +295,7 @@ class PDDOrderCrawler {
             });
             console.log('✅ 登录页面加载成功');
 
-            // 切换到“账号登录”标签（并在切换前/后模拟滚动）
+            // 切换到"账号登录"标签（并在切换前/后模拟滚动）
             try {
                 const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
                 if (tabContainer) {
