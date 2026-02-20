@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y \
     echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
     apt-get update && \
     # 安装指定版本的 Chrome（此处以 145.0.7632.26 为例，实际可用版本号需查询仓库）
-    apt-get install -y google-chrome-stable=1145.0.7632.109-1 --no-install-recommends && \
+    apt-get install -y google-chrome-stable=145.0.7632.109-1 --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 3. 设置时区
