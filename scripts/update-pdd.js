@@ -230,7 +230,12 @@ class PDDOrderCrawler {
             // 等待5秒，每1秒检查一次URL是否变化
             for (let i = 0; i < 5; i++) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
-                const currentUrl = await this.page.url().catch(() => '');
+                let currentUrl = '';
+                try {
+                    currentUrl = this.page.url();
+                } catch (e) {
+                    // 忽略错误
+                }
                 console.log(`   等待 ${i+1}/5秒，当前URL: ${currentUrl}`);
                 
                 if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
@@ -240,7 +245,12 @@ class PDDOrderCrawler {
                 }
             }
             
-            const finalUrl = await this.page.url().catch(() => '');
+            let finalUrl = '';
+            try {
+                finalUrl = this.page.url();
+            } catch (e) {
+                // 忽略错误
+            }
             console.log(`   最终URL: ${finalUrl}`);
             
             // 加强会话检测：不仅检查URL，还检查页面元素
@@ -362,7 +372,7 @@ class PDDOrderCrawler {
                 let verificationCodeInput = null;
 
                 try {
-                    currentUrl = await this.page.url();
+                    currentUrl = this.page.url();
                 } catch (urlError) {
                     console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
                     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -510,7 +520,7 @@ class PDDOrderCrawler {
                 while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
                     let currentUrl = '';
                     try {
-                        currentUrl = await this.page.url();
+                        currentUrl = this.page.url();
                     } catch (urlError) {
                         await new Promise(resolve => setTimeout(resolve, 1000));
                         continue;
@@ -622,7 +632,12 @@ class PDDOrderCrawler {
                         console.log(`❌ 重新导航失败: ${error.message}`);
                         
                         // 检查失败后是否在登录页面
-                        const urlAfterFail = await this.page.url().catch(() => '');
+                        let urlAfterFail = '';
+                        try {
+                            urlAfterFail = this.page.url();
+                        } catch (e) {
+                            // 忽略错误
+                        }
                         if (urlAfterFail.includes('mms.pinduoduo.com/login')) {
                             console.log(`⚠️  重新导航失败后页面在登录页面，需要重新登录`);
                             needReLogin = true;

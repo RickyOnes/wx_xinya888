@@ -26,13 +26,16 @@ jobs:
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
       # 第一步：尝试恢复缓存
+      # 使用唯一的工作流运行ID作为缓存键避免并发冲突，但通过restore-keys回退到历史缓存
       - name: Restore puppeteer user data
         id: cache-restore
         uses: actions/cache/restore@v4
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}
+            ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-
             ${{ runner.os }}-pdd-user-data-
 
       # 由于镜像已安装所有依赖，无需再运行 npm install
@@ -51,10 +54,11 @@ jobs:
           TZ: Asia/Shanghai
         run: node scripts/update-pdd.js
 
-      # 第三步：无论脚本执行成功与否，都保存更新后的缓存（关键改动）
+      # 第三步：保存更新后的缓存
+      # 使用唯一的工作流运行ID作为缓存键，避免并发冲突
       - name: Save puppeteer user data
         if: success()  # 确保脚本失败时不保存，仅成功时保存
         uses: actions/cache/save@v4
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}        
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}        
