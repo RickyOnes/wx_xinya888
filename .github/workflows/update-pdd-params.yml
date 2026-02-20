@@ -25,18 +25,20 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      - name: Cache puppeteer user data
-        uses: actions/cache@v4
+      # 第一步：尝试恢复缓存
+      - name: Restore puppeteer user data
+        id: cache-restore
+        uses: actions/cache/restore@v4
         with:
           path: ./puppeteer_user_data
           key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}
           restore-keys: |
             ${{ runner.os }}-pdd-user-data-
-          save-always: true   # 新增此行
 
       # 由于镜像已安装所有依赖，无需再运行 npm install
       # 如果镜像未安装依赖，可以在此步骤运行，但建议在构建镜像时完成
 
+      # 第二步：运行您的脚本（脚本会生成/更新 ./puppeteer_user_data 中的数据）
       - name: 运行更新脚本
         env:
           NODE_PATH: /app/node_modules  # 新增，让 Node 能找到镜像中的依赖
@@ -48,3 +50,11 @@ jobs:
           PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
           TZ: Asia/Shanghai
         run: node scripts/update-pdd.js
+
+      # 第三步：无论脚本执行成功与否，都保存更新后的缓存（关键改动）
+      - name: Save puppeteer user data
+        if: success()  # 确保脚本失败时不保存，仅成功时保存
+        uses: actions/cache/save@v4
+        with:
+          path: ./puppeteer_user_data
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}        

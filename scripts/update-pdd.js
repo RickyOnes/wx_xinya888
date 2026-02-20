@@ -218,16 +218,50 @@ class PDDOrderCrawler {
         console.log('\n🔍 尝试使用现有会话...');
         try {
             await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000
+                waitUntil: 'networkidle0', // 改为 networkidle0，确保页面完全加载
+                timeout: 30000
             });
-            const currentUrl = this.page.url();
-            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                console.log('✅ 会话有效，直接进入订单管理页面');
-                return true;
+            
+            // 等待页面稳定并检查是否有重定向
+            let urlStable = true;
+            const initialUrl = this.page.url();
+            console.log(`   初始URL: ${initialUrl}`);
+            
+            // 等待5秒，每1秒检查一次URL是否变化
+            for (let i = 0; i < 5; i++) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const currentUrl = await this.page.url().catch(() => '');
+                console.log(`   等待 ${i+1}/5秒，当前URL: ${currentUrl}`);
+                
+                if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                    console.log(`   ⚠️  URL已变化到: ${currentUrl}，会话可能已失效`);
+                    urlStable = false;
+                    break;
+                }
+            }
+            
+            const finalUrl = await this.page.url().catch(() => '');
+            console.log(`   最终URL: ${finalUrl}`);
+            
+            // 加强会话检测：不仅检查URL，还检查页面元素
+            if (urlStable && finalUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                // 检查是否实际在订单管理页面（没有登录表单）
+                const hasLoginForm = await this.page.$('#usernameId, input[placeholder="请输入手机号"]').catch(() => null);
+                const hasPasswordInput = await this.page.$('#passwordId').catch(() => null);
+                const hasLoginButton = await this.page.$('button[data-testid="beast-core-button"]').catch(() => null);
+                
+                if (hasLoginForm || hasPasswordInput || hasLoginButton) {
+                    console.log('⚠️ 检测到登录相关元素，会话可能已失效');
+                    // 继续执行登录流程
+                } else {
+                    console.log('✅ 会话有效，直接进入订单管理页面');
+                    return true;
+                }
+            } else {
+                console.log('ℹ️ 会话无效或URL不稳定，开始登录流程');
             }
         } catch (error) {
-            console.log('ℹ️ 会话无效，开始登录流程');
+            console.log(`ℹ️ 会话检测失败: ${error.message}，开始登录流程`);
         }      
         console.log('\n🌐 开始登录流程，从loginUrl直接登录...');
 
@@ -550,10 +584,25 @@ class PDDOrderCrawler {
         const startTime = Date.now();
         const maxWaitTime = 900000; // 15分钟
         let retryCount = 0;
-        const maxRetries = 1;
+        const maxRetries = 3;
+        let needReLogin = false;
 
         while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
             const currentUrl = this.page.url();
+            
+            // 检查是否需要重新登录（页面在登录页面）
+            if (currentUrl.includes('mms.pinduoduo.com/login')) {
+                console.log(`⚠️  页面已跳转到登录页面，会话可能已失效`);
+                if (retryCount < maxRetries) {
+                    console.log(`🔄 检测到登录页面，尝试重新登录 (重试 ${retryCount + 1}/${maxRetries})...`);
+                    needReLogin = true;
+                    break;
+                } else {
+                    console.log('❌ 超过最大重试次数，停止等待API请求');
+                    break;
+                }
+            }
+            
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log(`⚠️  页面已离开订单管理页面，当前URL: ${currentUrl}`);
                 if (retryCount < maxRetries) {
@@ -561,13 +610,23 @@ class PDDOrderCrawler {
                     try {
                         await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
                             waitUntil: 'networkidle0',
-                            timeout: 10000
+                            timeout: 15000
                         });
                         retryCount++;
                         console.log(`✅ 重新导航成功，继续等待API请求...`);
+                        
+                        // 重新导航后等待页面稳定
+                        await new Promise(resolve => setTimeout(resolve, 3000));
                         continue;
                     } catch (error) {
                         console.log(`❌ 重新导航失败: ${error.message}`);
+                        
+                        // 检查失败后是否在登录页面
+                        const urlAfterFail = await this.page.url().catch(() => '');
+                        if (urlAfterFail.includes('mms.pinduoduo.com/login')) {
+                            console.log(`⚠️  重新导航失败后页面在登录页面，需要重新登录`);
+                            needReLogin = true;
+                        }
                         break;
                     }
                 } else {
@@ -582,6 +641,11 @@ class PDDOrderCrawler {
             if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
                 console.log(`   已等待 ${elapsedSeconds} 秒...`);
             }
+        }
+
+        if (needReLogin) {
+            console.log(`🔄 检测到需要重新登录，抛出错误让外层处理`);
+            throw new Error('SESSION_EXPIRED');
         }
 
         if (this.capturedData.antiContent) {
@@ -668,15 +732,59 @@ class PDDOrderCrawler {
 
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
 
-            const loginSuccess = await this.autoLogin();
+            let loginSuccess = await this.autoLogin();
 
             if (!loginSuccess) {
                 console.log('❌ 登录失败，程序退出');
                 return;
             }
 
-            const apiCaptured = await this.waitForAPIRequest();
-
+            // 尝试捕获API请求，允许会话过期重试
+            let apiCaptured = false;
+            let sessionRetryCount = 0;
+            const maxSessionRetries = 2;
+            
+            while (!apiCaptured && sessionRetryCount < maxSessionRetries) {
+                try {
+                    apiCaptured = await this.waitForAPIRequest();
+                    
+                    if (!apiCaptured) {
+                        throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
+                    }
+                } catch (error) {
+                    if (error.message === 'SESSION_EXPIRED' && sessionRetryCount < maxSessionRetries) {
+                        sessionRetryCount++;
+                        console.log(`\n🔄 会话过期，尝试重新登录 (重试 ${sessionRetryCount}/${maxSessionRetries})...`);
+                        
+                        // 重新导航到登录页面执行登录
+                        console.log('🌐 重新执行登录流程...');
+                        try {
+                            await this.page.goto(CONFIG.loginUrl, {
+                                waitUntil: 'domcontentloaded',
+                                timeout: CONFIG.timeouts.pageLoad
+                            });
+                            
+                            // 执行登录流程（这里可以调用一个专门的登录方法，但为了简单，我们重用autoLogin的登录部分）
+                            // 实际上，autoLogin会先尝试现有会话，但我们现在需要强制登录
+                            // 暂时重新调用autoLogin，它会检测到会话无效
+                            loginSuccess = await this.autoLogin();
+                            if (!loginSuccess) {
+                                console.log('❌ 重新登录失败，退出');
+                                return;
+                            }
+                            console.log('✅ 重新登录成功，继续等待API请求...');
+                            continue;
+                        } catch (loginError) {
+                            console.log(`❌ 重新登录失败: ${loginError.message}`);
+                            break;
+                        }
+                    } else {
+                        // 其他错误，直接抛出
+                        throw error;
+                    }
+                }
+            }
+            
             if (!apiCaptured) {
                 throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
