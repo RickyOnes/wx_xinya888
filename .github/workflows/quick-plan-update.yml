@@ -7,28 +7,16 @@ on:
 jobs:
   update:
     runs-on: ubuntu-22.04
+    # 指定使用自定义 Docker 镜像（GHCR模式）
+    container:
+      image: ghcr.io/rickyones/pdd-crawler:latest  # 注意小写
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}  # 使用内置 token 拉取镜像（如果镜像公开可省略）
+
     steps:
     - uses: actions/checkout@v4
     
-    - name: 安装 Node.js并缓存
-      uses: actions/setup-node@v4
-      with:
-        node-version: '24.7.0'
-        cache: 'npm'
-        cache-dependency-path: 'package.json'
-    
-    # 缓存npm包和puppeteer浏览器，减少安装时间
-    - name: 缓存puppeteer、npm、node_modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.npm
-          ~/.cache/puppeteer
-          node_modules
-        key: ${{ runner.os }}-node-${{ hashFiles('**/package.json') }}
-        restore-keys: |
-          ${{ runner.os }}-node-
-
     # 只恢复最近的用户数据缓存，不保存新缓存（节约存储空间）
     - name: 恢复 puppeteer 用户数据缓存（只读）
       uses: actions/cache/restore@v4  # ✅ 使用 restore 专用 action
@@ -39,58 +27,14 @@ jobs:
           ${{ runner.os }}-pdd-user-data-
         # 没有 post 步骤，不会保存
                     
-    - name: 安装系统依赖
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ca-certificates \
-          fonts-liberation \
-          libasound2 \
-          libatk-bridge2.0-0 \
-          libatk1.0-0 \
-          libc6 \
-          libcairo2 \
-          libcups2 \
-          libdbus-1-3 \
-          libexpat1 \
-          libfontconfig1 \
-          libgbm1 \
-          libgcc1 \
-          libglib2.0-0 \
-          libgtk-3-0 \
-          libnspr4 \
-          libnss3 \
-          libpango-1.0-0 \
-          libpangocairo-1.0-0 \
-          libstdc++6 \
-          libx11-6 \
-          libx11-xcb1 \
-          libxcb1 \
-          libxcomposite1 \
-          libxcursor1 \
-          libxdamage1 \
-          libxext6 \
-          libxfixes3 \
-          libxi6 \
-          libxrandr2 \
-          libxrender1 \
-          libxss1 \
-          libxtst6 \
-          lsb-release \
-          wget \
-          xdg-utils 
-    
-    - name: 安装依赖
-      run: npm install
-    
     - name: 运行快速预估销量参数捕获脚本
       env:
+        NODE_PATH: /app/node_modules  # 新增，让 Node 能找到镜像中的依赖
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         PDD_ACCOUNTS_JSON: ${{ secrets.PDD_ACCOUNTS_JSON }}
         PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
-
         TZ: Asia/Shanghai  # 固定时区为中国上海
       run: node scripts/quick-plan-update.js
