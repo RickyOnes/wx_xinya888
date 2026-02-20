@@ -1,7 +1,7 @@
-# 基于官方 Node 20 镜像（slim 版本减小体积）
-FROM node:20-slim
+# 1. 固定 Node 版本
+FROM node:24.7.0-slim
 
-# 安装 Chrome 和必要系统依赖
+# 2. 安装 Chrome 所需的系统依赖（必须保留）
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -41,32 +41,28 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     --no-install-recommends && \
-    # 添加 Chrome 稳定版仓库并安装
+    # 添加 Chrome 稳定版仓库并安装指定版本的 Chrome
     wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
     echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
-    apt-get update && apt-get install -y google-chrome-stable --no-install-recommends && \
-    # 清理 apt 缓存以减小镜像体积
+    apt-get update && \
+    # 安装指定版本的 Chrome（此处以 145.0.7632.26 为例，实际可用版本号需查询仓库）
+    apt-get install -y google-chrome-stable=145.0.7632.26 --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 设置时区为上海
+# 3. 设置时区
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 安装中文字体（防止页面乱码）
+# 4. 安装中文字体（可选，防止页面乱码）
 RUN apt-get update && apt-get install -y fonts-wqy-zenhei --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 设置工作目录
 WORKDIR /app
 
-# 复制 package.json 和 package-lock.json（如果存在）
+# 5. 复制 package.json 并安装依赖（puppeteer 版本已在 package.json 中锁定）
 COPY package*.json ./
-
-# 安装项目依赖
 RUN npm install
 
-# 复制项目源代码
 COPY . .
 
-# 默认命令（可在 Actions 中覆盖）
 CMD ["node", "scripts/update-pdd.js"]
