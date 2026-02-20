@@ -15,7 +15,7 @@ const CONFIG = {
 
     // 浏览器配置（优化后）
     browserOptions: {
-        headless: true, // 保持无头，如需调试可改为 false
+        headless: new, // 保持无头，如需调试可改为 false
         defaultViewport: {
             width: 1366,
             height: 768
@@ -88,54 +88,76 @@ class PDDOrderCrawler {
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-
-        // 构建启动选项
-        const launchOptions = {
+    
+        // 确保用户数据目录存在并可写
+        const fs = require('fs').promises;
+        try {
+            await fs.mkdir(this.userDataDir, { recursive: true });
+        } catch (e) {
+            console.log(`   ⚠️ 无法创建目录: ${e.message}`);
+        }
+    
+        // 基础启动选项
+        const baseOptions = {
             ...CONFIG.browserOptions,
             userDataDir: this.userDataDir
         };
-
-        // 检测并使用系统 Chrome（如果存在）
+    
+        // 尝试使用系统 Chrome
+        let launchOptions = { ...baseOptions };
+        let useSystemChrome = false;
         try {
+            const { execSync } = require('child_process');
             execSync('which google-chrome', { stdio: 'ignore' });
             launchOptions.executablePath = '/usr/bin/google-chrome';
-            console.log('   ✅ 使用系统 Chrome: /usr/bin/google-chrome');
+            useSystemChrome = true;
+            console.log('   ✅ 将尝试使用系统 Chrome');
         } catch {
-            console.log('   ℹ️ 系统 Chrome 未找到，使用 Puppeteer 内置 Chromium');
+            console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
         }
-
-        this.browser = await puppeteer.launch(launchOptions);
+    
+        // 启动浏览器，失败时回退到内置 Chromium
+        try {
+            this.browser = await puppeteer.launch(launchOptions);
+            if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
+        } catch (error) {
+            if (useSystemChrome) {
+                console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
+                console.log('   🔄 尝试回退到 Puppeteer 内置 Chromium...');
+                delete launchOptions.executablePath; // 移除系统 Chrome 路径
+                try {
+                    this.browser = await puppeteer.launch(launchOptions);
+                    console.log('   ✅ 内置 Chromium 启动成功');
+                } catch (fallbackError) {
+                    console.error('❌ 所有浏览器启动尝试均失败:', fallbackError.message);
+                    throw fallbackError;
+                }
+            } else {
+                console.error('❌ 浏览器启动失败:', error.message);
+                throw error;
+            }
+        }
+    
         this.page = await this.browser.newPage();
-
-        // 修复用户代理设置（移除多余参数）
+    
+        // 设置用户代理
         await this.page.setUserAgent(
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
         );
-
-        // 设置额外的请求头
+    
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
         });
-
-        // 注入JavaScript来绕过自动化检测
+    
         await this.page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-            });
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5],
-            });
-
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['zh-CN', 'zh'],
-            });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         });
-
+    
         console.log('✅ 浏览器启动成功');
-        const version = await this.browser.version();
-        console.log(`📊 浏览器版本: ${version}`);
+        console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
     async setupRequestInterception() {
