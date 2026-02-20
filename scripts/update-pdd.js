@@ -1,6 +1,7 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
+const { execSync } = require('child_process'); // 用于检测系统 Chrome
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -12,9 +13,9 @@ const CONFIG = {
     targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
     targetApiEndpointDate: 'orianna-mms/goods/schedule/pageQuery',
 
-    // 浏览器配置
+    // 浏览器配置（优化后）
     browserOptions: {
-        headless: true,
+        headless: 'new',  // 新方法，字符串格式
         defaultViewport: {
             width: 1366,
             height: 768
@@ -22,24 +23,15 @@ const CONFIG = {
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--disable-gpu',
             '--window-size=1366,768',
-            '--start-maximized',
-            '--remote-debugging-port=9222',
-            '--disable-site-isolation-trials',
-            '--disable-blink-features=AutomationControlled',
-            '--allow-running-insecure-content',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
-            '--use-gl=swiftshader',  // 固定WebGL渲染器
-            '--disable-software-rasterizer',
             '--disable-webgl',
-            '--disable-canvas-aa',  // 禁用画布抗锯齿
+            '--disable-canvas-aa',
             '--disable-2d-canvas-clip-aa',
-            '--disable-gl-drawing-for-tests'
+            '--use-gl=swiftshader',
+            '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests'
         ],
         ignoreDefaultArgs: ['--enable-automation']
     },
@@ -68,7 +60,6 @@ class PDDOrderCrawler {
             localStorageData: null,
             sessionStorageData: null,
             apiRequestCaptured: false,
-            // 验证码相关字段
             verificationCodeRequest: null,
             verificationCodeRequestHeaders: null,
             requiresVerificationCode: false,
@@ -80,77 +71,106 @@ class PDDOrderCrawler {
         this.supabaseClient = supabaseClient || null;
     }
 
+    // 新增：模拟用户随机滚动
+    async randomScroll() {
+        try {
+            await this.page.evaluate(() => {
+                const scrollY = Math.random() * 300;
+                window.scrollBy(0, scrollY);
+            });
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+            console.log('   👆 模拟用户随机滚动');
+        } catch (e) {
+            // 忽略滚动错误
+        }
+    }
+
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-
-        // 在GitHub Actions中使用puppeteer
-        const launchOptions = {
+    
+        // 确保用户数据目录存在并可写
+        const fs = require('fs').promises;
+        try {
+            await fs.mkdir(this.userDataDir, { recursive: true });
+        } catch (e) {
+            console.log(`   ⚠️ 无法创建目录: ${e.message}`);
+        }
+    
+        // 基础启动选项
+        const baseOptions = {
             ...CONFIG.browserOptions,
             userDataDir: this.userDataDir
         };
-
-        this.browser = await puppeteer.launch(launchOptions);
+    
+        // 尝试使用系统 Chrome
+        let launchOptions = { ...baseOptions };
+        let useSystemChrome = false;
+        try {
+            const { execSync } = require('child_process');
+            execSync('which google-chrome', { stdio: 'ignore' });
+            launchOptions.executablePath = '/usr/bin/google-chrome';
+            useSystemChrome = true;
+            console.log('   ✅ 将尝试使用系统 Chrome');
+        } catch {
+            console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
+        }
+    
+        // 启动浏览器，失败时回退到内置 Chromium
+        try {
+            this.browser = await puppeteer.launch(launchOptions);
+            if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
+        } catch (error) {
+            if (useSystemChrome) {
+                console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
+                console.log('   🔄 尝试回退到 Puppeteer 内置 Chromium...');
+                delete launchOptions.executablePath; // 移除系统 Chrome 路径
+                try {
+                    this.browser = await puppeteer.launch(launchOptions);
+                    console.log('   ✅ 内置 Chromium 启动成功');
+                } catch (fallbackError) {
+                    console.error('❌ 所有浏览器启动尝试均失败:', fallbackError.message);
+                    throw fallbackError;
+                }
+            } else {
+                console.error('❌ 浏览器启动失败:', error.message);
+                throw error;
+            }
+        }
+    
         this.page = await this.browser.newPage();
-
+    
         // 设置用户代理
         await this.page.setUserAgent(
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-          {
-            brands: [
-              { brand: 'Chromium', version: '144' },
-              { brand: 'Not=A?Brand', version: '99' },
-            ],
-            platform: 'Windows',
-            platformVersion: '10.0',
-            architecture: 'x86',
-            model: '',
-            mobile: false,
-            bitness: '64',
-          }
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
         );
-
-        // 设置额外的请求头
+    
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
         });
-
-        // 注入JavaScript来绕过自动化检测
+    
         await this.page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-            });
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5],
-            });
-
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['zh-CN', 'zh'],
-            });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         });
-
+    
         console.log('✅ 浏览器启动成功');
-        // 检查Puppeteer版本
-        const version = await this.browser.version();
-        console.log(`📊 浏览器版本: ${version}`);
+        console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
     async setupRequestInterception() {
-        // 启用请求拦截
         await this.page.setRequestInterception(true);
 
         this.page.on('request', async (request) => {
             const url = request.url();
 
-            // 捕获订单查询API的请求
             if (url.includes(CONFIG.targetApiEndpoint)) {
                 console.log('\n🎯 捕获到订单查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
 
-                // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContent = headers['anti-content'];
@@ -158,7 +178,6 @@ class PDDOrderCrawler {
                     console.log('   ✅ 捕获到 anti-content:', this.capturedData.antiContent);
                 }
 
-                // 获取请求体（对于POST请求）
                 if (request.method() === 'POST') {
                     const postData = request.postData();
                     if (postData) {
@@ -168,42 +187,36 @@ class PDDOrderCrawler {
 
                 this.capturedData.orderRequestHeaders = headers;
             }
-            // 捕获预估销量查询API的请求
             else if (url.includes(CONFIG.targetApiEndpointPlan)) {
                 console.log('\n🎯 捕获到预估销量查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
 
-                // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContentPlan = headers['anti-content'];
                     console.log('   ✅ 捕获到 anti-content (预估销量):', this.capturedData.antiContentPlan);
                 }
             }
-            // 捕获生产日期查询API的请求
             else if (url.includes(CONFIG.targetApiEndpointDate)) {
                 console.log('\n🎯 捕获到生产日期查询请求:');
                 console.log('   URL:', url);
                 console.log('   方法:', request.method());
 
-                // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContentDate = headers['anti-content'];
                     console.log('   ✅ 捕获到 anti-content (生产日期):', this.capturedData.antiContentDate);
                 }
             }
-            // 继续请求
             request.continue();
         });
     }
 
     async autoLogin() {
         console.log('\n🌐 开始登录流程，从loginUrl直接登录...');
-        
+
         try {
-            // 1. 直接访问登录页面（一次尝试，无重试）
             console.log(`📝 导航到登录URL: ${CONFIG.loginUrl}`);
             await this.page.goto(CONFIG.loginUrl, {
                 waitUntil: 'domcontentloaded',
@@ -211,19 +224,22 @@ class PDDOrderCrawler {
             });
             console.log('✅ 登录页面加载成功');
 
-            // 2. 保留原版：切换到“账号登录”标签（第258-275行）
+            // 切换到“账号登录”标签（并在切换前/后模拟滚动）
             try {
                 const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
                 if (tabContainer) {
                     const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                     if (items && items.length >= 2) {
-                        // 第二个通常是"账号登录"
+                        // 在点击切换标签前模拟滚动
+                        await this.randomScroll();
+
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
                             console.log('   ✅ 已切换到账号登录标签');
-                            // 等待表单渲染
                             await new Promise(r => setTimeout(r, 500));
+                            // 切换后再滚动一下
+                            await this.randomScroll();
                         }
                     }
                 }
@@ -231,7 +247,7 @@ class PDDOrderCrawler {
                 // 忽略切换标签时的错误
             }
 
-            // 3. 保留原版：填写用户名和密码（第359-401行）
+            // 填写用户名和密码
             const usernameEl = await this.page.$('#usernameId');
             const passwordEl = await this.page.$('#passwordId');
 
@@ -254,6 +270,9 @@ class PDDOrderCrawler {
                     }
                 } catch (e) {}
 
+                // 在点击登录按钮前模拟随机滚动
+                await this.randomScroll();
+
                 // 尝试点击登录按钮或按回车
                 try {
                     let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
@@ -263,19 +282,14 @@ class PDDOrderCrawler {
                     }
 
                     if (loginButton) {
-                        // 点击前设置导航等待
                         const navigationPromise = this.page.waitForNavigation({
                             waitUntil: 'domcontentloaded',
                             timeout: 5000
-                        }).catch(() => {
-                            // 导航可能不会立即发生（比如需要验证码）
-                            return null;
-                        });
-                        
+                        }).catch(() => null);
+
                         await loginButton.click().catch(() => {});
                         console.log('   ✅ 尝试点击登录按钮进行自动登录');
-                        
-                        // 等待可能的导航（最多5秒）
+
                         await navigationPromise;
                     } else {
                         await this.page.keyboard.press('Enter').catch(() => {});
@@ -286,71 +300,62 @@ class PDDOrderCrawler {
                 }
             }
 
-            // 4. 等待登录结果，检查是否跳转或需要验证码
+            // 等待登录结果，检查是否跳转或需要验证码
             console.log('⏳ 等待登录处理...');
-            // 给页面一点时间稳定，避免导航期间访问页面属性
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
+
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟超时，与原逻辑一致
-            const pollInterval = 2000; // 检查间隔2秒
-            
+            const maxWaitTime = 300000; // 5分钟
+            const pollInterval = 2000;
+
             while (Date.now() - startTime < maxWaitTime) {
                 let currentUrl = '';
                 let verificationCodeInput = null;
-                
+
                 try {
-                    // 安全地获取当前URL
                     currentUrl = await this.page.url();
                 } catch (urlError) {
-                    // 如果页面正在导航，url()可能失败，等待后重试
                     console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     continue;
                 }
-                
-                // 检查是否已跳转到订单管理页面
+
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                     console.log('✅ 登录成功，已进入订单管理页面');
                     return true;
                 }
-                
-                // 检查是否需要验证码
+
                 try {
                     verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 } catch (elementError) {
-                    // 元素查找可能失败，继续下一次循环
                     verificationCodeInput = null;
                 }
-                
+
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
-                    // 调用验证码处理逻辑
                     return await this.handleVerificationCode(verificationCodeInput);
                 }
-                
-                // 等待2秒后再次检查
+
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
-            
+
             console.log('❌ 登录超时（5分钟），退出');
             return false;
-            
+
         } catch (error) {
             console.log('❌ 登录过程出现错误:', error.message);
             return false;
         }
     }
 
+    // 保留原有验证码处理方法（不变）
     async handleVerificationCode(verificationCodeInput) {
         console.log('📱 检测到验证码输入框，可能需要短信验证码');
 
-        // 检查确认按钮是否存在
         const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
 
         let verificationCode = null;
 
-        // 只从Supabase获取验证码
         if (this.supabaseClient) {
             console.log('🔍 从Supabase获取验证码...');
             try {
@@ -361,7 +366,6 @@ class PDDOrderCrawler {
                     .single();
 
                 if (!error && data && data.code) {
-                    // 检查验证码是否新鲜（10分钟内）
                     const updatedAt = new Date(data.updated_at);
                     const now = new Date();
                     const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
@@ -372,7 +376,7 @@ class PDDOrderCrawler {
                     } else {
                         console.log(`   ⚠️  Supabase中的验证码已过期 (更新时间: ${updatedAt.toLocaleString()})`);
                     }
-                } else if (error && error.code !== 'PGRST116') { // PGRST116是"未找到行"的错误
+                } else if (error && error.code !== 'PGRST116') {
                     console.log(`   ⚠️  查询Supabase失败: ${error.message}`);
                 }
             } catch (e) {
@@ -383,23 +387,20 @@ class PDDOrderCrawler {
             return false;
         }
 
-        // 如果没有有效的验证码，等待用户更新（轮询Supabase）
         if (!verificationCode) {
             console.log('⏳ 未找到有效验证码，等待用户更新...');
             console.log('   📝 请更新Supabase表 pdd_verification_codes (字段: username, code)');
             console.log('   ⏰ 等待120秒（拼多多验证码有效期10分钟）...');
 
             const waitStartTime = Date.now();
-            const maxWaitTime = 120000; // 120秒
-            const pollInterval = 5000; // 每5秒检查一次
+            const maxWaitTime = 120000;
+            const pollInterval = 5000;
 
             while (Date.now() - waitStartTime < maxWaitTime && !verificationCode) {
-                // 等待一段时间
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
 
                 console.log(`   🔍 第${Math.floor((Date.now() - waitStartTime) / pollInterval)}次检查更新...`);
 
-                // 检查Supabase
                 if (this.supabaseClient) {
                     try {
                         const { data, error } = await this.supabaseClient
@@ -409,7 +410,6 @@ class PDDOrderCrawler {
                             .single();
 
                         if (!error && data && data.code) {
-                            // 检查验证码是否新鲜
                             const updatedAt = new Date(data.updated_at);
                             const now = new Date();
                             const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
@@ -433,57 +433,45 @@ class PDDOrderCrawler {
             }
         }
 
-        // 4. 使用获取到的验证码进行自动填写
         console.log(`   🔑 使用验证码: ${verificationCode}`);
 
         try {
-            // 清空输入框并填写验证码
-            await verificationCodeInput.click({ clickCount: 3 }); // 全选
-            await verificationCodeInput.press('Backspace'); // 删除
+            await verificationCodeInput.click({ clickCount: 3 });
+            await verificationCodeInput.press('Backspace');
             await verificationCodeInput.type(verificationCode, { delay: 50 });
             console.log('   ✅ 已输入验证码');
 
-            // 点击确认按钮
             if (confirmButton) {
-                // 点击前设置导航等待
                 const navigationPromise = this.page.waitForNavigation({
                     waitUntil: 'domcontentloaded',
                     timeout: 5000
-                }).catch(() => {
-                    // 导航可能不会立即发生（比如验证码错误）
-                    return null;
-                });
-                
+                }).catch(() => null);
+
                 await confirmButton.click();
                 console.log('   ✅ 已点击确认按钮');
-                
-                // 等待可能的导航（最多5秒）
+
                 await navigationPromise;
 
-                // 等待一段时间（60秒）看看是否自动跳转
                 const verificationCodeWaitStart = Date.now();
-                const maxVerificationCodeWait = 60000; // 60秒
+                const maxVerificationCodeWait = 60000;
 
                 let verificationCodeAccepted = false;
                 let verificationCodeDisappearTime = null;
-                
+
                 while (Date.now() - verificationCodeWaitStart < maxVerificationCodeWait) {
-                    // 检查是否已跳转到订单管理页面
                     let currentUrl = '';
                     try {
                         currentUrl = await this.page.url();
                     } catch (urlError) {
-                        // 页面可能正在导航，等待后重试
                         await new Promise(resolve => setTimeout(resolve, 1000));
                         continue;
                     }
-                    
+
                     if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                         console.log('✅ 验证码正确，成功跳转到订单管理页面');
                         return true;
                     }
 
-                    // 始终检查错误提示（无论输入框状态如何）
                     const errorElement = await this.page.$('.error-message, .ant-message-error, [class*="error"], [class*="Error"]').catch(() => null);
                     if (errorElement) {
                         const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
@@ -492,8 +480,7 @@ class PDDOrderCrawler {
                             return false;
                         }
                     }
-                    
-                    // 只在验证码输入框未被接受时检查输入框状态
+
                     if (!verificationCodeAccepted) {
                         const stillExists = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
                         if (!stillExists) {
@@ -502,8 +489,6 @@ class PDDOrderCrawler {
                             verificationCodeDisappearTime = Date.now();
                         }
                     } else {
-                        // 验证码已被接受，继续等待跳转
-                        // 如果验证码输入框消失后已经过了30秒仍未跳转，返回false
                         if (verificationCodeDisappearTime && Date.now() - verificationCodeDisappearTime > 30000) {
                             console.log('❌ 验证码已接受，但页面长时间未跳转，可能登录失败');
                             return false;
@@ -513,7 +498,6 @@ class PDDOrderCrawler {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
 
-                // 如果30秒后仍然在验证码页面，返回false
                 const stillOnVerificationPage = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
                 if (stillOnVerificationPage) {
                     console.log('❌ 验证码可能错误或已过期，页面未跳转');
@@ -524,20 +508,16 @@ class PDDOrderCrawler {
             console.log('   ⚠️  自动填写验证码失败:', e.message);
         }
 
-        // 标记需要验证码
         this.capturedData.requiresVerificationCode = true;
-        // 如果执行到这里，说明验证码处理未成功跳转，返回false
         return false;
     }
 
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
 
-        // 获取所有cookies
         const cookies = await this.page.cookies();
         this.capturedData.allCookies = cookies;
 
-        // 构建cookie字符串
         let cookieStr = '';
         cookies.forEach((cookie, index) => {
             if (index > 0) cookieStr += '; ';
@@ -552,14 +532,12 @@ class PDDOrderCrawler {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
         console.log(`   初始URL: ${this.page.url()}`);
 
-        // 等待API请求被捕获 - 增加到15分钟
         const startTime = Date.now();
         const maxWaitTime = 900000; // 15分钟
         let retryCount = 0;
         const maxRetries = 1;
 
         while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
-            // 检查页面是否仍在订单管理页面
             const currentUrl = this.page.url();
             if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                 console.log(`⚠️  页面已离开订单管理页面，当前URL: ${currentUrl}`);
@@ -572,7 +550,6 @@ class PDDOrderCrawler {
                         });
                         retryCount++;
                         console.log(`✅ 重新导航成功，继续等待API请求...`);
-                        // 继续循环
                         continue;
                     } catch (error) {
                         console.log(`❌ 重新导航失败: ${error.message}`);
@@ -584,10 +561,8 @@ class PDDOrderCrawler {
                 }
             }
 
-            // 等待1秒后再次检查
             await new Promise(resolve => setTimeout(resolve, 1000));
 
-            // 每30秒显示一次状态
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
             if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
                 console.log(`   已等待 ${elapsedSeconds} 秒...`);
@@ -612,10 +587,9 @@ class PDDOrderCrawler {
             });
             console.log('✅ 已进入预估销量查询页面');
 
-            // 等待API请求
             console.log('⏳ 等待预估销量查询API请求...');
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟
+            const maxWaitTime = 300000;
             while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -646,10 +620,9 @@ class PDDOrderCrawler {
             });
             console.log('✅ 已进入生产日期查询页面');
 
-            // 等待API请求
             console.log('⏳ 等待生产日期查询API请求...');
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟
+            const maxWaitTime = 300000;
             while (!this.capturedData.antiContentDate && (Date.now() - startTime) < maxWaitTime) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -675,45 +648,36 @@ class PDDOrderCrawler {
         try {
             console.log('🎬 开始执行拼多多订单数据捕获脚本');
 
-            // 1. 初始化浏览器
             await this.init();
-
-            // 2. 设置请求拦截
             await this.setupRequestInterception();
 
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
 
-            // 3. 自动登录
             const loginSuccess = await this.autoLogin();
 
-            // 4. 检查登录是否成功
             if (!loginSuccess) {
                 console.log('❌ 登录失败，程序退出');
                 return;
             }
 
-            // 5. 等待API请求，捕获anti-content参数
             const apiCaptured = await this.waitForAPIRequest();
 
             if (!apiCaptured) {
                 throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
             }
 
-            // 6. 捕获预估销量查询的anti-content
             console.log('\n📊 开始捕获预估销量查询参数...');
             const planCaptured = await this.capturePlanAntiContent();
             if (!planCaptured) {
                 console.log('⚠️ 预估销量查询参数捕获失败，继续执行...');
             }
 
-            // 7. 捕获生产日期查询的anti-content
             console.log('\n📅 开始捕获生产日期查询参数...');
             const dateCaptured = await this.captureDateAntiContent();
             if (!dateCaptured) {
                 console.log('⚠️ 生产日期查询参数捕获失败，继续执行...');
             }
 
-            // 8. 捕获Cookies
             await this.captureCookies();
 
         } catch (error) {
@@ -733,14 +697,13 @@ class PDDOrderCrawler {
     }
 }
 
-// 主函数
+// 主函数（以下部分完全不变）
 async function updateAccount(username, password, verificationCode) {
     console.log(`\n🔄 开始更新账号: ${username}`);
     if (verificationCode) {
         console.log(`   🔑 使用验证码: ${verificationCode}`);
     }
 
-    // 获取Supabase客户端
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -752,12 +715,10 @@ async function updateAccount(username, password, verificationCode) {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     try {
-        // 开始浏览器登录流程
         console.log(`🔍 开始浏览器登录流程...`);
         const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
         await crawler.run();
 
-        // 4. 准备要上传的数据
         const accountData = {
             username,
             anti_content: crawler.capturedData.antiContent,
@@ -769,7 +730,6 @@ async function updateAccount(username, password, verificationCode) {
             last_success: true
         };
 
-        // 5. 上传到Supabase
         const { error } = await supabase
             .from('pdd_accounts')
             .upsert(accountData, { onConflict: 'username' });
@@ -787,7 +747,6 @@ async function updateAccount(username, password, verificationCode) {
     }
 }
 
-// 从环境变量获取账号信息
 async function main() {
     const accountsJson = process.env.PDD_ACCOUNTS_JSON;
     if (!accountsJson) {
@@ -800,13 +759,12 @@ async function main() {
 
         for (const account of accounts) {
             const username = account.username;
-            const password = process.env[`PASSWORD_${username.toUpperCase()}`]; // 全大写
+            const password = process.env[`PASSWORD_${username.toUpperCase()}`];
             if (!password) {
                 console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
                 continue;
             }
 
-            // 验证码只从Supabase获取，不传递验证码参数
             await updateAccount(username, password, null);
         }
 
@@ -817,5 +775,4 @@ async function main() {
     }
 }
 
-// 执行主函数
 main().catch(console.error);
