@@ -214,6 +214,21 @@ class PDDOrderCrawler {
     }
 
     async autoLogin() {
+        // 先尝试使用现有会话
+        console.log('\n🔍 尝试使用现有会话...');
+        try {
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            });
+            const currentUrl = this.page.url();
+            if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                console.log('✅ 会话有效，直接进入订单管理页面');
+                return true;
+            }
+        } catch (error) {
+            console.log('ℹ️ 会话无效，开始登录流程');
+        }      
         console.log('\n🌐 开始登录流程，从loginUrl直接登录...');
 
         try {

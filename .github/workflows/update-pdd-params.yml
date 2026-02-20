@@ -32,6 +32,7 @@ jobs:
           key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}
           restore-keys: |
             ${{ runner.os }}-pdd-user-data-
+          save-always: true   # 新增此行
 
       # 由于镜像已安装所有依赖，无需再运行 npm install
       # 如果镜像未安装依赖，可以在此步骤运行，但建议在构建镜像时完成
