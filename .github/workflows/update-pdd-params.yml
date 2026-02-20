@@ -34,8 +34,6 @@ jobs:
           path: ./puppeteer_user_data
           key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}
-            ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-
             ${{ runner.os }}-pdd-user-data-
 
       # 由于镜像已安装所有依赖，无需再运行 npm install
