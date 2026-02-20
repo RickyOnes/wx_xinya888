@@ -1,6 +1,7 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
+const { execSync } = require('child_process'); // 用于检测系统 Chrome
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -14,38 +15,28 @@ const CONFIG = {
     // 目标API端点
     targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
 
-    // 浏览器配置
+    // 浏览器配置（优化后）
     browserOptions: {
-        headless: true,
-        defaultViewport: {
-            width: 1366,
-            height: 768
-        },
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--window-size=1366,768',
-            '--start-maximized',
-            '--remote-debugging-port=9222',
-            '--disable-site-isolation-trials',
-            '--disable-blink-features=AutomationControlled',
-            '--allow-running-insecure-content',
-            '--disable-features=BlockInsecurePrivateNetworkRequests',
-            '--use-gl=swiftshader',  // 固定WebGL渲染器
-            '--disable-software-rasterizer',
-            '--disable-webgl',
-            '--disable-canvas-aa',  // 禁用画布抗锯齿
-            '--disable-2d-canvas-clip-aa',
-            '--disable-gl-drawing-for-tests'
-        ],
-        ignoreDefaultArgs: ['--enable-automation']
+      headless: 'new',  // 新方法，字符串格式
+      defaultViewport: {
+          width: 1366,
+          height: 768
+      },
+      args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--window-size=1366,768',
+          '--disable-webgl',
+          '--disable-canvas-aa',
+          '--disable-2d-canvas-clip-aa',
+          '--use-gl=swiftshader',
+          '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests'
+      ],
+      ignoreDefaultArgs: ['--enable-automation']
     },
-
     // 等待超时配置（毫秒）
     timeouts: {
         pageLoad: 30000,
@@ -69,61 +60,93 @@ class PDDPlanAntiContentFetcher {
         this.supabaseClient = supabaseClient || null;
     }
 
+    // 新增：模拟用户随机滚动
+    async randomScroll() {
+        try {
+            await this.page.evaluate(() => {
+                const scrollY = Math.random() * 300;
+                window.scrollBy(0, scrollY);
+            });
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+            console.log('   👆 模拟用户随机滚动');
+        } catch (e) {
+            // 忽略滚动错误
+        }
+    }
+
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-
-        // 在GitHub Actions中使用puppeteer
-        const launchOptions = {
+    
+        // 确保用户数据目录存在并可写
+        const fs = require('fs').promises;
+        try {
+            await fs.mkdir(this.userDataDir, { recursive: true });
+        } catch (e) {
+            console.log(`   ⚠️ 无法创建目录: ${e.message}`);
+        }
+    
+        // 基础启动选项
+        const baseOptions = {
             ...CONFIG.browserOptions,
             userDataDir: this.userDataDir
         };
-
-        this.browser = await puppeteer.launch(launchOptions);
+    
+        // 尝试使用系统 Chrome
+        let launchOptions = { ...baseOptions };
+        let useSystemChrome = false;
+        try {
+            const { execSync } = require('child_process');
+            execSync('which google-chrome', { stdio: 'ignore' });
+            launchOptions.executablePath = '/usr/bin/google-chrome';
+            useSystemChrome = true;
+            console.log('   ✅ 将尝试使用系统 Chrome');
+        } catch {
+            console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
+        }
+    
+        // 启动浏览器，失败时回退到内置 Chromium
+        try {
+            this.browser = await puppeteer.launch(launchOptions);
+            if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
+        } catch (error) {
+            if (useSystemChrome) {
+                console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
+                console.log('   🔄 尝试回退到 Puppeteer 内置 Chromium...');
+                delete launchOptions.executablePath; // 移除系统 Chrome 路径
+                try {
+                    this.browser = await puppeteer.launch(launchOptions);
+                    console.log('   ✅ 内置 Chromium 启动成功');
+                } catch (fallbackError) {
+                    console.error('❌ 所有浏览器启动尝试均失败:', fallbackError.message);
+                    throw fallbackError;
+                }
+            } else {
+                console.error('❌ 浏览器启动失败:', error.message);
+                throw error;
+            }
+        }
+    
         this.page = await this.browser.newPage();
-
+    
         // 设置用户代理
         await this.page.setUserAgent(
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-          {
-            brands: [
-              { brand: 'Chromium', version: '144' },
-              { brand: 'Not=A?Brand', version: '99' },
-            ],
-            platform: 'Windows',
-            platformVersion: '10.0',
-            architecture: 'x86',
-            model: '',
-            mobile: false,
-            bitness: '64',
-          }
-        );
-
-        // 设置额外的请求头
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+      );
+    
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
         });
-
-        // 注入JavaScript来绕过自动化检测
+    
         await this.page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-            });
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5],
-            });
-
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['zh-CN', 'zh'],
-            });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         });
-
+    
         console.log('✅ 浏览器启动成功');
-        // 检查Puppeteer版本
-        const version = await this.browser.version();
-        console.log(`📊 浏览器版本: ${version}`);
+        console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
     async setupRequestInterception() {
@@ -194,10 +217,81 @@ class PDDPlanAntiContentFetcher {
     }
 
     async autoLogin() {
-        console.log('\n🌐 开始登录流程，跳转到预估销量页面...');
+        // 先尝试使用现有会话
+        console.log('\n🔍 尝试使用现有会话...');
+        try {
+            await this.page.goto(CONFIG.planDirectUrl, {
+                waitUntil: 'networkidle0', // 改为 networkidle0，确保页面完全加载
+                timeout: 30000
+            });
+            
+            // 等待页面稳定并检查是否有重定向
+            let urlStable = true;
+            const initialUrl = this.page.url();
+            console.log(`   初始URL: ${initialUrl}`);
+            
+            // 等待5秒，每1秒检查一次URL是否变化，同时检查是否已捕获到anti-content
+            for (let i = 0; i < 5; i++) {
+                // 检查是否已经捕获到anti-content，如果是则提前结束等待
+                if (this.capturedData.antiContentPlan) {
+                    console.log(`   ✅ 已捕获到anti-content，提前结束等待`);
+                    return true;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                let currentUrl = '';
+                try {
+                    currentUrl = this.page.url();
+                } catch (e) {
+                    // 忽略错误
+                }
+                console.log(`   等待 ${i+1}/5秒，当前URL: ${currentUrl}`);
+                
+                if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                    console.log(`   ⚠️  URL已变化到: ${currentUrl}，会话可能已失效`);
+                    urlStable = false;
+                    break;
+                }
+            }
+            
+            let finalUrl = '';
+            try {
+                finalUrl = this.page.url();
+            } catch (e) {
+                // 忽略错误
+            }
+            console.log(`   最终URL: ${finalUrl}`);
+            
+            // 加强会话检测：不仅检查URL，还检查页面元素
+            if (urlStable && finalUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                // 如果在导航过程中已经捕获到anti-content，说明会话有效，直接返回
+                if (this.capturedData.antiContentPlan) {
+                    console.log('✅ 会话有效，已捕获到anti-content，直接进入预估销量页面');
+                    return true;
+                }
+                
+                // 检查是否实际在预估销量页面（没有登录表单）
+                const hasLoginForm = await this.page.$('#usernameId, input[placeholder="请输入手机号"]').catch(() => null);
+                const hasPasswordInput = await this.page.$('#passwordId').catch(() => null);
+                const hasLoginButton = await this.page.$('button[data-testid="beast-core-button"]').catch(() => null);
+                
+                if (hasLoginForm || hasPasswordInput || hasLoginButton) {
+                    console.log('⚠️ 检测到登录相关元素，会话可能已失效');
+                    // 继续执行登录流程
+                } else {
+                    console.log('✅ 会话有效，直接进入预估销量页面');
+                    return true;
+                }
+            } else {
+                console.log('ℹ️ 会话无效或URL不稳定，开始登录流程');
+            }
+        } catch (error) {
+            console.log(`ℹ️ 会话检测失败: ${error.message}，开始登录流程`);
+        }
+        
+        console.log('\n🌐 开始登录流程，从登录URL直接登录...');
         
         try {
-            // 1. 访问登录页面（跳转到预估销量页面）
             console.log(`📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
             await this.page.goto(CONFIG.planLoginUrl, {
                 waitUntil: 'domcontentloaded',
@@ -205,19 +299,22 @@ class PDDPlanAntiContentFetcher {
             });
             console.log('✅ 登录页面加载成功');
 
-            // 2. 切换到"账号登录"标签
+            // 切换到"账号登录"标签（并在切换前/后模拟滚动）
             try {
                 const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
                 if (tabContainer) {
                     const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                     if (items && items.length >= 2) {
-                        // 第二个通常是"账号登录"
+                        // 在点击切换标签前模拟滚动
+                        await this.randomScroll();
+
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
                             console.log('   ✅ 已切换到账号登录标签');
-                            // 等待表单渲染
                             await new Promise(r => setTimeout(r, 500));
+                            // 切换后再滚动一下
+                            await this.randomScroll();
                         }
                     }
                 }
@@ -225,7 +322,7 @@ class PDDPlanAntiContentFetcher {
                 // 忽略切换标签时的错误
             }
 
-            // 3. 填写用户名和密码
+            // 填写用户名和密码
             const usernameEl = await this.page.$('#usernameId');
             const passwordEl = await this.page.$('#passwordId');
 
@@ -248,6 +345,9 @@ class PDDPlanAntiContentFetcher {
                     }
                 } catch (e) {}
 
+                // 在点击登录按钮前模拟随机滚动
+                await this.randomScroll();
+
                 // 尝试点击登录按钮或按回车
                 try {
                     let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
@@ -257,19 +357,14 @@ class PDDPlanAntiContentFetcher {
                     }
 
                     if (loginButton) {
-                        // 点击前设置导航等待
                         const navigationPromise = this.page.waitForNavigation({
                             waitUntil: 'domcontentloaded',
                             timeout: 5000
-                        }).catch(() => {
-                            // 导航可能不会立即发生（比如需要验证码）
-                            return null;
-                        });
-                        
+                        }).catch(() => null);
+
                         await loginButton.click().catch(() => {});
                         console.log('   ✅ 尝试点击登录按钮进行自动登录');
-                        
-                        // 等待可能的导航（最多5秒）
+
                         await navigationPromise;
                     } else {
                         await this.page.keyboard.press('Enter').catch(() => {});
@@ -280,57 +375,50 @@ class PDDPlanAntiContentFetcher {
                 }
             }
 
-            // 4. 等待登录结果，检查是否跳转到预估销量页面
+            // 等待登录结果，检查是否跳转到预估销量页面
             console.log('⏳ 等待登录处理...');
-            // 给页面一点时间稳定，避免导航期间访问页面属性
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
+
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟超时
-            const pollInterval = 2000; // 检查间隔2秒
-            
+            const maxWaitTime = 300000; // 5分钟
+            const pollInterval = 2000;
+
             while (Date.now() - startTime < maxWaitTime) {
                 let currentUrl = '';
                 let verificationCodeInput = null;
-                
+
                 try {
-                    // 安全地获取当前URL
-                    currentUrl = await this.page.url();
+                    currentUrl = this.page.url();
                 } catch (urlError) {
-                    // 如果页面正在导航，url()可能失败，等待后重试
                     console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     continue;
                 }
-                
-                // 检查是否已跳转到预估销量页面
+
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                     console.log('✅ 登录成功，已进入预估销量页面');
                     return true;
                 }
-                
-                // 检查是否需要验证码
+
                 try {
                     verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 } catch (elementError) {
-                    // 元素查找可能失败，继续下一次循环
                     verificationCodeInput = null;
                 }
-                
+
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
                     // 由于我们只快速获取anti-content，如果遇到验证码，直接返回false
                     console.log('   ⚠️ 需要验证码，跳过验证码处理（快速模式）');
                     return false;
                 }
-                
-                // 等待2秒后再次检查
+
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
-            
+
             console.log('❌ 登录超时（5分钟），退出');
             return false;
-            
+
         } catch (error) {
             console.log('❌ 登录过程出现错误:', error.message);
             return false;
@@ -339,6 +427,13 @@ class PDDPlanAntiContentFetcher {
 
     async waitForPlanAPIRequest() {
         console.log('\n⏳ 等待预估销量查询API请求...');
+        
+        // 检查是否已经捕获到anti-content，如果是则立即返回
+        if (this.capturedData.antiContentPlan) {
+            console.log(`✅ 已捕获到anti-content，直接返回（长度: ${this.capturedData.antiContentPlan.length}）`);
+            return true;
+        }
+        
         const startTime = Date.now();
         const maxWaitTime = 300000; // 5分钟
         while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
@@ -370,28 +465,19 @@ class PDDPlanAntiContentFetcher {
 
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
 
-            // 3. 先尝试直接访问预估销量页面
-            const directSuccess = await this.tryDirectAccess();
-
-            // 4. 如果直接访问失败，尝试登录
-            let loginSuccess = false;
-            if (!directSuccess) {
-                console.log('\n🔑 直接访问失败，尝试登录...');
-                loginSuccess = await this.autoLogin();
+            // 3. 自动登录（先尝试现有会话，如果失败则执行登录流程）
+            const loginSuccess = await this.autoLogin();
                 
-                if (!loginSuccess) {
-                    console.log('❌ 登录失败，程序退出');
-                    return;
-                }
+            if (!loginSuccess) {
+                console.log('❌ 登录失败，程序退出');
+                return;
             }
 
-            // 5. 等待API请求，捕获anti-content参数
-            // 如果直接访问已经成功，这里可能已经捕获到了，但再等等确保
-            if (!this.capturedData.antiContentPlan) {
-                const apiCaptured = await this.waitForPlanAPIRequest();
-                if (!apiCaptured) {
-                    throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
-                }
+            // 4. 等待API请求，捕获anti-content参数
+            // waitForPlanAPIRequest()方法会检查是否已经捕获到anti-content，如果是则立即返回
+            const apiCaptured = await this.waitForPlanAPIRequest();
+            if (!apiCaptured) {
+                throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
             }
 
         } catch (error) {
