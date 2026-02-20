@@ -255,6 +255,12 @@ class PDDOrderCrawler {
             
             // 加强会话检测：不仅检查URL，还检查页面元素
             if (urlStable && finalUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
+                // 如果在导航过程中已经捕获到anti-content，说明会话有效，直接返回
+                if (this.capturedData.antiContent) {
+                    console.log('✅ 会话有效，已捕获到anti-content，直接进入订单管理页面');
+                    return true;
+                }
+                
                 // 检查是否实际在订单管理页面（没有登录表单）
                 const hasLoginForm = await this.page.$('#usernameId, input[placeholder="请输入手机号"]').catch(() => null);
                 const hasPasswordInput = await this.page.$('#passwordId').catch(() => null);
