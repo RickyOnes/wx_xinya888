@@ -76,6 +76,7 @@ run-local.js
 /images/
 /pages/
 /utils/
+/supabase/
 
 # 备份文件
 *.backup
