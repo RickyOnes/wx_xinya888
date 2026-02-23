@@ -31,6 +31,8 @@ const CONFIG = {
             '--disable-canvas-aa',
             '--disable-2d-canvas-clip-aa',
             '--use-gl=swiftshader',
+            '--disk-cache-size=104857600',
+            '--aggressive-cache-discard',
             '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests'
         ],
         ignoreDefaultArgs: ['--enable-automation']
@@ -858,6 +860,100 @@ class PDDOrderCrawler {
                     console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
                 }
             }
+            
+            // 清理残留进程和文件
+            try {
+                console.log('🧹 开始清理残留文件...');
+                const fs = require('fs');
+                const path = require('path');
+                
+                // 1. 强制结束Chrome相关进程
+                if (process.platform === 'win32') {
+                    try {
+                        require('child_process').execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
+                        require('child_process').execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
+                    } catch (e) {
+                        // 忽略进程不存在的情况
+                    }
+                } else if (process.platform === 'linux' || process.platform === 'darwin') {
+                    try {
+                        require('child_process').execSync('pkill -f chrome', { stdio: 'ignore' });
+                        require('child_process').execSync('pkill -f chromedriver', { stdio: 'ignore' });
+                    } catch (e) {
+                        // 忽略进程不存在的情况
+                    }
+                }
+                
+                // 2. 清理锁文件
+                const lockFiles = ['SingletonLock', 'SingletonCookie'];
+                for (const lockFile of lockFiles) {
+                    const lockFilePath = path.join(this.userDataDir, lockFile);
+                    if (fs.existsSync(lockFilePath)) {
+                        try {
+                            fs.unlinkSync(lockFilePath);
+                            console.log(`   ✅ 已删除锁文件: ${lockFile}`);
+                        } catch (e) {
+                            console.log(`   ⚠️ 无法删除锁文件 ${lockFile}: ${e.message}`);
+                        }
+                    }
+                }
+                
+                // 3. 清理临时Socket文件
+                const sockPatterns = ['DevToolsActivePort', '*.sock', '*.socket'];
+                for (const pattern of sockPatterns) {
+                    try {
+                        const files = fs.readdirSync(this.userDataDir);
+                        for (const file of files) {
+                            if (file.includes('DevToolsActivePort') || file.endsWith('.sock') || file.endsWith('.socket')) {
+                                const filePath = path.join(this.userDataDir, file);
+                                try {
+                                    fs.unlinkSync(filePath);
+                                    console.log(`   ✅ 已删除临时文件: ${file}`);
+                                } catch (e) {
+                                    // 忽略删除失败
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // 忽略读取目录失败
+                    }
+                }
+                
+                // 4. 清理崩溃转储文件
+                const crashDir = path.join(this.userDataDir, 'Crashpad');
+                if (fs.existsSync(crashDir)) {
+                    try {
+                        require('child_process').execSync(`rm -rf "${crashDir}"`, { stdio: 'ignore' });
+                        console.log('   ✅ 已清理崩溃转储目录');
+                    } catch (e) {
+                        // 忽略删除失败
+                    }
+                }
+                
+                // 清理.dmp文件
+                try {
+                    const files = fs.readdirSync(this.userDataDir);
+                    for (const file of files) {
+                        if (file.endsWith('.dmp')) {
+                            const filePath = path.join(this.userDataDir, file);
+                            try {
+                                fs.unlinkSync(filePath);
+                                console.log(`   ✅ 已删除崩溃文件: ${file}`);
+                            } catch (e) {
+                                // 忽略删除失败
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // 忽略读取目录失败
+                }
+                
+                console.log('🧹 清理完成');
+                
+            } catch (cleanupError) {
+                console.log('⚠️ 清理过程中出现错误:', cleanupError.message);
+            }
+            
             console.log('🏁 程序执行完毕');
         }
     }
