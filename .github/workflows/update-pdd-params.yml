@@ -1,9 +1,10 @@
 name: 更新拼多多参数
 on:
-  schedule:
-    - cron: '18 22,23,3,6,9,13,14 * * *'  # 北京时的6:18、7:18、11:18、14:18、17:18、21:18、22:18触发
+  # schedule触发已迁移到Supabase cron，因为Supabase触发更准时
+  # schedule:
+  #   - cron: '18 22,23,3,6,9,13,14 * * *'  # 北京时的6:18、7:18、11:18、14:18、17:18、21:18、22:18触发
   workflow_dispatch: {}  # 支持手动触发，无需验证码输入
-  repository_dispatch:   # 新增:支持外部API触发
+  repository_dispatch:   # 支持外部API触发（由Supabase cron调用）
     types: [external_cron_trigger]
 
 jobs:
