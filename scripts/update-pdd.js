@@ -73,17 +73,26 @@ class PDDOrderCrawler {
 
     // 新增：模拟用户随机滚动
     async randomScroll() {
-        try {
-            await this.page.evaluate(() => {
-                const scrollY = Math.random() * 300;
-                window.scrollBy(0, scrollY);
-            });
-            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
-            console.log('   👆 模拟用户随机滚动');
-        } catch (e) {
-            // 忽略滚动错误
-        }
-    }
+      try {
+          const { scrollY, maxScroll } = await this.page.evaluate(() => ({
+              scrollY: window.scrollY,
+              maxScroll: document.body.scrollHeight - window.innerHeight
+          }));
+          
+          // 避免无限滚动
+          if (scrollY >= maxScroll) return;
+          
+          // 随机方向 + 距离
+          const direction = Math.random() > 0.7 ? -1 : 1;  // 30%向上
+          const distance = (Math.random() * 500 + 200) * direction;
+          
+          await this.page.evaluate(d => window.scrollBy({ top: d, behavior: 'smooth' }), distance);
+          await new Promise(r => setTimeout(r, Math.random() * 1000 + 500));
+          
+      } catch (e) {
+          // 忽略滚动错误  
+      }
+  }
 
     async init() {
         console.log('🚀 启动浏览器...');
@@ -214,79 +223,8 @@ class PDDOrderCrawler {
     }
 
     async autoLogin() {
-        // 先尝试使用现有会话
-        console.log('\n🔍 尝试使用现有会话...');
-        try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/order/management', {
-                waitUntil: 'networkidle0', // 改为 networkidle0，确保页面完全加载
-                timeout: 30000
-            });
-            
-            // 等待页面稳定并检查是否有重定向
-            let urlStable = true;
-            const initialUrl = this.page.url();
-            console.log(`   初始URL: ${initialUrl}`);
-            
-            // 等待5秒，每1秒检查一次URL是否变化，同时检查是否已捕获到anti-content
-            for (let i = 0; i < 5; i++) {
-                // 检查是否已经捕获到anti-content，如果是则提前结束等待
-                if (this.capturedData.antiContent) {
-                    console.log(`   ✅ 已捕获到anti-content，提前结束等待`);
-                    return true;
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                let currentUrl = '';
-                try {
-                    currentUrl = this.page.url();
-                } catch (e) {
-                    // 忽略错误
-                }
-                console.log(`   等待 ${i+1}/5秒，当前URL: ${currentUrl}`);
-                
-                if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                    console.log(`   ⚠️  URL已变化到: ${currentUrl}，会话可能已失效`);
-                    urlStable = false;
-                    break;
-                }
-            }
-            
-            let finalUrl = '';
-            try {
-                finalUrl = this.page.url();
-            } catch (e) {
-                // 忽略错误
-            }
-            console.log(`   最终URL: ${finalUrl}`);
-            
-            // 加强会话检测：不仅检查URL，还检查页面元素
-            if (urlStable && finalUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-                // 如果在导航过程中已经捕获到anti-content，说明会话有效，直接返回
-                if (this.capturedData.antiContent) {
-                    console.log('✅ 会话有效，已捕获到anti-content，直接进入订单管理页面');
-                    return true;
-                }
-                
-                // 检查是否实际在订单管理页面（没有登录表单）
-                const hasLoginForm = await this.page.$('#usernameId, input[placeholder="请输入手机号"]').catch(() => null);
-                const hasPasswordInput = await this.page.$('#passwordId').catch(() => null);
-                const hasLoginButton = await this.page.$('button[data-testid="beast-core-button"]').catch(() => null);
-                
-                if (hasLoginForm || hasPasswordInput || hasLoginButton) {
-                    console.log('⚠️ 检测到登录相关元素，会话可能已失效');
-                    // 继续执行登录流程
-                } else {
-                    console.log('✅ 会话有效，直接进入订单管理页面');
-                    return true;
-                }
-            } else {
-                console.log('ℹ️ 会话无效或URL不稳定，开始登录流程');
-            }
-        } catch (error) {
-            console.log(`ℹ️ 会话检测失败: ${error.message}，开始登录流程`);
-        }      
-        console.log('\n🌐 开始登录流程，从loginUrl直接登录...');
-
+        console.log('\n🌐 开始登录流程，直接登录...');
+        
         try {
             console.log(`📝 导航到登录URL: ${CONFIG.loginUrl}`);
             await this.page.goto(CONFIG.loginUrl, {
@@ -301,15 +239,12 @@ class PDDOrderCrawler {
                 if (tabContainer) {
                     const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                     if (items && items.length >= 2) {
-                        // 在点击切换标签前模拟滚动
-                        await this.randomScroll();
-
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
                             console.log('   ✅ 已切换到账号登录标签');
                             await new Promise(r => setTimeout(r, 500));
-                            // 切换后再滚动一下
+                            // 切换后模拟滚动一下
                             await this.randomScroll();
                         }
                     }
@@ -321,7 +256,7 @@ class PDDOrderCrawler {
             // 填写用户名和密码
             const usernameEl = await this.page.$('#usernameId');
             const passwordEl = await this.page.$('#passwordId');
-
+            
             if (usernameEl && passwordEl) {
                 // 填充用户名
                 try {
@@ -331,7 +266,7 @@ class PDDOrderCrawler {
                         console.log('   ✅ 已输入用户名');
                     }
                 } catch (e) {}
-
+                
                 // 填充密码
                 try {
                     const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
@@ -340,10 +275,10 @@ class PDDOrderCrawler {
                         console.log('   ✅ 已输入密码');
                     }
                 } catch (e) {}
-
+                
                 // 在点击登录按钮前模拟随机滚动
                 await this.randomScroll();
-
+                
                 // 尝试点击登录按钮或按回车
                 try {
                     let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
@@ -351,16 +286,16 @@ class PDDOrderCrawler {
                         const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
                         if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
                     }
-
+                    
                     if (loginButton) {
                         const navigationPromise = this.page.waitForNavigation({
                             waitUntil: 'domcontentloaded',
                             timeout: 5000
                         }).catch(() => null);
-
+                        
                         await loginButton.click().catch(() => {});
                         console.log('   ✅ 尝试点击登录按钮进行自动登录');
-
+                        
                         await navigationPromise;
                     } else {
                         await this.page.keyboard.press('Enter').catch(() => {});
@@ -370,19 +305,19 @@ class PDDOrderCrawler {
                     // 忽略点击失败
                 }
             }
-
+            
             // 等待登录结果，检查是否跳转或需要验证码
             console.log('⏳ 等待登录处理...');
             await new Promise(resolve => setTimeout(resolve, 1000));
-
+            
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟
+            const maxWaitTime = 180000; // 3分钟
             const pollInterval = 2000;
-
+            
             while (Date.now() - startTime < maxWaitTime) {
                 let currentUrl = '';
                 let verificationCodeInput = null;
-
+                
                 try {
                     currentUrl = this.page.url();
                 } catch (urlError) {
@@ -390,29 +325,29 @@ class PDDOrderCrawler {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     continue;
                 }
-
+                
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
                     console.log('✅ 登录成功，已进入订单管理页面');
                     return true;
                 }
-
+                
                 try {
                     verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
                 } catch (elementError) {
                     verificationCodeInput = null;
                 }
-
+                
                 if (verificationCodeInput) {
                     console.log('📱 检测到验证码输入框，可能需要短信验证码');
                     return await this.handleVerificationCode(verificationCodeInput);
                 }
-
+                
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
-
-            console.log('❌ 登录超时（5分钟），退出');
+            
+            console.log('❌ 登录超时（3分钟），退出');
             return false;
-
+            
         } catch (error) {
             console.log('❌ 登录过程出现错误:', error.message);
             return false;
@@ -426,6 +361,7 @@ class PDDOrderCrawler {
         const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
 
         let verificationCode = null;
+        let lastVerificationUpdateTime = null;
 
         if (this.supabaseClient) {
             console.log('🔍 从Supabase获取验证码...');
@@ -443,6 +379,7 @@ class PDDOrderCrawler {
 
                     if (updatedAt > tenMinutesAgo) {
                         verificationCode = data.code;
+                        lastVerificationUpdateTime = updatedAt;
                         console.log(`   🔑 从Supabase获取验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
                     } else {
                         console.log(`   ⚠️  Supabase中的验证码已过期 (更新时间: ${updatedAt.toLocaleString()})`);
@@ -487,6 +424,7 @@ class PDDOrderCrawler {
 
                             if (updatedAt > tenMinutesAgo) {
                                 verificationCode = data.code;
+                                lastVerificationUpdateTime = updatedAt;
                                 console.log(`   🔑 从Supabase获取到更新后的验证码: ${verificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
                                 break;
                             }
@@ -523,7 +461,7 @@ class PDDOrderCrawler {
 
                 await navigationPromise;
 
-                const verificationCodeWaitStart = Date.now();
+                let verificationCodeWaitStart = Date.now();
                 const maxVerificationCodeWait = 60000;
 
                 let verificationCodeAccepted = false;
@@ -548,7 +486,82 @@ class PDDOrderCrawler {
                         const errorText = await this.page.evaluate(el => el.textContent, errorElement).catch(() => '');
                         if (errorText.includes('验证码') || errorText.includes('错误') || errorText.includes('不正确')) {
                             console.log(`❌ 验证码错误: ${errorText}`);
-                            return false;
+                            // 增加一次重新输入验证码的机会
+                            console.log('🔄 检测到验证码错误，尝试重新获取验证码...');
+                            const retryStartTime = Date.now();
+                            const maxRetryWaitTime = 120000; // 120秒
+                            const retryPollInterval = 5000; // 每5秒检查一次
+                            let newVerificationCode = null;
+                            let newUpdatedAt = null;
+                            
+                            while (Date.now() - retryStartTime < maxRetryWaitTime && !newVerificationCode) {
+                                await new Promise(resolve => setTimeout(resolve, retryPollInterval));
+                                console.log(`   🔍 第${Math.floor((Date.now() - retryStartTime) / retryPollInterval)}次检查更新...`);
+                                
+                                if (this.supabaseClient) {
+                                    try {
+                                        const { data, error } = await this.supabaseClient
+                                            .from('pdd_verification_codes')
+                                            .select('code, updated_at')
+                                            .eq('username', this.loginCredentials.username)
+                                            .single();
+                                        
+                                        if (!error && data && data.code) {
+                                            const updatedAt = new Date(data.updated_at);
+                                            const now = new Date();
+                                            const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+                                            
+                                            if (updatedAt > tenMinutesAgo) {
+                                                // 检查更新时间是否比之前记录的更近
+                                                if (!lastVerificationUpdateTime || updatedAt > lastVerificationUpdateTime) {
+                                                    newVerificationCode = data.code;
+                                                    newUpdatedAt = updatedAt;
+                                                    console.log(`   🔑 发现更新的验证码: ${newVerificationCode} (更新时间: ${updatedAt.toLocaleString()})`);
+                                                    break;
+                                                } else {
+                                                    console.log(`   ℹ️  验证码未更新，最近更新时间: ${updatedAt.toLocaleString()}`);
+                                                }
+                                            }
+                                        }
+                                    } catch (e) {
+                                        // 忽略查询错误
+                                    }
+                                }
+                            }
+                            
+                            if (newVerificationCode) {
+                                // 使用新验证码重新输入
+                                try {
+                                    await verificationCodeInput.click({ clickCount: 3 });
+                                    await verificationCodeInput.press('Backspace');
+                                    await verificationCodeInput.type(newVerificationCode, { delay: 50 });
+                                    console.log('   ✅ 已重新输入验证码');
+                                    
+                                    if (confirmButton) {
+                                        const navigationPromise = this.page.waitForNavigation({
+                                            waitUntil: 'domcontentloaded',
+                                            timeout: 5000
+                                        }).catch(() => null);
+                                        
+                                        await confirmButton.click();
+                                        console.log('   ✅ 已重新点击确认按钮');
+                                        
+                                        await navigationPromise;
+                                        
+                                        // 重置等待计时器
+                                        verificationCodeWaitStart = Date.now();
+                                        lastVerificationUpdateTime = newUpdatedAt;
+                                        console.log('🔄 验证码已更新，继续等待跳转...');
+                                        continue; // 继续主循环
+                                    }
+                                } catch (e) {
+                                    console.log('   ⚠️  重新输入验证码失败:', e.message);
+                                    return false;
+                                }
+                            } else {
+                                console.log('❌ 等待超时，未获取到更新的验证码');
+                                return false;
+                            }
                         }
                     }
 
@@ -662,6 +675,7 @@ class PDDOrderCrawler {
                 }
             }
 
+            await this.randomScroll();
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -697,6 +711,7 @@ class PDDOrderCrawler {
             const startTime = Date.now();
             const maxWaitTime = 300000;
             while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
+                await this.randomScroll();
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
                 if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
@@ -730,6 +745,7 @@ class PDDOrderCrawler {
             const startTime = Date.now();
             const maxWaitTime = 300000;
             while (!this.capturedData.antiContentDate && (Date.now() - startTime) < maxWaitTime) {
+                await this.randomScroll();
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
                 if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
