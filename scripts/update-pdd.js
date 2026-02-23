@@ -99,6 +99,8 @@ class PDDOrderCrawler {
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
+        console.log(`💻 当前操作系统: ${process.platform} (${process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'Mac'})`);
+
     
         // 确保用户数据目录存在并可写
         const fs = require('fs').promises;
@@ -884,28 +886,32 @@ class PDDOrderCrawler {
                     }
                 }
                 
-                // 2. 清理锁文件
+                // 2. 清理锁文件（可能在根目录或Default目录）
                 const lockFiles = ['SingletonLock', 'SingletonCookie'];
+                const possibleLockDirs = [this.userDataDir, path.join(this.userDataDir, 'Default')];
+                
                 for (const lockFile of lockFiles) {
-                    const lockFilePath = path.join(this.userDataDir, lockFile);
-                    if (fs.existsSync(lockFilePath)) {
-                        try {
-                            fs.unlinkSync(lockFilePath);
-                            console.log(`   ✅ 已删除锁文件: ${lockFile}`);
-                        } catch (e) {
-                            console.log(`   ⚠️ 无法删除锁文件 ${lockFile}: ${e.message}`);
+                    for (const lockDir of possibleLockDirs) {
+                        const lockFilePath = path.join(lockDir, lockFile);
+                        if (fs.existsSync(lockFilePath)) {
+                            try {
+                                fs.unlinkSync(lockFilePath);
+                                console.log(`   ✅ 已删除锁文件: ${lockFile} (位于: ${lockDir})`);
+                            } catch (e) {
+                                console.log(`   ⚠️ 无法删除锁文件 ${lockFile}: ${e.message}`);
+                            }
                         }
                     }
                 }
                 
-                // 3. 清理临时Socket文件
-                const sockPatterns = ['DevToolsActivePort', '*.sock', '*.socket'];
-                for (const pattern of sockPatterns) {
+                // 3. 清理临时Socket文件（在Default目录下）
+                const defaultDir = path.join(this.userDataDir, 'Default');
+                if (fs.existsSync(defaultDir)) {
                     try {
-                        const files = fs.readdirSync(this.userDataDir);
+                        const files = fs.readdirSync(defaultDir);
                         for (const file of files) {
                             if (file.includes('DevToolsActivePort') || file.endsWith('.sock') || file.endsWith('.socket')) {
-                                const filePath = path.join(this.userDataDir, file);
+                                const filePath = path.join(defaultDir, file);
                                 try {
                                     fs.unlinkSync(filePath);
                                     console.log(`   ✅ 已删除临时文件: ${file}`);
@@ -919,8 +925,8 @@ class PDDOrderCrawler {
                     }
                 }
                 
-                // 4. 清理崩溃转储文件
-                const crashDir = path.join(this.userDataDir, 'Crashpad');
+                // 4. 清理崩溃转储文件（在Default/Crashpad目录下）
+                const crashDir = path.join(defaultDir, 'Crashpad');
                 if (fs.existsSync(crashDir)) {
                     try {
                         require('child_process').execSync(`rm -rf "${crashDir}"`, { stdio: 'ignore' });
@@ -930,24 +936,55 @@ class PDDOrderCrawler {
                     }
                 }
                 
-                // 清理.dmp文件
-                try {
-                    const files = fs.readdirSync(this.userDataDir);
-                    for (const file of files) {
-                        if (file.endsWith('.dmp')) {
-                            const filePath = path.join(this.userDataDir, file);
-                            try {
-                                fs.unlinkSync(filePath);
-                                console.log(`   ✅ 已删除崩溃文件: ${file}`);
-                            } catch (e) {
-                                // 忽略删除失败
+                // 5. 清理.dmp文件（可能在根目录或Default目录）
+                const possibleDmpDirs = [this.userDataDir, defaultDir];
+                for (const dmpDir of possibleDmpDirs) {
+                    if (fs.existsSync(dmpDir)) {
+                        try {
+                            const files = fs.readdirSync(dmpDir);
+                            for (const file of files) {
+                                if (file.endsWith('.dmp')) {
+                                    const filePath = path.join(dmpDir, file);
+                                    try {
+                                        fs.unlinkSync(filePath);
+                                        console.log(`   ✅ 已删除崩溃文件: ${file} (位于: ${dmpDir})`);
+                                    } catch (e) {
+                                        // 忽略删除失败
+                                    }
+                                }
                             }
+                        } catch (e) {
+                            // 忽略读取目录失败
                         }
                     }
-                } catch (e) {
-                    // 忽略读取目录失败
+                }
+             
+              /*  
+                // 6. 可选：清理HTTP缓存目录以立即释放空间（Default/Cache）
+                const cacheDir = path.join(defaultDir, 'Cache');
+                if (fs.existsSync(cacheDir)) {
+                    try {
+                        require('child_process').execSync(`rm -rf "${cacheDir}"`, { stdio: 'ignore' });
+                        console.log('   ✅ 已清理HTTP缓存目录，立即释放空间');
+                    } catch (e) {
+                        // 忽略删除失败
+                    }
                 }
                 
+                // 7. 可选：清理其他缓存目录
+                const otherCacheDirs = ['Code Cache', 'GPUCache', 'ShaderCache', 'Service Worker'];
+                for (const dirName of otherCacheDirs) {
+                    const dirPath = path.join(defaultDir, dirName);
+                    if (fs.existsSync(dirPath)) {
+                        try {
+                            require('child_process').execSync(`rm -rf "${dirPath}"`, { stdio: 'ignore' });
+                            console.log(`   ✅ 已清理${dirName}目录`);
+                        } catch (e) {
+                            // 忽略删除失败
+                        }
+                    }
+                }
+              */  
                 console.log('🧹 清理完成');
                 
             } catch (cleanupError) {
