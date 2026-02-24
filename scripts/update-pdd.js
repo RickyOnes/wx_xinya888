@@ -857,6 +857,7 @@ class PDDOrderCrawler {
             if (this.browser) {
                 try {
                     await this.browser.close();
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // 等待一小段时间确保进程完全退出
                     console.log('👋 浏览器已关闭');
                 } catch (closeError) {
                     console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
@@ -868,24 +869,7 @@ class PDDOrderCrawler {
                 console.log('🧹 开始清理残留文件...');
                 const fs = require('fs');
                 const path = require('path');
-                
-                // 1. 强制结束Chrome相关进程
-                if (process.platform === 'win32') {
-                    try {
-                        require('child_process').execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
-                        require('child_process').execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
-                    } catch (e) {
-                        // 忽略进程不存在的情况
-                    }
-                } else if (process.platform === 'linux' || process.platform === 'darwin') {
-                    try {
-                        require('child_process').execSync('pkill -f chrome', { stdio: 'ignore' });
-                        require('child_process').execSync('pkill -f chromedriver', { stdio: 'ignore' });
-                    } catch (e) {
-                        // 忽略进程不存在的情况
-                    }
-                }
-                
+
                 // 2. 清理锁文件（可能在根目录或Default目录）
                 const lockFiles = ['SingletonLock', 'SingletonCookie'];
                 const possibleLockDirs = [this.userDataDir, path.join(this.userDataDir, 'Default')];
@@ -985,8 +969,6 @@ class PDDOrderCrawler {
                     }
                 }
               */  
-                console.log('🧹 清理完成');
-                
             } catch (cleanupError) {
                 console.log('⚠️ 清理过程中出现错误:', cleanupError.message);
             }
