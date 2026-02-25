@@ -49,7 +49,7 @@ jobs:
           FFMPEG_PID=$!
 
           # 运行您的脚本
-          node scripts/update-pdd.js
+          node scripts/update-pdd-new.js
 
           # 脚本结束后停止 ffmpeg
           kill $FFMPEG_PID
