@@ -288,7 +288,7 @@ class PDDOrderCrawler {
             await new Promise(r => setTimeout(r, checkInterval));
         }
         
-        throw new Error(`页面切换超时(${timeout}秒)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
+        throw new Error(`页面切换超时(${timeout/1000}秒)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
     }
 
     // 初始化浏览器
@@ -453,8 +453,6 @@ class PDDOrderCrawler {
                             await this.humanLikeClick(items[1]);
                             console.log('   ✅ 已切换到账号登录标签');
                             await new Promise(r => setTimeout(r, 500));
-                            // 切换后模拟滚动一下
-                            await this.randomScroll();
                         }
                     }
                 }
@@ -486,9 +484,6 @@ class PDDOrderCrawler {
                         console.log('   ✅ 已输入密码');
                     }
                 } catch (e) {}
-                
-                // 在点击登录按钮前模拟随机滚动
-                await this.randomScroll();
                 
                 // 尝试点击登录按钮或按回车
                 try {
@@ -827,6 +822,7 @@ class PDDOrderCrawler {
     async waitForAPIRequest() {
         console.log('\n⏳ 等待页面自动发送订单查询请求...');
         console.log(`   初始URL: ${this.page.url()}`);
+        await this.dismissPageOverlays(); // 先关闭弹窗和顶部条幅，确保菜单可点击
 
         const startTime = Date.now();
         const maxWaitTime = 900000; // 9分钟
@@ -887,7 +883,6 @@ class PDDOrderCrawler {
                 }
             }
 
-            await this.randomScroll();
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -902,7 +897,6 @@ class PDDOrderCrawler {
         }
 
         if (this.capturedData.antiContent) {
-            console.log(`✅ 已捕获到订单查询API请求，获取到anti-content（长度: ${this.capturedData.antiContent.length}）`);
             return true;
         } else {
             console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到API请求或未获取到anti-content参数`);
