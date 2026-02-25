@@ -1,4 +1,5 @@
-name: 更新拼多多参数(新方法)
+name: 更新拼多多参数(新方法) - 带视频录制
+
 on:
   workflow_dispatch: {}  # 支持手动触发
   repository_dispatch:   # 支持外部API触发（由Supabase cron调用）
@@ -37,26 +38,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pdd-user-data-
 
-      # 第二步：启动虚拟显示器并录制视频
+      # 第二步：启动虚拟显示器、运行脚本并录制视频（优化版）
       - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
-          # 启动 Xvfb（设置分辨率，与浏览器窗口一致）
+          # 启动 Xvfb（设置分辨率与浏览器视口一致）
           Xvfb :99 -screen 0 1366x768x24 &
           export DISPLAY=:99
+          sleep 2  # 给Xvfb一点启动时间
 
-          # 启动 ffmpeg 录制（添加更多参数确保录制质量）
-          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 15 -i :99 -codec:v libx264 -preset ultrafast -crf 28 -g 30 -tune zerolatency recording.mp4 &
+          # 启动 ffmpeg 录制（优化参数：更高帧率、更清晰的编码）
+          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 10 -i :99 \
+                 -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p \
+                 -g 20 -movflags +faststart recording.mp4 2> ffmpeg.log &
           FFMPEG_PID=$!
+          echo "📹 ffmpeg 已启动，PID: $FFMPEG_PID"
 
-          # 运行您的脚本，设置超时防止挂起
+          # 运行您的脚本（需将浏览器 headless 设置为 false）
           timeout 1800 node scripts/update-pdd-new.js || true
+          SCRIPT_EXIT_CODE=$?
 
-          # 脚本结束后等待 5 秒，确保录制尾部被捕获
-          sleep 5
+          # 脚本结束后等待 3 秒，确保录制尾部被捕获
+          sleep 3
 
           # 停止 ffmpeg
           kill $FFMPEG_PID 2>/dev/null || true
           wait $FFMPEG_PID 2>/dev/null || true
+
+          # 输出 ffmpeg 日志以便调试
+          echo "📋 ffmpeg 日志："
+          cat ffmpeg.log
 
           # 检查录制文件大小
           if [ -f recording.mp4 ]; then
@@ -68,6 +78,9 @@ jobs:
           else
             echo "❌ 录制视频文件未生成"
           fi
+
+          # 返回脚本的退出码（可选）
+          exit $SCRIPT_EXIT_CODE
         env:
           NODE_PATH: /app/node_modules
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -79,7 +92,7 @@ jobs:
           TZ: Asia/Shanghai
           DISPLAY: :99   # 确保脚本知道使用虚拟显示器
 
-      # 第三步：保存更新后的缓存
+      # 第三步：保存更新后的缓存（仅当脚本成功时）
       - name: 保存 Puppeteer 用户数据缓存
         if: success()
         uses: actions/cache/save@v4
@@ -87,10 +100,19 @@ jobs:
           path: ./puppeteer_user_data
           key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
 
-      # 第四步：上传录制视频作为 artifact
+      # 第四步：上传录制视频作为 artifact（总是上传，便于调试）
       - name: 上传浏览器录制视频
-        if: always()  # 即使脚本失败也上传视频，便于调试
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-recording
+          name: browser-recording-${{ github.run_id }}
           path: recording.mp4
+          if-no-files-found: warn
+
+      # 可选：上传 ffmpeg 日志
+      - name: 上传 ffmpeg 日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-log-${{ github.run_id }}
+          path: ffmpeg.log
