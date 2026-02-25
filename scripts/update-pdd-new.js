@@ -98,12 +98,18 @@ class PDDOrderCrawler {
   }
 
     // 新增：模拟人类-like点击（带鼠标移动轨迹和随机偏移）
-    async humanLikeClick(selector) {
+    async humanLikeClick(selectorOrElement) {
       try {
-          // 1. 通过选择器获取元素
-          const element = await this.page.$(selector);
+          // 1. 获取元素 - 支持选择器字符串或 ElementHandle 对象
+          let element;
+          if (typeof selectorOrElement === 'string') {
+              element = await this.page.$(selectorOrElement);
+          } else {
+              element = selectorOrElement; // 已经是 ElementHandle 对象
+          }
+          
           if (!element) {
-              console.log(`   ⚠️ 元素不存在: ${selector}`);
+              console.log(`   ⚠️ 元素不存在: ${typeof selectorOrElement === 'string' ? selectorOrElement : '提供的元素对象'}`);
               return;
           }
   
@@ -112,33 +118,42 @@ class PDDOrderCrawler {
           if (!box) {
               // 如果元素不可见，回退到普通点击
               console.log(`   ⚠️ 元素不可见，使用普通点击`);
-              await this.page.click(selector);
+              // 如果是字符串选择器，使用 page.click；否则使用元素点击
+              if (typeof selectorOrElement === 'string') {
+                  await this.page.click(selectorOrElement);
+              } else {
+                  await element.click();
+              }
               return;
           }
-  
+
           // 3. 随机点击元素内的偏移点（30%-70%区域）
           const x = box.x + box.width * (0.3 + Math.random() * 0.4);
           const y = box.y + box.height * (0.3 + Math.random() * 0.4);
-  
+
           // 4. 分步移动鼠标（模拟人类轨迹）
           await this.page.mouse.move(x, y, { steps: 10 });
-  
+
           // 5. 随机停顿（人类反应时间）
           await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 50));
-  
+
           // 6. 按下、弹起（完整鼠标事件）
           await this.page.mouse.down();
           await new Promise(resolve => setTimeout(resolve, Math.random() * 50 + 30));
           await this.page.mouse.up();
-  
+
           // 7. 等待 UI 更新
           await new Promise(resolve => setTimeout(resolve, 100));
-  
+
       } catch (e) {
           // 8. 回退机制：如果上述过程失败，使用标准 page.click
           console.log(`   ⚠️ 人类模拟点击失败 (${e.message})，使用普通点击回退`);
           try {
-              await this.page.click(selector);
+              if (typeof selectorOrElement === 'string') {
+                  await this.page.click(selectorOrElement);
+              } else {
+                  await selectorOrElement.click();
+              }
           } catch (fallbackError) {
               console.log(`   ❌ 普通点击也失败: ${fallbackError.message}`);
           }
@@ -146,26 +161,32 @@ class PDDOrderCrawler {
     }
 
     // 新增：模拟人类-like输入（逐个字符输入，带随机延迟）
-    async humanLikeType(selector, text) {
+    async humanLikeType(selectorOrElement, text) {
       try {
-          // 获取元素并确保其可交互
-          const element = await this.page.$(selector);
+          // 获取元素 - 支持选择器字符串或 ElementHandle 对象
+          let element;
+          if (typeof selectorOrElement === 'string') {
+              element = await this.page.$(selectorOrElement);
+          } else {
+              element = selectorOrElement; // 已经是 ElementHandle 对象
+          }
+          
           if (!element) {
-              console.log(`⚠️ 元素不存在: ${selector}`);
+              console.log(`⚠️ 元素不存在: ${typeof selectorOrElement === 'string' ? selectorOrElement : '提供的元素对象'}`);
               return;
           }
   
           // 滚动到视口
           await element.scrollIntoViewIfNeeded();
-  
+
           // 模拟点击聚焦（可选，但更安全）
           await element.click({ delay: Math.random() * 100 + 50 });
           await new Promise(r => setTimeout(r, Math.random() * 100 + 50));
-  
+
           // 逐个字符输入
           for (const char of text) {
               await element.type(char, { delay: Math.random() * 100 + 50 });
-  
+
               // 偶尔停顿，像人类思考
               if (Math.random() > 0.9) {
                   await new Promise(r => setTimeout(r, Math.random() * 300 + 100));
@@ -174,7 +195,12 @@ class PDDOrderCrawler {
       } catch (e) {
           console.log(`⚠️ 人类模拟输入失败，回退到普通输入: ${e.message}`);
           // 回退方案：使用 page.type 直接输入
-          await this.page.type(selector, text, { delay: 50 });
+          if (typeof selectorOrElement === 'string') {
+              await this.page.type(selectorOrElement, text, { delay: 50 });
+          } else {
+              // 对于 ElementHandle，使用 type 方法
+              await selectorOrElement.type(text, { delay: 50 });
+          }
       }
     }
 
@@ -309,23 +335,31 @@ class PDDOrderCrawler {
         }
     
         this.page = await this.browser.newPage();
-    
+
+        // 显示标签页数量
+        try {
+            const pages = await this.browser.pages();
+            console.log(`📑 当前标签页数量: ${pages.length}`);
+        } catch (e) {
+            console.log(`⚠️ 无法获取标签页数量: ${e.message}`);
+        }
+
         // 设置用户代理
         await this.page.setUserAgent(
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
         );
-    
+
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br, zstd',
         });
-    
+
         await this.page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         });
-    
+
         console.log('✅ 浏览器启动成功');
         console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
@@ -1237,6 +1271,19 @@ async function updateAccount(username, password, verificationCode) {
         const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
         await crawler.run();
 
+        // 检查是否有有效的 anti_content 数据
+        const hasAntiContent = crawler.capturedData.antiContent && crawler.capturedData.antiContent.trim() !== '';
+        const hasAntiContentPlan = crawler.capturedData.antiContentPlan && crawler.capturedData.antiContentPlan.trim() !== '';
+        const hasAntiContentDate = crawler.capturedData.antiContentDate && crawler.capturedData.antiContentDate.trim() !== '';
+        
+        // 只有三个字段全部有值时才上传
+        if (!hasAntiContent || !hasAntiContentPlan || !hasAntiContentDate) {
+            console.log(`⚠️  账号 ${username} 未捕获到完整的 anti_content 数据，跳过上传`);
+            console.log(`   状态: anti_content=${hasAntiContent ? '有值' : '空'}, anti_content_Plan=${hasAntiContentPlan ? '有值' : '空'}, anti_content_Date=${hasAntiContentDate ? '有值' : '空'}`);
+            console.log('\n' + '='.repeat(50));
+            return;
+        }
+        
         const accountData = {
             username,
             anti_content: crawler.capturedData.antiContent,
