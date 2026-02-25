@@ -17,11 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 安装依赖（x11-apps 用于光标，xserver-xephyr 备选）
+      # 安装依赖
       - name: 安装录制依赖
         run: |
           apt-get update
-          apt-get install -y ffmpeg xvfb x11-apps xserver-xephyr
+          apt-get install -y ffmpeg xvfb x11-xserver-utils
 
       - name: 获取当前日期
         id: date
@@ -40,39 +40,50 @@ jobs:
       # 第二步：启动虚拟显示器、运行脚本并录制视频
       - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
-          # 方案：使用 Xephyr（支持硬件光标，更像真实显示器）
-          Xephyr :99 -screen 1366x768 -ac -br -noreset -host-cursor &
+          # 启动 Xvfb（标准参数，无 -cursor）
+          Xvfb :99 -screen 0 1366x768x24 -ac +extension RANDR -noreset &
+          XVFB_PID=$!
           export DISPLAY=:99
           
-          # 等待显示器就绪
+          # 等待 Xvfb 就绪
           sleep 3
           
           # 验证显示器
-          xdpyinfo -display :99 > /dev/null 2>&1 && echo "✅ Xephyr 启动成功" || echo "❌ Xephyr 启动失败"
-
-          # 设置光标主题（白色箭头，清晰可见）
-          xsetroot -cursor_name left_ptr -display :99 &
+          if xdpyinfo -display :99 >/dev/null 2>&1; then
+            echo "✅ Xvfb 启动成功"
+          else
+            echo "❌ Xvfb 启动失败"
+            exit 1
+          fi
           
-          # 启动光标守护进程（防止光标消失）
-          (while true; do 
-            xsetroot -cursor_name left_ptr -display :99 2>/dev/null
-            sleep 0.5
-          done) &
-          CURSOR_PID=$!
-
-          # 启动 ffmpeg 录制（关键：-draw_mouse 1 让 FFmpeg 绘制鼠标轨迹）
+          # 创建自定义光标（使用 X11 原生方式）
+          # 创建一个简单的点状光标位图
+          cat > /tmp/cursor.xbm << 'EOF'
+#define cursor_width 16
+#define cursor_height 16
+static unsigned char cursor_bits[] = {
+   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+EOF
+          
+          # 设置背景为深色，光标为白色（对比明显）
+          xsetroot -solid "#2c3e50" -display :99 2>/dev/null || true
+          
+          # 启动 ffmpeg 录制（核心：-draw_mouse 1 让 FFmpeg 自己绘制鼠标）
+          # 这是关键：FFmpeg 会捕获 X11 鼠标位置并叠加绘制
           ffmpeg -y -f x11grab \
                  -video_size 1366x768 \
                  -framerate 30 \
                  -draw_mouse 1 \
-                 -follow_mouse centered \
-                 -i :99 \
+                 -i :99.0 \
                  -c:v libx264 \
                  -preset veryfast \
                  -crf 23 \
                  -pix_fmt yuv420p \
                  -g 60 \
                  -movflags +faststart \
+                 -t 1900 \
                  recording.mp4 2> ffmpeg.log &
           FFMPEG_PID=$!
           
@@ -85,10 +96,7 @@ jobs:
           # 脚本结束后等待 3 秒
           sleep 3
 
-          # 停止光标守护进程
-          kill $CURSOR_PID 2>/dev/null || true
-          
-          # 优雅停止 ffmpeg（发送 q 键让 FFmpeg 正常收尾）
+          # 优雅停止 ffmpeg
           kill -INT $FFMPEG_PID 2>/dev/null || true
           
           # 等待最多 10 秒让 FFmpeg 完成编码
@@ -97,9 +105,12 @@ jobs:
             sleep 0.5
           done
           
-          # 强制终止（如果还在运行）
+          # 强制终止
           kill -9 $FFMPEG_PID 2>/dev/null || true
           wait $FFMPEG_PID 2>/dev/null || true
+          
+          # 清理 Xvfb
+          kill $XVFB_PID 2>/dev/null || true
 
           # 检查录制文件
           if [ -f recording.mp4 ]; then
@@ -107,8 +118,8 @@ jobs:
             echo "📹 录制视频文件大小: $FILE_SIZE 字节 ($((FILE_SIZE/1024))KB)"
             if [ $FILE_SIZE -lt 102400 ]; then
               echo "⚠️  警告：录制视频文件小于 100KB，可能录制失败"
-              echo "📝 FFmpeg 日志最后 20 行："
-              tail -20 ffmpeg.log
+              echo "📝 FFmpeg 日志最后 30 行："
+              tail -30 ffmpeg.log
             fi
           else
             echo "❌ 录制视频文件未生成"
