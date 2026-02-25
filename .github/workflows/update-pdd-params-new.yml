@@ -34,8 +34,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ./puppeteer_user_data
-          #key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
-          key: Linux-pdd-user-data-2026-02-20-22216467942   # 硬编码为您指定的 key
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-pdd-user-data-
 
