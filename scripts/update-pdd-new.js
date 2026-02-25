@@ -126,6 +126,9 @@ class PDDOrderCrawler {
         return;
       }
 
+      // 轻量级检查并关闭可能存在的弹窗/条幅
+      await this.checkOverlaysLightweight();
+
       // 2. 获取元素位置和大小
       const box = await element.boundingBox();
       if (!box) {
@@ -264,6 +267,59 @@ class PDDOrderCrawler {
     }
   }
 
+  // 新增：轻量级检查并关闭弹窗和条幅（不滚动到顶部）
+  async checkOverlaysLightweight() {
+    try {
+      let closedAny = false;
+      // 弹窗检查（直接点击）
+      const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
+      const popupExists = await this.page.$(popupSelector).catch(() => null);
+      if (popupExists) {
+        await this.page.click(popupSelector);
+        closedAny = true;
+        console.log('   ✅ 轻量检查：已关闭弹窗');
+        await new Promise(r => setTimeout(r, 50));
+      }
+      // 条幅检查（三级降级）
+      const bannerSelector = '.mc-header-platform-close';
+      const bannerExists = await this.page.$(bannerSelector).catch(() => null);
+      if (bannerExists) {
+        try {
+          await this.page.click(bannerSelector);
+          closedAny = true;
+          console.log('   ✅ 轻量检查：已关闭条幅');
+        } catch (clickError) {
+          console.log('   🔄 轻量检查：首次点击失败，尝试滚动后点击...');
+          try {
+            await bannerExists.scrollIntoViewIfNeeded();
+            await new Promise(r => setTimeout(r, 100)); // 等待滚动完成
+            await this.page.click(bannerSelector);
+            closedAny = true;
+            console.log('   ✅ 轻量检查：滚动后点击成功关闭条幅');
+          } catch (scrollError) {
+            console.log('   🔧 轻量检查：JS方法关闭条幅');
+            await this.page.evaluate((sel) => {
+              const element = document.querySelector(sel);
+              if (element) {
+                element.click();
+                setTimeout(() => {
+                  if (document.querySelector(sel)) {
+                    element.style.display = 'none';
+                  }
+                }, 100);
+              }
+            }, bannerSelector);
+            closedAny = true;
+          }
+        }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      return closedAny;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // 新增：极简版等待页面切换（URL轮询）
   async waitForPageTransition(targetUrlPattern, options = {}) {
     const {
@@ -385,6 +441,9 @@ class PDDOrderCrawler {
       const url = request.url();
 
       if (url.includes(CONFIG.targetApiEndpoint)) {
+        // 轻量级检查并关闭可能存在的弹窗/条幅
+        await this.checkOverlaysLightweight();
+        
         console.log('\n🎯 捕获到订单查询请求:');
         console.log('   URL:', url);
         console.log('   方法:', request.method());
@@ -406,6 +465,9 @@ class PDDOrderCrawler {
         this.capturedData.orderRequestHeaders = headers;
       }
       else if (url.includes(CONFIG.targetApiEndpointPlan)) {
+        // 轻量级检查并关闭可能存在的弹窗/条幅
+        await this.checkOverlaysLightweight();
+        
         console.log('\n🎯 捕获到预估销量查询请求:');
         console.log('   URL:', url);
         console.log('   方法:', request.method());
@@ -417,6 +479,9 @@ class PDDOrderCrawler {
         }
       }
       else if (url.includes(CONFIG.targetApiEndpointDate)) {
+        // 轻量级检查并关闭可能存在的弹窗/条幅
+        await this.checkOverlaysLightweight();
+        
         console.log('\n🎯 捕获到生产日期查询请求:');
         console.log('   URL:', url);
         console.log('   方法:', request.method());
@@ -886,7 +951,8 @@ class PDDOrderCrawler {
           break;
         }
       }
-
+      
+      await this.randomScroll();
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -901,7 +967,6 @@ class PDDOrderCrawler {
     }
 
     if (this.capturedData.antiContent) {
-      await this.dismissPageOverlays(); // 再次关闭弹窗和顶部条幅，确保菜单可点击
       return true;
     } else {
       console.log(`❌ 在 ${maxWaitTime / 1000 / 60} 分钟内未捕获到API请求或未获取到anti-content参数`);
@@ -945,7 +1010,6 @@ class PDDOrderCrawler {
           visible: true
         });
         console.log('   ✅ 页面核心元素已加载');
-        await this.dismissPageOverlays(); // 确保没有弹窗和顶部条幅
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
@@ -965,7 +1029,6 @@ class PDDOrderCrawler {
       }
 
       if (this.capturedData.antiContentPlan) {
-        await this.dismissPageOverlays();
         return true;
       } else {
         console.log(`❌ 在 ${maxWaitTime / 1000 / 60} 分钟内未捕获到预估销量查询API请求`);
@@ -1018,7 +1081,6 @@ class PDDOrderCrawler {
           visible: true
         });
         console.log('   ✅ 页面核心元素已加载');
-        await this.dismissPageOverlays(); // 确保没有弹窗和顶部条幅
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
@@ -1038,7 +1100,6 @@ class PDDOrderCrawler {
       }
 
       if (this.capturedData.antiContentDate) {
-        await this.dismissPageOverlays(); // 确保没有弹窗和顶部条幅
         return true;
       } else {
         console.log(`❌ 在 ${maxWaitTime / 1000 / 60} 分钟内未捕获到生产日期查询API请求`);

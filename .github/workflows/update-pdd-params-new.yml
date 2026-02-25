@@ -57,8 +57,8 @@ jobs:
           timeout 1800 node scripts/update-pdd-new.js || true
           SCRIPT_EXIT_CODE=$?
 
-          # 脚本结束后等待 3 秒，确保录制尾部被捕获
-          sleep 3
+          # 脚本结束后等待 2 秒，确保录制尾部被捕获
+          sleep 2
 
           # 停止 ffmpeg
           kill $FFMPEG_PID 2>/dev/null || true
