@@ -15,7 +15,7 @@ const CONFIG = {
 
     // 浏览器配置（优化后）
     browserOptions: {
-        headless: false, //'new',  // 新方法，字符串格式
+        headless: false, //'new', 为新方法，字符串格式。要录制视频，改为有头模式
         defaultViewport: {
             width: 1366,
             height: 768

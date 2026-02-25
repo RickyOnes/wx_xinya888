@@ -34,7 +34,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+          #key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+          key: ${{ github.event.inputs.cache_key }}
           restore-keys: |
             ${{ runner.os }}-pdd-user-data-
 
@@ -47,9 +48,9 @@ jobs:
           sleep 2  # 给Xvfb一点启动时间
 
           # 启动 ffmpeg 录制（优化参数：更高帧率、更清晰的编码）
-          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 10 -i :99 \
+          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 25 -i :99 \
                  -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p \
-                 -g 20 -movflags +faststart recording.mp4 2> ffmpeg.log &
+                 -g 50 -movflags +faststart recording.mp4 2> ffmpeg.log &
           FFMPEG_PID=$!
           echo "📹 ffmpeg 已启动，PID: $FFMPEG_PID"
 
@@ -63,10 +64,6 @@ jobs:
           # 停止 ffmpeg
           kill $FFMPEG_PID 2>/dev/null || true
           wait $FFMPEG_PID 2>/dev/null || true
-
-          # 输出 ffmpeg 日志以便调试
-          echo "📋 ffmpeg 日志："
-          cat ffmpeg.log
 
           # 检查录制文件大小
           if [ -f recording.mp4 ]; then
@@ -108,11 +105,3 @@ jobs:
           name: browser-recording-${{ github.run_id }}
           path: recording.mp4
           if-no-files-found: warn
-
-      # 可选：上传 ffmpeg 日志
-      - name: 上传 ffmpeg 日志
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-log-${{ github.run_id }}
-          path: ffmpeg.log
