@@ -38,7 +38,7 @@ jobs:
             ${{ runner.os }}-pdd-user-data-
 
       # 第二步：启动虚拟显示器并录制视频
-      - name: 启动虚拟显示器并录制视频
+      - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
           # 启动 Xvfb（设置分辨率，与浏览器窗口一致）
           Xvfb :99 -screen 0 1366x768x24 &
@@ -57,7 +57,7 @@ jobs:
           NODE_PATH: /app/node_modules
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          PDD_ACCOUNTS_JSON: ${{ secrets.PDD_ACCOUNTS_JSON }}
+          PDD_ACCOUNTS: ${{ secrets.PDD_ACCOUNTS }}
           PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
           PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
           PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
