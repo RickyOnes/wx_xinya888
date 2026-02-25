@@ -44,15 +44,30 @@ jobs:
           Xvfb :99 -screen 0 1366x768x24 &
           export DISPLAY=:99
 
-          # 启动 ffmpeg 录制
-          ffmpeg -y -f x11grab -video_size 1366x768 -i :99 -codec:v libx264 -r 15 recording.mp4 &
+          # 启动 ffmpeg 录制（添加更多参数确保录制质量）
+          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 15 -i :99 -codec:v libx264 -preset ultrafast -crf 28 -g 30 -tune zerolatency recording.mp4 &
           FFMPEG_PID=$!
 
-          # 运行您的脚本
-          node scripts/update-pdd-new.js
+          # 运行您的脚本，设置超时防止挂起
+          timeout 1800 node scripts/update-pdd-new.js || true
 
-          # 脚本结束后停止 ffmpeg
-          kill $FFMPEG_PID
+          # 脚本结束后等待 5 秒，确保录制尾部被捕获
+          sleep 5
+
+          # 停止 ffmpeg
+          kill $FFMPEG_PID 2>/dev/null || true
+          wait $FFMPEG_PID 2>/dev/null || true
+
+          # 检查录制文件大小
+          if [ -f recording.mp4 ]; then
+            FILE_SIZE=$(stat -c%s recording.mp4)
+            echo "📹 录制视频文件大小: $FILE_SIZE 字节"
+            if [ $FILE_SIZE -lt 102400 ]; then
+              echo "⚠️  警告：录制视频文件大小小于 100KB，可能录制失败"
+            fi
+          else
+            echo "❌ 录制视频文件未生成"
+          fi
         env:
           NODE_PATH: /app/node_modules
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

@@ -80,22 +80,35 @@ class PDDOrderCrawler {
               scrollY: window.scrollY,
               maxScroll: document.body.scrollHeight - window.innerHeight
           }));
-          
-          // 避免无限滚动
-          if (scrollY >= maxScroll) return;
-          
-          // 随机方向 + 距离
-          const direction = Math.random() > 0.7 ? -1 : 1;  // 30%向上
+  
+          // 边界智能处理
+          let direction;
+          if (scrollY < 100) {
+              // 接近顶部，强制向下
+              direction = 1;
+          } else if (scrollY > maxScroll - 100) {
+              // 接近底部，强制向上
+              direction = -1;
+          } else {
+              // 随机方向，70%向下，30%向上（模拟人类阅读习惯）
+              direction = Math.random() > 0.7 ? -1 : 1;
+          }
+  
+          // 随机距离 200-700px
           const distance = (Math.random() * 500 + 200) * direction;
-          
+  
+          // 执行平滑滚动
           await this.page.evaluate(d => window.scrollBy({ top: d, behavior: 'smooth' }), distance);
+          
+          // 随机停顿，模拟阅读时间
           await new Promise(r => setTimeout(r, Math.random() * 1000 + 500));
-          console.log('   👆 模拟用户随机滚动');
+          
+          console.log(`   👆 模拟用户滚动 (方向: ${direction > 0 ? '下' : '上'}, 距离: ${Math.abs(distance).toFixed(0)}px)`);
           
       } catch (e) {
-          // 忽略滚动错误  
+          // 忽略滚动错误（如页面突然关闭）
       }
-  }
+    }
 
     // 新增：模拟人类-like点击（带鼠标移动轨迹和随机偏移）
     async humanLikeClick(selectorOrElement) {
@@ -275,7 +288,7 @@ class PDDOrderCrawler {
             await new Promise(r => setTimeout(r, checkInterval));
         }
         
-        throw new Error(`页面切换超时(${timeout}ms)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
+        throw new Error(`页面切换超时(${timeout}秒)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
     }
 
     // 初始化浏览器
@@ -911,8 +924,12 @@ class PDDOrderCrawler {
                 timeout: 10000,
                 visible: true 
             });
-            
-            const targetLink = await this.page.$(linkSelector);
+            const links = await this.page.$$eval('a[data-report-click-text="预约送货"]', els =>
+              els.map(el => ({ text: el.textContent.trim(), href: el.href }))
+            );
+            console.log('匹配的链接:', links);
+
+            const targetLink = await this.page.$(linkSelector); // 获取链接元素
             if (!targetLink) {
                 throw new Error('未找到预约送货链接');
             }
@@ -1109,13 +1126,13 @@ class PDDOrderCrawler {
 
             console.log('\n📊 开始捕获预估销量查询参数...');
             const planCaptured = await this.capturePlanAntiContent();
-            if (!planCaptured) {
+            if (!planCaptured && !this.capturedData.antiContentPlan) {
                 console.log('⚠️ 预估销量查询参数捕获失败，继续执行...');
             }
 
             console.log('\n📅 开始捕获生产日期查询参数...');
             const dateCaptured = await this.captureDateAntiContent();
-            if (!dateCaptured) {
+            if (!dateCaptured && !this.capturedData.antiContentDate) {
                 console.log('⚠️ 生产日期查询参数捕获失败，继续执行...');
             }
 
