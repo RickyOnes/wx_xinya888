@@ -1,0 +1,81 @@
+name: 更新拼多多参数(新方法)
+on:
+  workflow_dispatch: {}  # 支持手动触发
+  repository_dispatch:   # 支持外部API触发（由Supabase cron调用）
+    types: [external_cron_trigger]
+
+jobs:
+  update:
+    runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/rickyones/pdd-crawler:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 安装 ffmpeg 和 xvfb（如果镜像中未预装）
+      - name: 安装 ffmpeg 和 xvfb
+        run: |
+          apt-get update
+          apt-get install -y ffmpeg xvfb
+        # 如果镜像中已安装，可注释掉此步骤
+
+      - name: 获取当前日期
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      # 第一步：尝试恢复缓存
+      - name: 恢复 Puppeteer 用户数据缓存
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ./puppeteer_user_data
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-pdd-user-data-
+
+      # 第二步：启动虚拟显示器并录制视频
+      - name: 启动虚拟显示器并录制视频
+        run: |
+          # 启动 Xvfb（设置分辨率，与浏览器窗口一致）
+          Xvfb :99 -screen 0 1366x768x24 &
+          export DISPLAY=:99
+
+          # 启动 ffmpeg 录制
+          ffmpeg -y -f x11grab -video_size 1366x768 -i :99 -codec:v libx264 -r 15 recording.mp4 &
+          FFMPEG_PID=$!
+
+          # 运行您的脚本
+          node scripts/update-pdd.js
+
+          # 脚本结束后停止 ffmpeg
+          kill $FFMPEG_PID
+        env:
+          NODE_PATH: /app/node_modules
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PDD_ACCOUNTS_JSON: ${{ secrets.PDD_ACCOUNTS_JSON }}
+          PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
+          PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
+          PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
+          TZ: Asia/Shanghai
+          DISPLAY: :99   # 确保脚本知道使用虚拟显示器
+
+      # 第三步：保存更新后的缓存
+      - name: 保存 Puppeteer 用户数据缓存
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ./puppeteer_user_data
+          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+
+      # 第四步：上传录制视频作为 artifact
+      - name: 上传浏览器录制视频
+        if: always()  # 即使脚本失败也上传视频，便于调试
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-recording
+          path: recording.mp4

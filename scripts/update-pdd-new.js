@@ -97,6 +97,161 @@ class PDDOrderCrawler {
       }
   }
 
+    // 新增：模拟人类-like点击（带鼠标移动轨迹和随机偏移）
+    async humanLikeClick(selector) {
+      try {
+          // 1. 通过选择器获取元素
+          const element = await this.page.$(selector);
+          if (!element) {
+              console.log(`   ⚠️ 元素不存在: ${selector}`);
+              return;
+          }
+  
+          // 2. 获取元素位置和大小
+          const box = await element.boundingBox();
+          if (!box) {
+              // 如果元素不可见，回退到普通点击
+              console.log(`   ⚠️ 元素不可见，使用普通点击`);
+              await this.page.click(selector);
+              return;
+          }
+  
+          // 3. 随机点击元素内的偏移点（30%-70%区域）
+          const x = box.x + box.width * (0.3 + Math.random() * 0.4);
+          const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+  
+          // 4. 分步移动鼠标（模拟人类轨迹）
+          await this.page.mouse.move(x, y, { steps: 10 });
+  
+          // 5. 随机停顿（人类反应时间）
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 50));
+  
+          // 6. 按下、弹起（完整鼠标事件）
+          await this.page.mouse.down();
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 50 + 30));
+          await this.page.mouse.up();
+  
+          // 7. 等待 UI 更新
+          await new Promise(resolve => setTimeout(resolve, 100));
+  
+      } catch (e) {
+          // 8. 回退机制：如果上述过程失败，使用标准 page.click
+          console.log(`   ⚠️ 人类模拟点击失败 (${e.message})，使用普通点击回退`);
+          try {
+              await this.page.click(selector);
+          } catch (fallbackError) {
+              console.log(`   ❌ 普通点击也失败: ${fallbackError.message}`);
+          }
+      }
+    }
+
+    // 新增：模拟人类-like输入（逐个字符输入，带随机延迟）
+    async humanLikeType(selector, text) {
+      try {
+          // 获取元素并确保其可交互
+          const element = await this.page.$(selector);
+          if (!element) {
+              console.log(`⚠️ 元素不存在: ${selector}`);
+              return;
+          }
+  
+          // 滚动到视口
+          await element.scrollIntoViewIfNeeded();
+  
+          // 模拟点击聚焦（可选，但更安全）
+          await element.click({ delay: Math.random() * 100 + 50 });
+          await new Promise(r => setTimeout(r, Math.random() * 100 + 50));
+  
+          // 逐个字符输入
+          for (const char of text) {
+              await element.type(char, { delay: Math.random() * 100 + 50 });
+  
+              // 偶尔停顿，像人类思考
+              if (Math.random() > 0.9) {
+                  await new Promise(r => setTimeout(r, Math.random() * 300 + 100));
+              }
+          }
+      } catch (e) {
+          console.log(`⚠️ 人类模拟输入失败，回退到普通输入: ${e.message}`);
+          // 回退方案：使用 page.type 直接输入
+          await this.page.type(selector, text, { delay: 50 });
+      }
+    }
+
+    // 新增：关闭页面弹窗和顶部条幅，使左侧菜单可点击
+    async dismissPageOverlays() {
+      console.log('🧹 检查并关闭页面弹窗和顶部条幅...');
+  
+      try {
+          // 步骤1：关闭弹窗（优先）
+          const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
+          const popupExists = await this.page.$(popupSelector).catch(() => null);
+          if (popupExists) {
+              await this.page.click(popupSelector);
+              console.log('   ✅ 已关闭弹窗');
+              // 等待弹窗消失动画和页面稳定
+              await new Promise(r => setTimeout(r, 500));
+          } else {
+              console.log('   ℹ️ 未检测到弹窗');
+          }
+  
+          // 步骤2：滚动到页面顶部（确保条幅可见）
+          console.log('   🔼 正在滚动到顶部...');
+          await this.page.evaluate(() => {
+              window.scrollTo({ top: 0, behavior: 'smooth' }); // 平滑滚动，更自然
+          });
+          // 等待滚动完成（检测滚动位置是否稳定在0）
+          await this.page.waitForFunction(
+              () => window.scrollY === 0,
+              { timeout: 5000, polling: 100 }
+          );
+          console.log('   ✅ 已滚动到顶部');
+  
+          // 步骤3：关闭顶部条幅
+          const bannerSelector = '.mc-header-platform-close';
+          const bannerExists = await this.page.$(bannerSelector).catch(() => null);
+          if (bannerExists) {
+              await this.page.click(bannerSelector);
+              console.log('   ✅ 已关闭顶部条幅');
+              await new Promise(r => setTimeout(r, 200));
+          } else {
+              console.log('   ℹ️ 未检测到顶部条幅');
+          }
+  
+          return true;
+      } catch (e) {
+          console.log('   ⚠️ 关闭遮罩层时出错:', e.message);
+          return false;
+      }
+    }
+
+    // 新增：极简版等待页面切换（URL轮询）
+    async waitForPageTransition(targetUrlPattern, options = {}) {
+        const { 
+            timeout = 30000, 
+            checkInterval = 200, 
+            stableWaitMs = 500 
+        } = options;
+        
+        const startTime = Date.now();
+        console.log(`   ⏳ 等待页面切换至: *${targetUrlPattern}*`);
+        
+        while (Date.now() - startTime < timeout) {
+            const currentUrl = this.page.url();
+            if (currentUrl.includes(targetUrlPattern)) {
+                console.log(`   ✅ URL已匹配: ${currentUrl}`);
+                // 等待稳定
+                if (stableWaitMs > 0) {
+                    await new Promise(r => setTimeout(r, stableWaitMs));
+                }
+                return { url: currentUrl };
+            }
+            await new Promise(r => setTimeout(r, checkInterval));
+        }
+        
+        throw new Error(`页面切换超时(${timeout}ms)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
+    }
+
     // 初始化浏览器
     async init() {
         console.log('🚀 启动浏览器...');
@@ -247,7 +402,8 @@ class PDDOrderCrawler {
                     if (items && items.length >= 2) {
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
-                            await items[1].click().catch(() => {});
+                            // 修改：使用 humanLikeClick 替代直接 click
+                            await this.humanLikeClick(items[1]);
                             console.log('   ✅ 已切换到账号登录标签');
                             await new Promise(r => setTimeout(r, 500));
                             // 切换后模拟滚动一下
@@ -268,7 +424,8 @@ class PDDOrderCrawler {
                 try {
                     const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
                     if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
-                        await usernameEl.type(this.loginCredentials.username, { delay: 50 });
+                        // 修改：使用 humanLikeType 替代直接 type
+                        await this.humanLikeType(usernameEl, this.loginCredentials.username);
                         console.log('   ✅ 已输入用户名');
                     }
                 } catch (e) {}
@@ -277,7 +434,8 @@ class PDDOrderCrawler {
                 try {
                     const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
                     if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
-                        await passwordEl.type(this.loginCredentials.password, { delay: 50 });
+                        // 修改：使用 humanLikeType 替代直接 type
+                        await this.humanLikeType(passwordEl, this.loginCredentials.password);
                         console.log('   ✅ 已输入密码');
                     }
                 } catch (e) {}
@@ -299,7 +457,8 @@ class PDDOrderCrawler {
                             timeout: 5000
                         }).catch(() => null);
                         
-                        await loginButton.click().catch(() => {});
+                        // 修改：使用 humanLikeClick 替代直接 click
+                        await this.humanLikeClick(loginButton);
                         console.log('   ✅ 尝试点击登录按钮进行自动登录');
                         
                         await navigationPromise;
@@ -704,13 +863,47 @@ class PDDOrderCrawler {
         }
     }
 
+    // 修改：通过点击菜单导航到预估销量页面（使用极简等待+元素检测）
     async capturePlanAntiContent() {
-        console.log('\n📊 跳转到预估销量查询页面...');
+        console.log('\n📊 导航到预估销量查询页面...');
         try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/appointment-delivery', {
-                waitUntil: 'networkidle0',
-                timeout: 30000
+            // 步骤1：先关闭弹窗和顶部条幅，确保菜单可点击
+            await this.dismissPageOverlays();
+            
+            // 步骤2：等待并查找"预约送货"链接
+            console.log('   🔍 等待"预约送货"链接出现...');
+            const linkSelector = 'a[data-report-click-text="预约送货"]';
+            await this.page.waitForSelector(linkSelector, { 
+                timeout: 10000,
+                visible: true 
             });
+            
+            const targetLink = await this.page.$(linkSelector);
+            if (!targetLink) {
+                throw new Error('未找到预约送货链接');
+            }
+
+            // 步骤3：使用 humanLikeClick 模拟人类点击
+            await this.humanLikeClick(targetLink);
+            console.log('   ✅ 已点击"预约送货"链接（模拟人类点击）');
+            
+            // 步骤4：等待 URL 切换（极简轮询）
+            await this.waitForPageTransition('appointment-delivery', {
+                timeout: 15000,
+                stableWaitMs: 800  // SPA 多等会儿稳定
+            });
+            
+            // 步骤5：等待核心元素出现，确保页面完全加载
+            try {
+                await this.page.waitForSelector('[data-testid="beast-core-table"]', { 
+                    timeout: 10000,
+                    visible: true 
+                });
+                console.log('   ✅ 页面核心元素已加载');
+            } catch (e) {
+                console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
+            }
+            
             console.log('✅ 已进入预估销量查询页面');
 
             console.log('⏳ 等待预估销量查询API请求...');
@@ -733,18 +926,56 @@ class PDDOrderCrawler {
                 return false;
             }
         } catch (error) {
-            console.log('⚠️ 跳转到预估销量查询页面失败:', error.message);
+            console.log(`   ⚠️ ${error.message}，回退到直接导航`);
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-mms/appointment-delivery', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
             return false;
         }
     }
 
+    // 修改：通过点击菜单导航到生产日期页面（使用极简等待+元素检测）
     async captureDateAntiContent() {
-        console.log('\n📅 跳转到生产日期查询页面...');
+        console.log('\n📅 导航到生产日期查询页面...');
         try {
-            await this.page.goto('https://mc.pinduoduo.com/ddmc-supplier-product/goods-schedule', {
-                waitUntil: 'networkidle0',
-                timeout: 30000
+            // 步骤1：先关闭弹窗和顶部条幅，确保菜单可点击
+            await this.dismissPageOverlays();
+            
+            // 步骤2：等待并查找"商品排期"链接
+            console.log('   🔍 等待"商品排期"链接出现...');
+            const linkSelector = 'a[data-report-click-text="商品排期"]';
+            await this.page.waitForSelector(linkSelector, { 
+                timeout: 10000,
+                visible: true 
             });
+            
+            const targetLink = await this.page.$(linkSelector);
+            if (!targetLink) {
+                throw new Error('未找到商品排期链接');
+            }
+
+            // 步骤3：使用 humanLikeClick 模拟人类点击
+            await this.humanLikeClick(targetLink);
+            console.log('   ✅ 已点击"商品排期"链接（模拟人类点击）');
+            
+            // 步骤4：等待 URL 切换（极简轮询）
+            await this.waitForPageTransition('goods-schedule', {
+                timeout: 15000,
+                stableWaitMs: 500
+            });
+            
+            // 步骤5：等待核心元素出现，确保页面完全加载
+            try {
+                await this.page.waitForSelector('[data-testid="beast-core-table"]', { 
+                    timeout: 10000,
+                    visible: true 
+                });
+                console.log('   ✅ 页面核心元素已加载');
+            } catch (e) {
+                console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
+            }
+            
             console.log('✅ 已进入生产日期查询页面');
 
             console.log('⏳ 等待生产日期查询API请求...');
@@ -767,7 +998,11 @@ class PDDOrderCrawler {
                 return false;
             }
         } catch (error) {
-            console.log('⚠️ 跳转到生产日期查询页面失败:', error.message);
+            console.log(`   ⚠️ ${error.message}，回退到直接导航`);
+            await this.page.goto('https://mc.pinduoduo.com/ddmc-supplier-product/goods-schedule', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
             return false;
         }
     }
@@ -1031,7 +1266,7 @@ async function updateAccount(username, password, verificationCode) {
 }
 
 async function main() {
-    const accountsJson = process.env.PDD_ACCOUNTS_JSON;
+    const accountsJson = process.env.PDD_ACCOUNTS;
     if (!accountsJson) {
         console.log('❌ PDD_ACCOUNTS_JSON环境变量未设置');
         return;
