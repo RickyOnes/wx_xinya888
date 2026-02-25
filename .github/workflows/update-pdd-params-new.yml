@@ -42,14 +42,14 @@ jobs:
       - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
           # 启动 Xvfb（设置分辨率与浏览器视口一致）
-          Xvfb :99 -screen 0 1366x768x24 &
+          Xvfb :99 -screen 0 1366x768x24 -cursor on &
           export DISPLAY=:99
           sleep 2  # 给Xvfb一点启动时间
 
           # 启动 ffmpeg 录制（优化参数：更高帧率、更清晰的编码）
-          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 25 -i :99 \
+          ffmpeg -y -f x11grab -video_size 1366x768 -framerate 30 -i :99 \
                  -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p \
-                 -g 50 -movflags +faststart recording.mp4 2> ffmpeg.log &
+                 -g 60 -movflags +faststart recording.mp4 2> ffmpeg.log &
           FFMPEG_PID=$!
           echo "📹 ffmpeg 已启动，PID: $FFMPEG_PID"
 
