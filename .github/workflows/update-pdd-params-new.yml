@@ -35,7 +35,7 @@ jobs:
       - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
           # 启动 Xvfb（设置分辨率与浏览器视口一致）
-          Xvfb :99 -screen 0 1920x1080x24 &
+          Xvfb :99 -screen 0 1366x768x24 &
           export DISPLAY=:99
           sleep 2  # 给Xvfb一点启动时间
 
@@ -87,7 +87,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-pdd-user-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+          key: ${{ runner.os }}-pdd-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
 
       # 第四步：上传录制视频作为 artifact（总是上传，便于调试）
       - name: 上传浏览器录制视频

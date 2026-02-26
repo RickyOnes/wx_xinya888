@@ -18,8 +18,8 @@ const CONFIG = {
   browserOptions: {
     headless: false,
     defaultViewport: {
-      width: 1920,
-      height: 1080
+      width: 1366,
+      height: 768
     },
     args: [
       '--no-sandbox',
@@ -86,7 +86,7 @@ class PDDOrderCrawler {
   async randomScroll() {
     try {
       const direction = Math.random() > 0.7 ? -1 : 1; // 70%向下，30%向上
-      const distance = (Math.random() * 200 + 100) * direction; // 100~300px
+      const distance = (Math.random() * 200 + 100) * direction; // 200~300px
 
       await this.page.mouse.wheel({ deltaY: distance });
       await new Promise(r => setTimeout(r, Math.random() * 1000 + 500));
@@ -154,7 +154,7 @@ class PDDOrderCrawler {
           }
         } else {
           // 尝试关闭可能出现的弹窗
-          await this.dismissPageOverlays();
+          await this.checkOverlaysLightweight();
           await new Promise(r => setTimeout(r, 500));
         }
       }
@@ -194,40 +194,6 @@ class PDDOrderCrawler {
     }
   }
 
-  // 保留原有 dismissPageOverlays（未修改）
-  async dismissPageOverlays() {
-    console.log('🧹 检查并关闭页面弹窗和顶部条幅...');
-    try {
-      const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
-      const popupExists = await this.page.$(popupSelector).catch(() => null);
-      if (popupExists) {
-        await this.page.click(popupSelector);
-        console.log('   ✅ 已关闭弹窗');
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      await this.page.evaluate(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      });
-      await this.page.waitForFunction(
-        () => window.scrollY === 0,
-        { timeout: 5000, polling: 100 }
-      );
-
-      const bannerSelector = '.mc-header-platform-close';
-      const bannerExists = await this.page.$(bannerSelector).catch(() => null);
-      if (bannerExists) {
-        await this.page.click(bannerSelector);
-        console.log('   ✅ 已关闭顶部条幅');
-        await new Promise(r => setTimeout(r, 200));
-      } 
-      return true;
-    } catch (e) {
-      console.log('   ⚠️ 关闭遮罩层时出错:', e.message);
-      return false;
-    }
-  }
-
   // 保留原有 checkOverlaysLightweight（未修改）
   async checkOverlaysLightweight() {
     try {
@@ -243,6 +209,13 @@ class PDDOrderCrawler {
       const bannerSelector = '.mc-header-platform-close';
       const bannerExists = await this.page.$(bannerSelector).catch(() => null);
       if (bannerExists) {
+        await this.page.evaluate(() => { // 滚动到顶部
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        await this.page.waitForFunction( // 等待滚动到顶部
+          () => window.scrollY === 0,
+          { timeout: 5000, polling: 100 }
+        );        
         try {
           await this.page.click(bannerSelector);
           closedAny = true;
@@ -528,25 +501,22 @@ class PDDOrderCrawler {
 
       // 等待登录结果，检查是否跳转或需要验证码
       console.log('⏳ 等待登录处理...');
-      await new Promise(resolve => setTimeout(resolve, 1000));
 
       const startTime = Date.now();
       const maxWaitTime = 180000; // 3分钟
       const pollInterval = 2000;
 
       while (Date.now() - startTime < maxWaitTime) {
-        let currentUrl = '';
         let verificationCodeInput = null;
 
         try {
-          currentUrl = this.page.url();
         } catch (urlError) {
           console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
           await new Promise(resolve => setTimeout(resolve, 1000));
           continue;
         }
 
-        await this.waitForPageTransition('management', {
+        await this.waitForPageTransition('order/management', {
           timeout: 15000,
           stableWaitMs: 1000
         });
@@ -556,8 +526,7 @@ class PDDOrderCrawler {
             timeout: 10000,
             visible: true
           });
-          console.log('   ✅ 页面核心元素已加载');
-          await this.waitForReading();
+          console.log('   ✅ 页面核心元素已加载');          
           return true;
         } catch (e) {
           console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
@@ -847,7 +816,9 @@ class PDDOrderCrawler {
   // 销售订单查询页面（未修改）
   async waitForAPIRequest() {
     console.log(`✅ 登录成功，已进入订单管理页面：,${this.page.url()}`);
-    await this.dismissPageOverlays();
+    await this.waitForReading(); // 模拟阅读，等待2-5秒
+    await this.randomScroll(); // 模拟滚动页面
+    await this.checkOverlaysLightweight(); // 检查遮罩层
 
     const startTime = Date.now();
     const maxWaitTime = 300000; // 5分钟
@@ -929,7 +900,7 @@ class PDDOrderCrawler {
   async capturePlanAntiContent() {
     console.log('\n📊 导航到预估销量查询页面...');
     try {
-      await this.dismissPageOverlays();
+      await this.checkOverlaysLightweight();
 
       const linkSelector = 'a[data-report-click-text="预约送货"]';
       await this.page.waitForSelector(linkSelector, {
@@ -955,15 +926,13 @@ class PDDOrderCrawler {
           timeout: 10000,
           visible: true
         });
-        console.log('   ✅ 页面核心元素已加载');
+        console.log('   ✅ 页面核心元素已加载，已进入预估销量查询页面');
         await this.waitForReading();
+        await this.randomScroll();
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
 
-      console.log('✅ 已进入预估销量查询页面');
-
-      console.log('⏳ 等待预估销量查询API请求...');
       const startTime = Date.now();
       const maxWaitTime = 300000;
       while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
@@ -995,7 +964,7 @@ class PDDOrderCrawler {
   async captureDateAntiContent() {
     console.log('\n📅 导航到生产日期查询页面...');
     try {
-      await this.dismissPageOverlays();
+      await this.checkOverlaysLightweight();
 
       console.log('   🔍 等待"商品排期"链接出现...');
       const linkSelector = 'a[data-report-click-text="商品排期"]';
@@ -1010,7 +979,7 @@ class PDDOrderCrawler {
       }
 
       await this.humanLikeClick(targetLink);
-      console.log('   ✅ 已点击"商品排期"链接（模拟人类点击）');
+      console.log('   ✅ 已模拟人类点击"商品排期"链接');
 
       await this.waitForPageTransition('goods-schedule', {
         timeout: 15000,
@@ -1024,6 +993,7 @@ class PDDOrderCrawler {
         });
         console.log('   ✅ 页面核心元素已加载');
         await this.waitForReading();
+        await this.randomScroll();
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
