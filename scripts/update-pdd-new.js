@@ -309,7 +309,6 @@ class PDDOrderCrawler {
   async init() {
     console.log('🚀 启动浏览器...');
     console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-    console.log(`💻 当前操作系统: ${process.platform} (${process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'Mac'})`);
 
     const fs = require('fs').promises;
     try {
@@ -330,7 +329,6 @@ class PDDOrderCrawler {
       execSync('which google-chrome', { stdio: 'ignore' });
       launchOptions.executablePath = '/usr/bin/google-chrome';
       useSystemChrome = true;
-      console.log('   ✅ 将尝试使用系统 Chrome');
     } catch {
       console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
     }
