@@ -516,22 +516,6 @@ class PDDOrderCrawler {
           continue;
         }
 
-        await this.waitForPageTransition('order/management', {
-          timeout: 15000,
-          stableWaitMs: 1000
-        });
-  
-        try {
-          await this.page.waitForSelector('[data-testid="beast-core-table"]', {
-            timeout: 10000,
-            visible: true
-          });
-          console.log('   ✅ 页面核心元素已加载');          
-          return true;
-        } catch (e) {
-          console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
-        }
-
         try {
           verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
         } catch (elementError) {
@@ -539,7 +523,7 @@ class PDDOrderCrawler {
         }
 
         if (verificationCodeInput) {
-          console.log('📱 检测到验证码输入框，可能需要短信验证码');
+          console.log('📱 检测到验证码输入框，请更新supabase表中的验证码字段');
           return await this.handleVerificationCode(verificationCodeInput);
         }
 
@@ -815,6 +799,22 @@ class PDDOrderCrawler {
 
   // 销售订单查询页面（未修改）
   async waitForAPIRequest() {
+    await this.waitForPageTransition('order/management', {
+      timeout: 15000,
+      stableWaitMs: 1000
+    });
+
+    try {
+      await this.page.waitForSelector('[data-testid="beast-core-table"]', {
+        timeout: 10000,
+        visible: true
+      });
+      console.log('   ✅ 页面核心元素已加载');          
+      return true;
+    } catch (e) {
+      console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
+    }
+
     console.log(`✅ 登录成功，已进入订单管理页面：,${this.page.url()}`);
     await this.waitForReading(); // 模拟阅读，等待2-5秒
     await this.randomScroll(); // 模拟滚动页面
