@@ -525,9 +525,10 @@ class PDDOrderCrawler {
         if (verificationCodeInput) {
           console.log('📱 检测到验证码输入框，请更新supabase表中的验证码字段');
           return await this.handleVerificationCode(verificationCodeInput);
+        } else {
+          console.log('✅ 登录成功');
+          return true;
         }
-
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
 
       console.log('❌ 登录超时（3分钟），退出');
