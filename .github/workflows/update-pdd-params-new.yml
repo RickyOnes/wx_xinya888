@@ -9,20 +9,13 @@ jobs:
   update:
     runs-on: ubuntu-22.04
     container:
-      image: ghcr.io/rickyones/pdd-crawler:latest
+      image: ghcr.io/rickyones/pdd-crawler-ghost:latest # 使用已安装视频录制功能的新镜像
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
-
-      # 安装 ffmpeg 和 xvfb（如果镜像中未预装）
-      - name: 安装 ffmpeg 和 xvfb
-        run: |
-          apt-get update
-          apt-get install -y ffmpeg xvfb
-        # 如果镜像中已安装，可注释掉此步骤
 
       - name: 获取当前日期
         id: date
@@ -42,7 +35,7 @@ jobs:
       - name: 启动虚拟显示器、运行脚本并录制视频
         run: |
           # 启动 Xvfb（设置分辨率与浏览器视口一致）
-          Xvfb :99 -screen 0 1366x768x24 &
+          Xvfb :99 -screen 0 1920x1080x24 &
           export DISPLAY=:99
           sleep 2  # 给Xvfb一点启动时间
 

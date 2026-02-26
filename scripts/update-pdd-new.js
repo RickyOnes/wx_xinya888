@@ -1,7 +1,8 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
-const { execSync } = require('child_process'); // 用于检测系统 Chrome
+const { execSync } = require('child_process');
+const { createCursor } = require('ghost-cursor'); // 新增：导入 ghost-cursor
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -15,10 +16,10 @@ const CONFIG = {
 
   // 浏览器配置（优化后）
   browserOptions: {
-    headless: false, //'new', 为新方法，字符串格式。要录制视频，改为有头模式
+    headless: false,
     defaultViewport: {
-      width: 1366,
-      height: 768
+      width: 1920,
+      height: 1080
     },
     args: [
       '--no-sandbox',
@@ -31,9 +32,14 @@ const CONFIG = {
       '--disable-canvas-aa',
       '--disable-2d-canvas-clip-aa',
       '--use-gl=swiftshader',
-      '--disk-cache-size=52428800', // 缓存大小50MB
-      '--aggressive-cache-discard', // 缓存清理策略,激进地丢弃缓存，减少内存占用
-      '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests'
+      '--disk-cache-size=52428800',
+      '--aggressive-cache-discard',
+      '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
+      // 新增：更多反检测参数
+      '--disable-blink-features=AutomationControlled',
+      '--disable-sync',
+      '--no-default-browser-check',
+      '--disable-notifications'
     ],
     ignoreDefaultArgs: ['--enable-automation']
   },
@@ -52,6 +58,7 @@ class PDDOrderCrawler {
   constructor(loginCredentials, userDataDir, verificationCode, supabaseClient) {
     this.browser = null;
     this.page = null;
+    this.cursor = null; // 将在初始化页面后创建
     this.capturedData = {
       antiContent: null,
       antiContentPlan: null,
@@ -71,195 +78,149 @@ class PDDOrderCrawler {
     this.userDataDir = userDataDir || './puppeteer_user_data/default';
     this.verificationCode = verificationCode || null;
     this.supabaseClient = supabaseClient || null;
+    // 用于记录上次清理缓存的时间
+    this.lastCacheCleanTime = null;
   }
 
-  // 新增：模拟用户随机滚动
+  // 新增：模拟用户随机滚动（使用鼠标滚轮）
   async randomScroll() {
     try {
-      const { scrollY, maxScroll } = await this.page.evaluate(() => ({
-        scrollY: window.scrollY,
-        maxScroll: document.body.scrollHeight - window.innerHeight
-      }));
+      const direction = Math.random() > 0.7 ? -1 : 1; // 70%向下，30%向上
+      const distance = (Math.random() * 200 + 100) * direction; // 100~300px
 
-      // 边界智能处理
-      let direction;
-      if (scrollY < 100) {
-        // 接近顶部，强制向下
-        direction = 1;
-      } else if (scrollY > maxScroll - 100) {
-        // 接近底部，强制向上
-        direction = -1;
-      } else {
-        // 随机方向，70%向下，30%向上（模拟人类阅读习惯）
-        direction = Math.random() > 0.7 ? -1 : 1;
-      }
-
-      // 随机距离 200-700px
-      const distance = (Math.random() * 500 + 200) * direction;
-
-      // 执行平滑滚动
-      await this.page.evaluate(d => window.scrollBy({ top: d, behavior: 'smooth' }), distance);
-
-      // 随机停顿，模拟阅读时间
+      await this.page.mouse.wheel({ deltaY: distance });
       await new Promise(r => setTimeout(r, Math.random() * 1000 + 500));
 
-      console.log(`   👆 模拟用户滚动 (方向: ${direction > 0 ? '下' : '上'}, 距离: ${Math.abs(distance).toFixed(0)}px)`);
-
+      console.log(`   👆 模拟鼠标滚轮滚动 (方向: ${direction > 0 ? '下' : '上'}, 距离: ${Math.abs(distance).toFixed(0)}px)`);
     } catch (e) {
-      // 忽略滚动错误（如页面突然关闭）
+      // 忽略滚动错误
     }
   }
 
-  // 新增：模拟人类-like点击（带鼠标移动轨迹和随机偏移）
+  // 新增：模拟页面阅读停留（随机2~5秒）
+  async waitForReading() {
+    const delay = 2000 + Math.random() * 3000;
+    console.log(`   👁️ 模拟阅读，停留 ${(delay/1000).toFixed(1)} 秒`);
+    await new Promise(r => setTimeout(r, delay));
+  }
+
+  // 修改：使用 ghost-cursor 模拟人类点击（带重试和弹窗检查）
   async humanLikeClick(selectorOrElement) {
-    try {
-      // 1. 获取元素 - 支持选择器字符串或 ElementHandle 对象
-      let element;
-      if (typeof selectorOrElement === 'string') {
-        element = await this.page.$(selectorOrElement);
-      } else {
-        element = selectorOrElement; // 已经是 ElementHandle 对象
-      }
-
-      if (!element) {
-        console.log(`   ⚠️ 元素不存在: ${typeof selectorOrElement === 'string' ? selectorOrElement : '提供的元素对象'}`);
-        return;
-      }
-
-      // 轻量级检查并关闭可能存在的弹窗/条幅
-      await this.checkOverlaysLightweight();
-
-      // 2. 获取元素位置和大小
-      const box = await element.boundingBox();
-      if (!box) {
-        // 如果元素不可见，回退到普通点击
-        console.log(`   ⚠️ 元素不可见，使用普通点击`);
-        // 如果是字符串选择器，使用 page.click；否则使用元素点击
-        if (typeof selectorOrElement === 'string') {
-          await this.page.click(selectorOrElement);
-        } else {
-          await element.click();
-        }
-        return;
-      }
-
-      // 3. 随机点击元素内的偏移点（30%-70%区域）
-      const x = box.x + box.width * (0.3 + Math.random() * 0.4);
-      const y = box.y + box.height * (0.3 + Math.random() * 0.4);
-
-      // 4. 分步移动鼠标（模拟人类轨迹）
-      await this.page.mouse.move(x, y, { steps: 10 });
-
-      // 5. 随机停顿（人类反应时间）
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 300));
-
-      // 6. 按下、弹起（完整鼠标事件）
-      await this.page.mouse.down();
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 50 + 30));
-      await this.page.mouse.up();
-
-      // 7. 等待 UI 更新
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-    } catch (e) {
-      // 8. 回退机制：如果上述过程失败，使用标准 page.click
-      console.log(`   ⚠️ 人类模拟点击失败 (${e.message})，使用普通点击回退`);
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
+        // 1. 获取元素
+        let element;
         if (typeof selectorOrElement === 'string') {
-          await this.page.click(selectorOrElement);
+          element = await this.page.$(selectorOrElement);
         } else {
-          await selectorOrElement.click();
+          element = selectorOrElement;
         }
-      } catch (fallbackError) {
-        console.log(`   ❌ 普通点击也失败: ${fallbackError.message}`);
+        if (!element) throw new Error('元素不存在');
+
+        // 2. 第一次弹窗检查
+        await this.checkOverlaysLightweight();
+
+        // 3. 使用 ghost-cursor 移动并点击
+        const box = await element.boundingBox();
+        if (!box) throw new Error('元素不可见');
+
+        // 生成点击点（在元素内部随机偏移）
+        const x = box.x + box.width * (0.3 + Math.random() * 0.4);
+        const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+
+        // 移动鼠标（使用 ghost-cursor 的移动方法）
+        await this.cursor.moveTo({ x, y });
+
+        // 4. 第二次弹窗检查（移动后、点击前）
+        await this.checkOverlaysLightweight();
+        await new Promise(r => setTimeout(r, 100 + Math.random() * 100));
+
+        // 5. 执行点击（使用 ghost-cursor 的点击方法）
+        await this.cursor.click();
+
+        // 点击后短暂等待
+        await new Promise(r => setTimeout(r, 100));
+        return; // 成功则退出
+
+      } catch (err) {
+        console.log(`   ⚠️ 人类点击尝试 ${attempt} 失败: ${err.message}`);
+        if (attempt === 3) {
+          // 最后一次失败，回退到原生点击
+          console.log('   ⚠️ 回退到原生 click()');
+          if (typeof selectorOrElement === 'string') {
+            await this.page.click(selectorOrElement).catch(() => {});
+          } else {
+            await selectorOrElement.click().catch(() => {});
+          }
+        } else {
+          // 尝试关闭可能出现的弹窗
+          await this.dismissPageOverlays();
+          await new Promise(r => setTimeout(r, 500));
+        }
       }
     }
   }
 
-  // 新增：模拟人类-like输入（逐个字符输入，带随机延迟）
+  // 保留原有 humanLikeType（未修改）
   async humanLikeType(selectorOrElement, text) {
     try {
-      // 获取元素 - 支持选择器字符串或 ElementHandle 对象
       let element;
       if (typeof selectorOrElement === 'string') {
         element = await this.page.$(selectorOrElement);
       } else {
-        element = selectorOrElement; // 已经是 ElementHandle 对象
+        element = selectorOrElement;
       }
-
       if (!element) {
         console.log(`⚠️ 元素不存在: ${typeof selectorOrElement === 'string' ? selectorOrElement : '提供的元素对象'}`);
         return;
       }
-
-      // 滚动到视口
       await element.scrollIntoViewIfNeeded();
-
-      // 模拟点击聚焦（可选，但更安全）
       await element.click({ delay: Math.random() * 100 + 50 });
       await new Promise(r => setTimeout(r, Math.random() * 100 + 50));
 
-      // 逐个字符输入
       for (const char of text) {
         await element.type(char, { delay: Math.random() * 100 + 50 });
-
-        // 偶尔停顿，像人类思考
         if (Math.random() > 0.9) {
           await new Promise(r => setTimeout(r, Math.random() * 300 + 100));
         }
       }
     } catch (e) {
       console.log(`⚠️ 人类模拟输入失败，回退到普通输入: ${e.message}`);
-      // 回退方案：使用 page.type 直接输入
       if (typeof selectorOrElement === 'string') {
         await this.page.type(selectorOrElement, text, { delay: 50 });
       } else {
-        // 对于 ElementHandle，使用 type 方法
         await selectorOrElement.type(text, { delay: 50 });
       }
     }
   }
 
-  // 新增：关闭页面弹窗和顶部条幅，使左侧菜单可点击
+  // 保留原有 dismissPageOverlays（未修改）
   async dismissPageOverlays() {
     console.log('🧹 检查并关闭页面弹窗和顶部条幅...');
-
     try {
-      // 步骤1：关闭弹窗（优先）
       const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
       const popupExists = await this.page.$(popupSelector).catch(() => null);
       if (popupExists) {
         await this.page.click(popupSelector);
         console.log('   ✅ 已关闭弹窗');
-        // 等待弹窗消失动画和页面稳定
         await new Promise(r => setTimeout(r, 500));
-      } else {
-        console.log('   ℹ️ 未检测到弹窗');
       }
 
-      // 步骤2：滚动到页面顶部（确保条幅可见）
-      console.log('   🔼 正在滚动到顶部...');
       await this.page.evaluate(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' }); // 平滑滚动，更自然
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       });
-      // 等待滚动完成（检测滚动位置是否稳定在0）
       await this.page.waitForFunction(
         () => window.scrollY === 0,
         { timeout: 5000, polling: 100 }
       );
-      console.log('   ✅ 已滚动到顶部');
 
-      // 步骤3：关闭顶部条幅
       const bannerSelector = '.mc-header-platform-close';
       const bannerExists = await this.page.$(bannerSelector).catch(() => null);
       if (bannerExists) {
         await this.page.click(bannerSelector);
         console.log('   ✅ 已关闭顶部条幅');
         await new Promise(r => setTimeout(r, 200));
-      } else {
-        console.log('   ℹ️ 未检测到顶部条幅');
-      }
-
+      } 
       return true;
     } catch (e) {
       console.log('   ⚠️ 关闭遮罩层时出错:', e.message);
@@ -267,11 +228,10 @@ class PDDOrderCrawler {
     }
   }
 
-  // 新增：轻量级检查并关闭弹窗和条幅（不滚动到顶部）
+  // 保留原有 checkOverlaysLightweight（未修改）
   async checkOverlaysLightweight() {
     try {
       let closedAny = false;
-      // 弹窗检查（直接点击）
       const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
       const popupExists = await this.page.$(popupSelector).catch(() => null);
       if (popupExists) {
@@ -280,7 +240,6 @@ class PDDOrderCrawler {
         console.log('   ✅ 轻量检查：已关闭弹窗');
         await new Promise(r => setTimeout(r, 50));
       }
-      // 条幅检查（三级降级）
       const bannerSelector = '.mc-header-platform-close';
       const bannerExists = await this.page.$(bannerSelector).catch(() => null);
       if (bannerExists) {
@@ -292,7 +251,7 @@ class PDDOrderCrawler {
           console.log('   🔄 轻量检查：首次点击失败，尝试滚动后点击...');
           try {
             await bannerExists.scrollIntoViewIfNeeded();
-            await new Promise(r => setTimeout(r, 100)); // 等待滚动完成
+            await new Promise(r => setTimeout(r, 100));
             await this.page.click(bannerSelector);
             closedAny = true;
             console.log('   ✅ 轻量检查：滚动后点击成功关闭条幅');
@@ -320,7 +279,7 @@ class PDDOrderCrawler {
     }
   }
 
-  // 新增：极简版等待页面切换（URL轮询）
+  // 保留原有 waitForPageTransition（未修改）
   async waitForPageTransition(targetUrlPattern, options = {}) {
     const {
       timeout = 30000,
@@ -335,7 +294,6 @@ class PDDOrderCrawler {
       const currentUrl = this.page.url();
       if (currentUrl.includes(targetUrlPattern)) {
         console.log(`   ✅ URL已匹配: ${currentUrl}`);
-        // 等待稳定
         if (stableWaitMs > 0) {
           await new Promise(r => setTimeout(r, stableWaitMs));
         }
@@ -347,14 +305,12 @@ class PDDOrderCrawler {
     throw new Error(`页面切换超时(${timeout / 1000}秒)，目标: ${targetUrlPattern}, 当前: ${this.page.url()}`);
   }
 
-  // 初始化浏览器
+  // 初始化浏览器（修改：创建 cursor）
   async init() {
     console.log('🚀 启动浏览器...');
     console.log(`   📁 用户数据目录: ${this.userDataDir}`);
     console.log(`💻 当前操作系统: ${process.platform} (${process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : 'Mac'})`);
 
-
-    // 确保用户数据目录存在并可写
     const fs = require('fs').promises;
     try {
       await fs.mkdir(this.userDataDir, { recursive: true });
@@ -362,13 +318,11 @@ class PDDOrderCrawler {
       console.log(`   ⚠️ 无法创建目录: ${e.message}`);
     }
 
-    // 基础启动选项
     const baseOptions = {
       ...CONFIG.browserOptions,
       userDataDir: this.userDataDir
     };
 
-    // 尝试使用系统 Chrome
     let launchOptions = { ...baseOptions };
     let useSystemChrome = false;
     try {
@@ -381,7 +335,6 @@ class PDDOrderCrawler {
       console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
     }
 
-    // 启动浏览器，失败时回退到内置 Chromium
     try {
       this.browser = await puppeteer.launch(launchOptions);
       if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
@@ -389,7 +342,7 @@ class PDDOrderCrawler {
       if (useSystemChrome) {
         console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
         console.log('   🔄 尝试回退到 Puppeteer 内置 Chromium...');
-        delete launchOptions.executablePath; // 移除系统 Chrome 路径
+        delete launchOptions.executablePath;
         try {
           this.browser = await puppeteer.launch(launchOptions);
           console.log('   ✅ 内置 Chromium 启动成功');
@@ -405,7 +358,6 @@ class PDDOrderCrawler {
 
     this.page = await this.browser.newPage();
 
-    // 显示标签页数量
     try {
       const pages = await this.browser.pages();
       console.log(`📑 当前标签页数量: ${pages.length}`);
@@ -413,7 +365,7 @@ class PDDOrderCrawler {
       console.log(`⚠️ 无法获取标签页数量: ${e.message}`);
     }
 
-    // 设置用户代理
+    // 设置用户代理（可随机化，但此处保留原样）
     await this.page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
     );
@@ -429,11 +381,14 @@ class PDDOrderCrawler {
       Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
     });
 
+    // 初始化 ghost-cursor
+    this.cursor = createCursor(this.page);
+
     console.log('✅ 浏览器启动成功');
     console.log(`📊 浏览器版本: ${await this.browser.version()}`);
   }
 
-  // 设置请求拦截    
+  // 设置请求拦截（未修改）
   async setupRequestInterception() {
     await this.page.setRequestInterception(true);
 
@@ -441,7 +396,6 @@ class PDDOrderCrawler {
       const url = request.url();
 
       if (url.includes(CONFIG.targetApiEndpoint)) {
-        // 轻量级检查并关闭可能存在的弹窗/条幅
         await this.checkOverlaysLightweight();
         
         console.log('\n🎯 捕获到订单查询请求:');
@@ -465,7 +419,6 @@ class PDDOrderCrawler {
         this.capturedData.orderRequestHeaders = headers;
       }
       else if (url.includes(CONFIG.targetApiEndpointPlan)) {
-        // 轻量级检查并关闭可能存在的弹窗/条幅
         await this.checkOverlaysLightweight();
         
         console.log('\n🎯 捕获到预估销量查询请求:');
@@ -479,7 +432,6 @@ class PDDOrderCrawler {
         }
       }
       else if (url.includes(CONFIG.targetApiEndpointDate)) {
-        // 轻量级检查并关闭可能存在的弹窗/条幅
         await this.checkOverlaysLightweight();
         
         console.log('\n🎯 捕获到生产日期查询请求:');
@@ -496,7 +448,7 @@ class PDDOrderCrawler {
     });
   }
 
-  // 自动登录
+  // 自动登录（未修改，但内部 humanLikeClick 已更新，所以无需改动）
   async autoLogin() {
     console.log('\n🌐 开始登录流程，直接登录...');
 
@@ -508,7 +460,7 @@ class PDDOrderCrawler {
       });
       console.log('✅ 登录页面加载成功');
 
-      // 切换到"账号登录"标签（并在切换前/后模拟滚动）
+      // 切换到"账号登录"标签
       try {
         const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
         if (tabContainer) {
@@ -516,7 +468,6 @@ class PDDOrderCrawler {
           if (items && items.length >= 2) {
             const secondClass = await this.page.evaluate(el => el.className, items[1]);
             if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
-              // 修改：使用 humanLikeClick 替代直接 click
               await this.humanLikeClick(items[1]);
               console.log('   ✅ 已切换到账号登录标签');
               await new Promise(r => setTimeout(r, 500));
@@ -536,7 +487,6 @@ class PDDOrderCrawler {
         try {
           const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
           if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
-            // 修改：使用 humanLikeType 替代直接 type
             await this.humanLikeType(usernameEl, this.loginCredentials.username);
             console.log('   ✅ 已输入用户名');
           }
@@ -546,7 +496,6 @@ class PDDOrderCrawler {
         try {
           const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
           if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
-            // 修改：使用 humanLikeType 替代直接 type
             await this.humanLikeType(passwordEl, this.loginCredentials.password);
             console.log('   ✅ 已输入密码');
           }
@@ -566,7 +515,6 @@ class PDDOrderCrawler {
               timeout: 5000
             }).catch(() => null);
 
-            // 修改：使用 humanLikeClick 替代直接 click
             await this.humanLikeClick(loginButton);
             console.log('   ✅ 尝试点击登录按钮进行自动登录');
 
@@ -600,9 +548,21 @@ class PDDOrderCrawler {
           continue;
         }
 
-        if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/order/management')) {
-          console.log('✅ 登录成功，已进入订单管理页面');
+        await this.waitForPageTransition('management', {
+          timeout: 15000,
+          stableWaitMs: 1000
+        });
+  
+        try {
+          await this.page.waitForSelector('[data-testid="beast-core-table"]', {
+            timeout: 10000,
+            visible: true
+          });
+          console.log('   ✅ 页面核心元素已加载');
+          await this.waitForReading();
           return true;
+        } catch (e) {
+          console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
         }
 
         try {
@@ -628,7 +588,7 @@ class PDDOrderCrawler {
     }
   }
 
-  // 保留原有验证码处理方法（不变）
+  // 保留原有验证码处理方法（未修改）
   async handleVerificationCode(verificationCodeInput) {
     console.log('📱 检测到验证码输入框，可能需要短信验证码');
 
@@ -786,7 +746,6 @@ class PDDOrderCrawler {
                       const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
                       if (updatedAt > tenMinutesAgo) {
-                        // 检查更新时间是否比之前记录的更近
                         if (!lastVerificationUpdateTime || updatedAt > lastVerificationUpdateTime) {
                           newVerificationCode = data.code;
                           newUpdatedAt = updatedAt;
@@ -870,7 +829,7 @@ class PDDOrderCrawler {
     return false;
   }
 
-  // 获取Cookies
+  // 获取Cookies（未修改）
   async captureCookies() {
     console.log('\n🍪 捕获Cookies...');
 
@@ -887,14 +846,13 @@ class PDDOrderCrawler {
     return cookies;
   }
 
-  // 销售订单查询页面
+  // 销售订单查询页面（未修改）
   async waitForAPIRequest() {
-    console.log('\n⏳ 等待页面自动发送订单查询请求...');
-    console.log(`   初始URL: ${this.page.url()}`);
-    await this.dismissPageOverlays(); // 先关闭弹窗和顶部条幅，确保菜单可点击
+    console.log(`✅ 登录成功，已进入订单管理页面：,${this.page.url()}`);
+    await this.dismissPageOverlays();
 
     const startTime = Date.now();
-    const maxWaitTime = 900000; // 9分钟
+    const maxWaitTime = 300000; // 5分钟
     let retryCount = 0;
     const maxRetries = 3;
     let needReLogin = false;
@@ -902,7 +860,6 @@ class PDDOrderCrawler {
     while (!this.capturedData.antiContent && (Date.now() - startTime) < maxWaitTime) {
       const currentUrl = this.page.url();
 
-      // 检查是否需要重新登录（页面在登录页面）
       if (currentUrl.includes('mms.pinduoduo.com/login')) {
         console.log(`⚠️  页面已跳转到登录页面，会话可能已失效`);
         if (retryCount < maxRetries) {
@@ -927,19 +884,15 @@ class PDDOrderCrawler {
             retryCount++;
             console.log(`✅ 重新导航成功，继续等待API请求...`);
 
-            // 重新导航后等待页面稳定
             await new Promise(resolve => setTimeout(resolve, 3000));
             continue;
           } catch (error) {
             console.log(`❌ 重新导航失败: ${error.message}`);
 
-            // 检查失败后是否在登录页面
             let urlAfterFail = '';
             try {
               urlAfterFail = this.page.url();
-            } catch (e) {
-              // 忽略错误
-            }
+            } catch (e) {}
             if (urlAfterFail.includes('mms.pinduoduo.com/login')) {
               console.log(`⚠️  重新导航失败后页面在登录页面，需要重新登录`);
               needReLogin = true;
@@ -978,38 +931,34 @@ class PDDOrderCrawler {
   async capturePlanAntiContent() {
     console.log('\n📊 导航到预估销量查询页面...');
     try {
-      // 步骤1：先关闭弹窗和顶部条幅，确保菜单可点击
       await this.dismissPageOverlays();
 
-      // 步骤2：等待并查找"预约送货"链接
       const linkSelector = 'a[data-report-click-text="预约送货"]';
       await this.page.waitForSelector(linkSelector, {
         timeout: 10000,
         visible: true
       });
 
-      const targetLink = await this.page.$(linkSelector); // 获取链接元素
+      const targetLink = await this.page.$(linkSelector);
       if (!targetLink) {
         throw new Error('未找到预约送货链接');
       }
 
-      // 步骤3：使用 humanLikeClick 模拟人类点击
       await this.humanLikeClick(targetLink);
       console.log('   ✅ 已点击"预约送货"链接，等待页面加载...');
 
-      // 步骤4：等待 URL 切换（极简轮询）
       await this.waitForPageTransition('appointment-delivery', {
         timeout: 15000,
-        stableWaitMs: 1000  // SPA 多等会儿稳定
+        stableWaitMs: 1000
       });
 
-      // 步骤5：等待核心元素出现，确保页面完全加载
       try {
         await this.page.waitForSelector('[data-testid="beast-core-table"]', {
           timeout: 10000,
           visible: true
         });
         console.log('   ✅ 页面核心元素已加载');
+        await this.waitForReading();
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
@@ -1048,10 +997,8 @@ class PDDOrderCrawler {
   async captureDateAntiContent() {
     console.log('\n📅 导航到生产日期查询页面...');
     try {
-      // 步骤1：先关闭弹窗和顶部条幅，确保菜单可点击
       await this.dismissPageOverlays();
 
-      // 步骤2：等待并查找"商品排期"链接
       console.log('   🔍 等待"商品排期"链接出现...');
       const linkSelector = 'a[data-report-click-text="商品排期"]';
       await this.page.waitForSelector(linkSelector, {
@@ -1064,23 +1011,21 @@ class PDDOrderCrawler {
         throw new Error('未找到商品排期链接');
       }
 
-      // 步骤3：使用 humanLikeClick 模拟人类点击
       await this.humanLikeClick(targetLink);
       console.log('   ✅ 已点击"商品排期"链接（模拟人类点击）');
 
-      // 步骤4：等待 URL 切换（极简轮询）
       await this.waitForPageTransition('goods-schedule', {
         timeout: 15000,
         stableWaitMs: 500
       });
 
-      // 步骤5：等待核心元素出现，确保页面完全加载
       try {
         await this.page.waitForSelector('[data-testid="beast-core-table"]', {
           timeout: 10000,
           visible: true
         });
         console.log('   ✅ 页面核心元素已加载');
+        await this.waitForReading();
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
@@ -1120,7 +1065,7 @@ class PDDOrderCrawler {
       console.log('🎬 开始执行拼多多订单数据捕获脚本');
 
       await this.init();
-      await this.setupRequestInterception();// 设置请求拦截
+      await this.setupRequestInterception();
 
       console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
 
@@ -1131,7 +1076,6 @@ class PDDOrderCrawler {
         return;
       }
 
-      // 尝试捕获API请求，允许会话过期重试
       let apiCaptured = false;
       let sessionRetryCount = 0;
       const maxSessionRetries = 2;
@@ -1148,7 +1092,6 @@ class PDDOrderCrawler {
             sessionRetryCount++;
             console.log(`\n🔄 会话过期，尝试重新登录 (重试 ${sessionRetryCount}/${maxSessionRetries})...`);
 
-            // 重新导航到登录页面执行登录
             console.log('🌐 重新执行登录流程...');
             try {
               await this.page.goto(CONFIG.loginUrl, {
@@ -1156,7 +1099,7 @@ class PDDOrderCrawler {
                 timeout: CONFIG.timeouts.pageLoad
               });
 
-              loginSuccess = await this.autoLogin(); // 执行登录
+              loginSuccess = await this.autoLogin();
               if (!loginSuccess) {
                 console.log('❌ 重新登录失败，退出');
                 return;
@@ -1168,7 +1111,6 @@ class PDDOrderCrawler {
               break;
             }
           } else {
-            // 其他错误，直接抛出
             throw error;
           }
         }
@@ -1199,23 +1141,53 @@ class PDDOrderCrawler {
       if (this.browser) {
         try {
           await this.browser.close();
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 等待一小段时间确保进程完全退出
+          await new Promise(resolve => setTimeout(resolve, 1000));
           console.log('👋 浏览器已关闭');
         } catch (closeError) {
           console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
         }
       }
 
-      // 清理残留进程和文件
+      // 新增：缓存清理策略（删除 Cache 目录，每周四清理一次）
       try {
-        console.log('🧹 开始清理残留文件...');
         const fs = require('fs');
         const path = require('path');
+      
+        const cacheDir = path.join(this.userDataDir, 'Default', 'Cache');
+        const timeFile = path.join(this.userDataDir, 'last_cache_clean.txt');
+      
+        const now = new Date();
+        const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+        const todayStr = now.toISOString().slice(0, 10); // 格式: YYYY-MM-DD
+      
+        // 读取上次清理日期
+        let lastCleanDate = null;
+        if (fs.existsSync(timeFile)) {
+          lastCleanDate = fs.readFileSync(timeFile, 'utf8').trim();
+        }
+      
+        // 判断条件：今天是周一 且 上次清理日期不是今天
+        const shouldClean = (dayOfWeek === 1 && lastCleanDate !== todayStr);
+      
+        if (shouldClean) {
+          if (fs.existsSync(cacheDir)) {
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+            console.log('   ✅ 已清理 Cache 目录（周一首次清理）');
+            fs.writeFileSync(timeFile, todayStr); // 记录本次清理日期
+          } else {
+            console.log('   ℹ️ Cache 目录不存在，无需清理');
+          }
+        } else {
+          if (dayOfWeek !== 1) {
+            console.log('   ℹ️ 不是周一，跳过 Cache 清理');
+          } else {
+            console.log('   ℹ️ 周一已清理过，跳过本次清理');
+          }
+        }
 
-        // 2. 清理锁文件（可能在根目录或Default目录）
+        // 原有的其他清理代码（锁文件、崩溃转储等）
         const lockFiles = ['SingletonLock', 'SingletonCookie'];
         const possibleLockDirs = [this.userDataDir, path.join(this.userDataDir, 'Default')];
-
         for (const lockFile of lockFiles) {
           for (const lockDir of possibleLockDirs) {
             const lockFilePath = path.join(lockDir, lockFile);
@@ -1230,7 +1202,6 @@ class PDDOrderCrawler {
           }
         }
 
-        // 3. 清理临时Socket文件（在Default目录下）
         const defaultDir = path.join(this.userDataDir, 'Default');
         if (fs.existsSync(defaultDir)) {
           try {
@@ -1241,28 +1212,20 @@ class PDDOrderCrawler {
                 try {
                   fs.unlinkSync(filePath);
                   console.log(`   ✅ 已删除临时文件: ${file}`);
-                } catch (e) {
-                  // 忽略删除失败
-                }
+                } catch (e) {}
               }
             }
-          } catch (e) {
-            // 忽略读取目录失败
-          }
+          } catch (e) {}
         }
 
-        // 4. 清理崩溃转储文件（在Default/Crashpad目录下）
         const crashDir = path.join(defaultDir, 'Crashpad');
         if (fs.existsSync(crashDir)) {
           try {
             require('child_process').execSync(`rm -rf "${crashDir}"`, { stdio: 'ignore' });
             console.log('   ✅ 已清理崩溃转储目录');
-          } catch (e) {
-            // 忽略删除失败
-          }
+          } catch (e) {}
         }
 
-        // 5. 清理.dmp文件（可能在根目录或Default目录）
         const possibleDmpDirs = [this.userDataDir, defaultDir];
         for (const dmpDir of possibleDmpDirs) {
           if (fs.existsSync(dmpDir)) {
@@ -1274,43 +1237,13 @@ class PDDOrderCrawler {
                   try {
                     fs.unlinkSync(filePath);
                     console.log(`   ✅ 已删除崩溃文件: ${file} (位于: ${dmpDir})`);
-                  } catch (e) {
-                    // 忽略删除失败
-                  }
+                  } catch (e) {}
                 }
               }
-            } catch (e) {
-              // 忽略读取目录失败
-            }
+            } catch (e) {}
           }
         }
 
-        /*  
-          // 6. 可选：清理HTTP缓存目录以立即释放空间（Default/Cache）
-          const cacheDir = path.join(defaultDir, 'Cache');
-          if (fs.existsSync(cacheDir)) {
-              try {
-                  require('child_process').execSync(`rm -rf "${cacheDir}"`, { stdio: 'ignore' });
-                  console.log('   ✅ 已清理HTTP缓存目录，立即释放空间');
-              } catch (e) {
-                  // 忽略删除失败
-              }
-          }
-          
-          // 7. 可选：清理其他缓存目录
-          const otherCacheDirs = ['Code Cache', 'GPUCache', 'ShaderCache', 'Service Worker'];
-          for (const dirName of otherCacheDirs) {
-              const dirPath = path.join(defaultDir, dirName);
-              if (fs.existsSync(dirPath)) {
-                  try {
-                      require('child_process').execSync(`rm -rf "${dirPath}"`, { stdio: 'ignore' });
-                      console.log(`   ✅ 已清理${dirName}目录`);
-                  } catch (e) {
-                      // 忽略删除失败
-                  }
-              }
-          }
-        */
       } catch (cleanupError) {
         console.log('⚠️ 清理过程中出现错误:', cleanupError.message);
       }
@@ -1320,7 +1253,7 @@ class PDDOrderCrawler {
   }
 }
 
-// 主函数（以下部分完全不变）
+// 以下为外部函数（未修改）
 async function updateAccount(username, password, verificationCode) {
   console.log(`\n🔄 开始更新账号: ${username}`);
   if (verificationCode) {
@@ -1342,12 +1275,10 @@ async function updateAccount(username, password, verificationCode) {
     const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
     await crawler.run();
 
-    // 检查是否有有效的 anti_content 数据
     const hasAntiContent = crawler.capturedData.antiContent && crawler.capturedData.antiContent.trim() !== '';
     const hasAntiContentPlan = crawler.capturedData.antiContentPlan && crawler.capturedData.antiContentPlan.trim() !== '';
     const hasAntiContentDate = crawler.capturedData.antiContentDate && crawler.capturedData.antiContentDate.trim() !== '';
 
-    // 只有三个字段全部有值时才上传
     if (!hasAntiContent || !hasAntiContentPlan || !hasAntiContentDate) {
       console.log(`⚠️  账号 ${username} 未捕获到完整的 anti_content 数据，跳过上传`);
       console.log(`   状态: anti_content=${hasAntiContent ? '有值' : '空'}, anti_content_Plan=${hasAntiContentPlan ? '有值' : '空'}, anti_content_Date=${hasAntiContentDate ? '有值' : '空'}`);
