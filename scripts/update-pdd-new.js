@@ -541,8 +541,6 @@ class PDDOrderCrawler {
 
   // 保留原有验证码处理方法（未修改）
   async handleVerificationCode(verificationCodeInput) {
-    console.log('📱 检测到验证码输入框，可能需要短信验证码');
-
     const confirmButton = await this.page.$('button[data-tracking-click-viewid="account_login_confirmation"]');
 
     let verificationCode = null;
@@ -810,7 +808,6 @@ class PDDOrderCrawler {
         visible: true
       });
       console.log('   ✅ 页面核心元素已加载');          
-      return true;
     } catch (e) {
       console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
     }
