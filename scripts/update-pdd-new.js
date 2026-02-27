@@ -1136,7 +1136,7 @@ class PDDOrderCrawler {
         }
       
         // 判断条件：今天是五且 上次清理日期不是今天
-        const shouldClean = (dayOfWeek === 5 && lastCleanDate === todayStr);
+        const shouldClean = (dayOfWeek === 5 && lastCleanDate !== todayStr);
       
         if (shouldClean) {
           console.log('🧹 开始清理浏览器缓存（周五例行清理）');
