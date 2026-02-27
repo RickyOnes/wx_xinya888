@@ -41,8 +41,9 @@ const CONFIG = {
       '--no-default-browser-check', // 禁用默认浏览器检查
       '--disable-notifications',  // 禁用通知
       '--disable-save-password-bubble', // 禁用保存密码提示
-      '--disable-features=PasswordLeakDetection,PasswordManager', // 禁用密码泄漏检测和密码管理器
+      '--disable-features=PasswordLeakDetection,PasswordManager,SavePassword', // 禁用密码泄漏检测和密码管理器、保存密码
       '--password-store=basic', // 使用基础密码存储模式，避免触发浏览器的密码管理界面
+      '--deny-permission-prompts',            // 自动拒绝所有权限请求
       '--disable-blink-features=RelatedApps' // 禁用设备上的应用检测 API
     ],
     ignoreDefaultArgs: ['--enable-automation']
@@ -1137,7 +1138,7 @@ class PDDOrderCrawler {
         }
       
         // 判断条件：今天是周一 且 上次清理日期不是今天
-        const shouldClean = (dayOfWeek === 1 && lastCleanDate !== todayStr);
+        const shouldClean = (dayOfWeek === 5 && lastCleanDate !== todayStr);
       
         if (shouldClean) {
           if (fs.existsSync(cacheDir)) {
