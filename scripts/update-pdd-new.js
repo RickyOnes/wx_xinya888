@@ -1171,7 +1171,7 @@ class PDDOrderCrawler {
           fs.writeFileSync(timeFile, todayStr);
           console.log('✅ 周五缓存清理完成');
         } else {
-          if (dayOfWeek !== 1) {
+          if (dayOfWeek !== 5) {
             console.log('   ℹ️ 不是周五，跳过缓存清理');
           } else {
             console.log('   ℹ️ 周五已清理过，跳过本次清理');
