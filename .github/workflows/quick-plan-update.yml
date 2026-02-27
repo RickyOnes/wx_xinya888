@@ -24,7 +24,7 @@ jobs:
         path: ./puppeteer_user_data
         key: ${{ runner.os }}-user-data-readonly  # 永不命中
         restore-keys: |
-          ${{ runner.os }}-pdd-user-data-
+          ${{ runner.os }}-拼多多-
         # 没有 post 步骤，不会保存
                     
     - name: 运行快速预估销量参数捕获脚本
