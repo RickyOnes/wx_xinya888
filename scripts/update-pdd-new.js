@@ -1124,9 +1124,7 @@ class PDDOrderCrawler {
         const fs = require('fs');
         const path = require('path');
       
-        const cacheDir = path.join(this.userDataDir, 'Default', 'Cache');
         const timeFile = path.join(this.userDataDir, 'last_cache_clean.txt');
-      
         const now = new Date();
         const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
         const todayStr = now.toISOString().slice(0, 10); // 格式: YYYY-MM-DD
@@ -1137,22 +1135,46 @@ class PDDOrderCrawler {
           lastCleanDate = fs.readFileSync(timeFile, 'utf8').trim();
         }
       
-        // 判断条件：今天是周一 且 上次清理日期不是今天
-        const shouldClean = (dayOfWeek === 5 && lastCleanDate !== todayStr);
+        // 判断条件：今天是五且 上次清理日期不是今天
+        const shouldClean = (dayOfWeek === 5 && lastCleanDate === todayStr);
       
         if (shouldClean) {
-          if (fs.existsSync(cacheDir)) {
-            fs.rmSync(cacheDir, { recursive: true, force: true });
-            console.log('   ✅ 已清理 Cache 目录（周一首次清理）');
-            fs.writeFileSync(timeFile, todayStr); // 记录本次清理日期
-          } else {
-            console.log('   ℹ️ Cache 目录不存在，无需清理');
+          console.log('🧹 开始清理浏览器缓存（周五例行清理）');
+      
+          // 定义需要清理的目录（相对于 this.userDataDir）
+          const dirsToClean = [
+            'Default/Cache',
+            'Default/Code Cache',
+            'Default/GPUCache',
+            'Default/Media Cache',
+            'Default/Offline Cache',
+            'GrShaderCache',
+            'ShaderCache',
+            'DawnCache',
+            'blob_storage',
+            'File System'
+          ];
+      
+          for (const relativePath of dirsToClean) {
+            const fullPath = path.join(this.userDataDir, relativePath);
+            if (fs.existsSync(fullPath)) {
+              try {
+                fs.rmSync(fullPath, { recursive: true, force: true });
+                console.log(`   ✅ 已清理: ${relativePath}`);
+              } catch (e) {
+                console.log(`   ⚠️ 清理失败 ${relativePath}: ${e.message}`);
+              }
+            }
           }
+      
+          // 记录本次清理日期
+          fs.writeFileSync(timeFile, todayStr);
+          console.log('✅ 周五缓存清理完成');
         } else {
           if (dayOfWeek !== 1) {
-            console.log('   ℹ️ 不是周一，跳过 Cache 清理');
+            console.log('   ℹ️ 不是周五，跳过缓存清理');
           } else {
-            console.log('   ℹ️ 周一已清理过，跳过本次清理');
+            console.log('   ℹ️ 周五已清理过，跳过本次清理');
           }
         }
 
