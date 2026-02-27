@@ -35,11 +35,15 @@ const CONFIG = {
       '--disk-cache-size=52428800',
       '--aggressive-cache-discard',
       '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
-      // 新增：更多反检测参数
-      '--disable-blink-features=AutomationControlled',
-      '--disable-sync',
-      '--no-default-browser-check',
-      '--disable-notifications'
+      // 更多反检测参数
+      '--disable-blink-features=AutomationControlled', // 禁用自动化控制特性
+      '--disable-sync',// 禁用同步
+      '--no-default-browser-check', // 禁用默认浏览器检查
+      '--disable-notifications',  // 禁用通知
+      '--disable-save-password-bubble', // 禁用保存密码提示
+      '--disable-features=PasswordLeakDetection,PasswordManager', // 禁用密码泄漏检测和密码管理器
+      '--password-store=basic', // 使用基础密码存储模式，避免触发浏览器的密码管理界面
+      '--disable-blink-features=RelatedApps' // 禁用设备上的应用检测 API
     ],
     ignoreDefaultArgs: ['--enable-automation']
   },
