@@ -1,8 +1,7 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
-const { execSync } = require('child_process');
-const { createCursor } = require('ghost-cursor'); // 新增：导入 ghost-cursor
+const { GhostCursor } = require('ghost-cursor'); // 新增：导入 ghost-cursor
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -358,7 +357,7 @@ class PDDOrderCrawler {
     });
 
     // 初始化 ghost-cursor
-    this.cursor = createCursor(this.page);
+    this.cursor = new GhostCursor(this.page);
 
     console.log('✅ 浏览器启动成功');
     console.log(`📊 浏览器版本: ${await this.browser.version()}`);
@@ -509,7 +508,6 @@ class PDDOrderCrawler {
 
       const startTime = Date.now();
       const maxWaitTime = 180000; // 3分钟
-      const pollInterval = 2000;
 
       while (Date.now() - startTime < maxWaitTime) {
         let verificationCodeInput = null;
