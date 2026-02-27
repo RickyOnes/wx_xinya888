@@ -27,9 +27,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-pdd-data-${{ steps.date.outputs.date }}-${{ github.run_id }}
+          key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-pdd-data-
+            ${{ runner.os }}-拼多多-
 
       # 第二步：启动虚拟显示器、运行脚本并录制视频（优化版）
       - name: 启动虚拟显示器、运行脚本并录制视频
