@@ -110,56 +110,73 @@ class PDDOrderCrawler {
 
   // 修改：使用 ghost-cursor 模拟人类点击（带重试和弹窗检查）
   async humanLikeClick(selectorOrElement) {
+    // 辅助函数：根据输入获取元素句柄
+    const getElement = async (input) => {
+      if (typeof input === 'string') {
+        return await this.page.$(input);
+      }
+      return input; // 假设已经是 ElementHandle
+    };
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        // 1. 获取元素
-        let element;
-        if (typeof selectorOrElement === 'string') {
-          element = await this.page.$(selectorOrElement);
-        } else {
-          element = selectorOrElement;
-        }
+        // ---------- 第1步：清理可能存在的弹窗 ----------
+        await this.checkOverlaysLightweight();
+
+        // ---------- 第2步：获取最新元素 ----------
+        let element = await getElement(selectorOrElement);
         if (!element) throw new Error('元素不存在');
 
-        // 2. 第一次弹窗检查
-        await this.checkOverlaysLightweight();
-
-        // 3. 使用 ghost-cursor 移动并点击
+        // ---------- 第3步：获取位置并计算随机点击点（80%区域） ----------
         const box = await element.boundingBox();
-        if (!box) throw new Error('元素不可见');
+        if (!box) throw new Error('元素不可见（boundingBox 为空）');
+        const targetX = box.x + box.width * (0.1 + Math.random() * 0.8);
+        const targetY = box.y + box.height * (0.1 + Math.random() * 0.8);
 
-        // 生成点击点（在元素内部随机偏移）
-        const x = box.x + box.width * (0.3 + Math.random() * 0.4);
-        const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+        // ---------- 第4步：移动鼠标到目标点 ----------
+        await this.cursor.moveTo({ x: targetX, y: targetY });
 
-        // 移动鼠标（使用 ghost-cursor 的移动方法）
-        await this.cursor.moveTo({ x, y });
-
-        // 4. 第二次弹窗检查（移动后、点击前）
+        // ---------- 第5步：移动后立即再次检查弹窗（可能关闭弹窗，导致布局变化）----------
         await this.checkOverlaysLightweight();
-        await new Promise(r => setTimeout(r, 100 + Math.random() * 100));
 
-        // 5. 执行点击（使用 ghost-cursor 的点击方法）
+        // ---------- 第6步：重新获取元素位置（因为弹窗关闭可能导致元素位移）----------
+        const newElement = await getElement(selectorOrElement);
+        if (!newElement) throw new Error('元素在弹窗关闭后消失');
+        const newBox = await newElement.boundingBox();
+        if (!newBox) throw new Error('元素在弹窗关闭后不可见');
+
+        // 重新计算随机点（也可以复用原随机偏移量，但重新生成更简单）
+        const newTargetX = newBox.x + newBox.width * (0.1 + Math.random() * 0.8);
+        const newTargetY = newBox.y + newBox.height * (0.1 + Math.random() * 0.8);
+
+        // 重新移动鼠标
+        await this.cursor.moveTo({ x: newTargetX, y: newTargetY });
+
+        // ---------- 第7步：执行点击 ----------
         await this.cursor.click();
 
-        // 点击后短暂等待
+        // 点击后短暂等待，让页面反应
         await new Promise(r => setTimeout(r, 100));
-        return; // 成功则退出
+        return; // 成功退出
 
       } catch (err) {
         console.log(`   ⚠️ 人类点击尝试 ${attempt} 失败: ${err.message}`);
         if (attempt === 3) {
           // 最后一次失败，回退到原生点击
           console.log('   ⚠️ 回退到原生 click()');
-          if (typeof selectorOrElement === 'string') {
-            await this.page.click(selectorOrElement).catch(() => {});
-          } else {
-            await selectorOrElement.click().catch(() => {});
+          try {
+            if (typeof selectorOrElement === 'string') {
+              await this.page.click(selectorOrElement);
+            } else {
+              await selectorOrElement.click();
+            }
+          } catch (finalErr) {
+            console.log('   ❌ 原生点击也失败:', finalErr.message);
           }
         } else {
-          // 尝试关闭可能出现的弹窗
+          // 重试前再次检查弹窗并等待随机时间
           await this.checkOverlaysLightweight();
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
         }
       }
     }
@@ -203,27 +220,36 @@ class PDDOrderCrawler {
     try {
       let closedAny = false;
       const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
-      const popupExists = await this.page.$(popupSelector).catch(() => null);
-      if (popupExists) {
-        await this.page.click(popupSelector);
-        closedAny = true;
-        console.log('   ✅ 轻量检查：已关闭弹窗');
-        await new Promise(r => setTimeout(r, 50));
+      const popupHandle = await this.page.$(popupSelector).catch(() => null);
+      if (popupHandle) {
+        try {
+          // 模拟真实鼠标移动并点击（使用 ghost-cursor）
+          await this.cursor.click(popupSelector);
+          closedAny = true;
+          console.log('   ✅ 轻量检查：已关闭弹窗');
+          await new Promise(r => setTimeout(r, 300)); // 保持原有延迟
+        } catch (err) {
+          console.log('   ⚠️ 弹窗点击失败，尝试原生 page.click 降级');
+          await this.page.click(popupSelector);
+          closedAny = true;
+        }
       }
-      const bannerSelector = '.mc-header-platform-close';
+
+      const bannerSelector = 'div.mc-header-platform-mask'; // 修改为点击遮罩层
       const bannerExists = await this.page.$(bannerSelector).catch(() => null);
       if (bannerExists) {
-        await this.page.evaluate(() => { // 滚动到顶部
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        });
-        await this.page.waitForFunction( // 等待滚动到顶部
-          () => window.scrollY === 0,
-          { timeout: 5000, polling: 100 }
-        );        
         try {
-          await this.page.click(bannerSelector);
-          closedAny = true;
-          console.log('   ✅ 轻量检查：已关闭条幅');
+          const box = await bannerExists.boundingBox();
+          if (box) {
+            // 在遮罩层内中心40%区域随机生成点击坐标
+            const randomX = box.x + box.width * (0.3 + Math.random() * 0.4);
+            const randomY = box.y + box.height * (0.3 + Math.random() * 0.4);
+            await new Promise(r => setTimeout(r, 100 + Math.random() * 200)); // 100~300ms 随机延迟
+            await this.cursor.moveTo({ x: randomX, y: randomY });// 移动鼠标（使用 ghost-cursor 的移动方法）
+            await this.cursor.click(); //执行点击（使用 ghost-cursor 的点击方法）
+            closedAny = true;
+            console.log('   ✅ 轻量检查：已关闭遮罩层');
+          }
         } catch (clickError) {
           console.log('   🔄 轻量检查：首次点击失败，尝试滚动后点击...');
           try {
@@ -252,6 +278,7 @@ class PDDOrderCrawler {
       }
       return closedAny;
     } catch (e) {
+      console.error('轻量检查异常:', e);
       return false;
     }
   }
@@ -817,8 +844,8 @@ class PDDOrderCrawler {
     }
 
     console.log(`✅ 登录成功，已进入订单管理页面：,${this.page.url()}`);
-    await this.waitForReading(); // 模拟阅读，等待2-5秒
     await this.randomScroll(); // 模拟滚动页面
+    await this.waitForReading(); // 模拟阅读，等待2-5秒
     await this.checkOverlaysLightweight(); // 检查遮罩层
 
     const startTime = Date.now();
@@ -901,8 +928,6 @@ class PDDOrderCrawler {
   async capturePlanAntiContent() {
     console.log('\n📊 导航到预估销量查询页面...');
     try {
-      await this.checkOverlaysLightweight();
-
       const linkSelector = 'a[data-report-click-text="预约送货"]';
       await this.page.waitForSelector(linkSelector, {
         timeout: 10000,
@@ -928,8 +953,9 @@ class PDDOrderCrawler {
           visible: true
         });
         console.log('   ✅ 页面核心元素已加载，已进入预估销量查询页面');
-        await this.waitForReading();
-        await this.randomScroll();
+        await this.randomScroll(); // 模拟滚动页面
+        await this.waitForReading(); // 模拟阅读，等待2-5秒
+        await this.checkOverlaysLightweight(); // 检查遮罩层
       } catch (e) {
         console.log('   ⚠️ 核心元素未出现，但 URL 已变，继续执行');
       }
