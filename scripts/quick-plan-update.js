@@ -222,7 +222,7 @@ class PDDPlanAntiContentFetcher {
         try {
             await this.page.goto(CONFIG.planDirectUrl, {
                 waitUntil: 'networkidle0', // 改为 networkidle0，确保页面完全加载
-                timeout: 30000
+                timeout: 10000
             });
             
             // 等待页面稳定并检查是否有重定向
@@ -295,7 +295,7 @@ class PDDPlanAntiContentFetcher {
             console.log(`📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
             await this.page.goto(CONFIG.planLoginUrl, {
                 waitUntil: 'domcontentloaded',
-                timeout: CONFIG.timeouts.pageLoad
+                timeout: 10000
             });
             console.log('✅ 登录页面加载成功');
 
