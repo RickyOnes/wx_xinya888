@@ -180,48 +180,12 @@ class PDDPlanAntiContentFetcher {
         });
     }
 
-    async tryDirectAccess() {
-        console.log('\n🔍 尝试直接访问预估销量页面...');
-        console.log(`📝 导航到: ${CONFIG.planDirectUrl}`);
-        
-        try {
-            await this.page.goto(CONFIG.planDirectUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: CONFIG.timeouts.pageLoad
-            });
-            console.log('✅ 页面加载成功');
-
-            // 等待API请求
-            console.log('⏳ 等待预估销量查询API请求（直接访问）...');
-            const startTime = Date.now();
-            const maxWaitTime = 60000; // 1分钟
-            while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-                if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
-                    console.log(`   已等待 ${elapsedSeconds} 秒...`);
-                }
-            }
-
-            if (this.capturedData.antiContentPlan) {
-                console.log(`✅ 直接访问成功，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
-                return true;
-            } else {
-                console.log('❌ 直接访问未捕获到API请求，可能需要登录');
-                return false;
-            }
-        } catch (error) {
-            console.log('⚠️ 直接访问页面失败:', error.message);
-            return false;
-        }
-    }
-
     async autoLogin() {
         // 先尝试使用现有会话
         console.log('\n🔍 尝试使用现有会话...');
         try {
             await this.page.goto(CONFIG.planDirectUrl, {
-                waitUntil: 'networkidle0', // 改为 networkidle0，确保页面完全加载
+                waitUntil: 'domcontentloaded', 
                 timeout: 10000
             });
             
@@ -276,6 +240,11 @@ class PDDPlanAntiContentFetcher {
                 const hasLoginButton = await this.page.$('button[data-testid="beast-core-button"]').catch(() => null);
                 
                 if (hasLoginForm || hasPasswordInput || hasLoginButton) {
+                    // 即使检测到登录表单，如果已经捕获到 anti-content，仍然认为会话有效
+                    if (this.capturedData.antiContentPlan) {
+                        console.log('   ✅ 已捕获到anti-content，会话有效，忽略登录表单');
+                        return true;
+                    }
                     console.log('⚠️ 检测到登录相关元素，会话可能已失效');
                     // 继续执行登录流程
                 } else {
@@ -283,10 +252,21 @@ class PDDPlanAntiContentFetcher {
                     return true;
                 }
             } else {
+                // 即使URL不稳定，如果已经捕获到 anti-content，仍然认为会话有效
+                if (this.capturedData.antiContentPlan) {
+                    console.log('   ✅ 已捕获到anti-content，会话有效，提前退出');
+                    return true;
+                }
                 console.log('ℹ️ 会话无效或URL不稳定，开始登录流程');
             }
         } catch (error) {
-            console.log(`ℹ️ 会话检测失败: ${error.message}，开始登录流程`);
+            console.log(`ℹ️ 会话检测失败: ${error.message}`);
+            // 即使导航失败，如果已经捕获到 anti-content，仍然认为会话有效
+            if (this.capturedData.antiContentPlan) {
+                console.log(`   ✅ 已捕获到anti-content，会话有效，提前退出`);
+                return true;
+            }
+            console.log(`开始登录流程`);
         }
         
         console.log('\n🌐 开始登录流程，从登录URL直接登录...');
@@ -426,8 +406,6 @@ class PDDPlanAntiContentFetcher {
     }
 
     async waitForPlanAPIRequest() {
-        console.log('\n⏳ 等待预估销量查询API请求...');
-        
         // 检查是否已经捕获到anti-content，如果是则立即返回
         if (this.capturedData.antiContentPlan) {
             console.log(`✅ 已捕获到anti-content，直接返回（长度: ${this.capturedData.antiContentPlan.length}）`);
@@ -435,7 +413,7 @@ class PDDPlanAntiContentFetcher {
         }
         
         const startTime = Date.now();
-        const maxWaitTime = 300000; // 5分钟
+        const maxWaitTime = 90000; // 90秒钟
         while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
             await new Promise(resolve => setTimeout(resolve, 1000));
             const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -474,7 +452,6 @@ class PDDPlanAntiContentFetcher {
             }
 
             // 4. 等待API请求，捕获anti-content参数
-            // waitForPlanAPIRequest()方法会检查是否已经捕获到anti-content，如果是则立即返回
             const apiCaptured = await this.waitForPlanAPIRequest();
             if (!apiCaptured) {
                 throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
