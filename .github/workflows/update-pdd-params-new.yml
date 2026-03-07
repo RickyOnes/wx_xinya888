@@ -1,15 +1,24 @@
 name: 更新拼多多参数(新方法) - 带视频录制
 
 on:
-  workflow_dispatch: {}  # 支持手动触发
-  repository_dispatch:   # 支持外部API触发（由Supabase cron调用）
+  workflow_dispatch:
+    inputs:
+      retry:           # 用于标记是否为重试运行
+        description: '是否为重试运行'
+        required: false
+        default: 'false'
+  repository_dispatch: # 支持外部API触发（由Supabase cron调用）
     types: [external_cron_trigger]
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   update:
     runs-on: ubuntu-22.04
     container:
-      image: ghcr.io/rickyones/pdd-crawler-ghost:latest # 使用已安装视频录制功能的新镜像
+      image: ghcr.io/rickyones/pdd-crawler-ghost:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -21,6 +30,23 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
+      # 检测是否为重试运行（兼容两种事件类型）
+      - name: 检测是否为重试运行
+        id: check-retry
+        run: |
+          # 根据事件类型获取 retry 标志，并存放到临时变量
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            RETRY_VALUE="${{ github.event.inputs.retry }}"
+          elif [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            RETRY_VALUE="${{ github.event.client_payload.retry || 'false' }}"
+          else
+            RETRY_VALUE="false"
+          fi
+          # 写入 GITHUB_OUTPUT，供后续步骤使用
+          echo "retry=$RETRY_VALUE" >> $GITHUB_OUTPUT
+          # 显示日志（使用临时变量，不引用 steps）
+          echo "检测到重试标志：retry=$RETRY_VALUE"
+
       # 第一步：尝试恢复缓存
       - name: 恢复 Puppeteer 用户数据缓存
         id: cache-restore
@@ -31,43 +57,32 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-拼多多-
 
-      # 第二步：启动虚拟显示器、运行脚本并录制视频（优化版）
+      # 第二步：启动虚拟显示器、运行脚本并录制视频
       - name: 启动虚拟显示器、运行脚本并录制视频
         id: run-script
         run: |
-          # 启动 Xvfb（设置分辨率与浏览器视口一致）
           Xvfb :99 -screen 0 1366x768x24 &
           export DISPLAY=:99
-          sleep 2  # 给Xvfb一点启动时间
+          sleep 2
 
-          # 启动 ffmpeg 录制（优化参数：更高帧率、更清晰的编码）
           ffmpeg -y -f x11grab -video_size 1366x768 -framerate 30 -i :99 \
                  -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p \
                  -g 60 -movflags +faststart recording.mp4 2> ffmpeg.log &
           FFMPEG_PID=$!
           echo "📹 ffmpeg 已启动，PID: $FFMPEG_PID"
 
-          # 记录开始时间
           START_TIME=$(date +%s)
-          
-          # 运行您的脚本（需将浏览器 headless 设置为 false）
           timeout 1800 node scripts/update-pdd-new.js || true
           SCRIPT_EXIT_CODE=$?
-          
-          # 记录结束时间并计算持续时间（秒）
           END_TIME=$(date +%s)
           DURATION=$((END_TIME - START_TIME))
           echo "⏱️ 脚本运行时间: $DURATION 秒"
           echo "📝 脚本退出码: $SCRIPT_EXIT_CODE"
 
-          # 脚本结束后等待 2 秒，确保录制尾部被捕获
           sleep 2
-
-          # 停止 ffmpeg
           kill $FFMPEG_PID 2>/dev/null || true
           wait $FFMPEG_PID 2>/dev/null || true
 
-          # 检查录制文件大小
           if [ -f recording.mp4 ]; then
             FILE_SIZE=$(stat -c%s recording.mp4)
             echo "📹 录制视频文件大小: $FILE_SIZE 字节"
@@ -78,7 +93,6 @@ jobs:
             echo "❌ 录制视频文件未生成"
           fi
 
-          # 根据条件设置输出变量
           if [ $DURATION -gt 150 ] || [ $SCRIPT_EXIT_CODE -ne 0 ]; then
             echo "should_upload_video=true" >> $GITHUB_OUTPUT
             echo "🎥 需要上传视频：运行时间超过150秒或脚本失败"
@@ -95,7 +109,6 @@ jobs:
             echo "🚫 不需要缓存用户数据：脚本失败或运行时间超过150秒"
           fi
 
-          # 返回脚本的退出码（可选）
           exit $SCRIPT_EXIT_CODE
         env:
           NODE_PATH: /app/node_modules
@@ -106,9 +119,9 @@ jobs:
           PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
           PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
           TZ: Asia/Shanghai
-          DISPLAY: :99   # 确保脚本知道使用虚拟显示器
+          DISPLAY: :99
 
-      # 第三步：保存更新后的缓存（仅当脚本成功时）
+      # 第三步：保存更新后的缓存
       - name: 保存 Puppeteer 用户数据缓存
         if: steps.run-script.outputs.should_cache == 'true'
         uses: actions/cache/save@v4
@@ -116,7 +129,7 @@ jobs:
           path: ./puppeteer_user_data
           key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}-${{ github.run_id }}
 
-      # 第四步：上传录制视频作为 artifact（总是上传，便于调试）
+      # 第四步：上传录制视频
       - name: 上传浏览器录制视频
         if: steps.run-script.outputs.should_upload_video == 'true'
         uses: actions/upload-artifact@v4
@@ -124,3 +137,26 @@ jobs:
           name: browser-recording-${{ github.run_id }}
           path: recording.mp4
           if-no-files-found: warn
+
+      # 第五步：当脚本失败且不是重试运行时，触发一次重试
+      - name: 触发重试运行（仅当失败且不是重试）
+        if: failure() && (github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch') && steps.check-retry.outputs.retry != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const workflow_id = 'update-pdd-params-new.yml';
+            
+            console.log(`🚀 脚本执行失败，触发一次重试运行...`);
+            
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id,
+              ref: context.ref,
+              inputs: {
+                retry: 'true'   // 标记此次为重试
+              }
+            });
+            
+            console.log('✅ 重试工作流已触发。');

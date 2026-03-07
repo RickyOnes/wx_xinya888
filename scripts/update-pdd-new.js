@@ -216,7 +216,7 @@ class PDDOrderCrawler {
   }
 
   // 保留原有 checkOverlaysLightweight（未修改）
-  async checkOverlaysLightweight() {
+  async  checkOverlaysLightweight() {
     try {
       let closedAny = false;
       const popupSelector = 'i[data-testid="beast-core-modal-icon-close"]';
@@ -553,8 +553,10 @@ class PDDOrderCrawler {
         }
 
         if (verificationCodeInput) {
-          console.log('📱 检测到验证码输入框，请更新supabase表中的验证码字段');
-          return await this.handleVerificationCode(verificationCodeInput);
+          // console.log('📱 检测到验证码输入框，请更新supabase表中的验证码字段');
+          // return await this.handleVerificationCode(verificationCodeInput);
+          console.log('📱 检测到验证码输入框，需要人工干预，终止脚本');
+          throw new Error('VERIFICATION_CODE_NEEDED');          
         } else {
           console.log('✅ 登录成功');
           return true;
@@ -1131,6 +1133,7 @@ class PDDOrderCrawler {
 
     } catch (error) {
       console.error('❌ 脚本执行出错:', error.message);
+      throw error;  // 重新抛出，让上层处理
 
     } finally {
       if (this.browser) {
@@ -1326,12 +1329,16 @@ async function updateAccount(username, password, verificationCode) {
     }
 
   } catch (error) {
+    if (error.message === 'VERIFICATION_CODE_NEEDED') {
+      throw error; // 重新抛出，让 main 函数处理
+    }    
     console.log(`❌ 更新账号 ${username} 失败:`, error.message);
     console.error(error.stack);
   }
 }
 
 async function main() {
+  const fs = require('fs');
   const accountsJson = process.env.PDD_ACCOUNTS;
   if (!accountsJson) {
     console.log('❌ PDD_ACCOUNTS_JSON环境变量未设置');
@@ -1355,7 +1362,17 @@ async function main() {
     console.log('\n🎉 所有账号更新完成');
 
   } catch (error) {
-    console.log('❌ 解析账号信息失败:', error.message);
+    if (error.message === 'VERIFICATION_CODE_NEEDED') {
+      console.log('🚫 检测到需要验证码，终止工作流');
+      // 设置步骤输出，供工作流后续步骤使用
+      if (process.env.GITHUB_OUTPUT) {
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, 'verification_needed=true\n');
+      }
+      process.exit(1);  // 非零退出码使工作流步骤失败，从而终止工作流
+    } else {
+      console.log('❌ 执行出错:', error.message);
+      process.exit(1);
+    }
   }
 }
 
