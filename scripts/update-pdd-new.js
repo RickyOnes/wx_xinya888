@@ -568,7 +568,11 @@ class PDDOrderCrawler {
 
     } catch (error) {
       console.log('❌ 登录过程出现错误:', error.message);
-      return false;
+      if (error.message === 'VERIFICATION_CODE_NEEDED') {
+        throw error;
+      }
+      // 其他错误（如网络问题）返回 false，让脚本跳过当前账号
+      return false;      
     }
   }
 
