@@ -33,13 +33,14 @@ jobs:
       - name: 检测是否为重试运行
         id: check-retry
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          # 根据事件类型获取 retry 标志
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             RETRY_VALUE="${{ github.event.inputs.retry }}"
-            # 如果为空，设置为 'false'
+            # 如果为空，设为 false
             if [ -z "$RETRY_VALUE" ]; then
               RETRY_VALUE="false"
             fi
-          elif [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             RETRY_VALUE="${{ github.event.client_payload.retry }}"
             if [ -z "$RETRY_VALUE" ]; then
               RETRY_VALUE="false"
