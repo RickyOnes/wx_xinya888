@@ -552,7 +552,7 @@ class PDDOrderCrawler {
           verificationCodeInput = null;
         }
 
-        if (verificationCodeInput) {
+        if (!verificationCodeInput) {
           // console.log('📱 检测到验证码输入框，请更新supabase表中的验证码字段');
           // return await this.handleVerificationCode(verificationCodeInput);
           console.log('📱 检测到验证码输入框，需要人工干预，终止脚本');
