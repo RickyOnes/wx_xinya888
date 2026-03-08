@@ -30,22 +30,29 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      # 检测是否为重试运行（兼容两种事件类型）
       - name: 检测是否为重试运行
         id: check-retry
         run: |
-          # 根据事件类型获取 retry 标志，并存放到临时变量
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             RETRY_VALUE="${{ github.event.inputs.retry }}"
+            # 如果为空，设置为 'false'
+            if [ -z "$RETRY_VALUE" ]; then
+              RETRY_VALUE="false"
+            fi
           elif [ "${{ github.event_name }}" == "repository_dispatch" ]; then
-            RETRY_VALUE="${{ github.event.client_payload.retry || 'false' }}"
+            RETRY_VALUE="${{ github.event.client_payload.retry }}"
+            if [ -z "$RETRY_VALUE" ]; then
+              RETRY_VALUE="false"
+            fi
           else
             RETRY_VALUE="false"
           fi
-          # 写入 GITHUB_OUTPUT，供后续步骤使用
           echo "retry=$RETRY_VALUE" >> $GITHUB_OUTPUT
-          # 显示日志（使用临时变量，不引用 steps）
           echo "检测到重试标志：retry=$RETRY_VALUE"
+
+      - name: 调试：显示重试标志
+        run: |
+          echo "当前重试标志: ${{ steps.check-retry.outputs.retry }}"          
 
       # 第一步：尝试恢复缓存
       - name: 恢复 Puppeteer 用户数据缓存
