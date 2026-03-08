@@ -501,8 +501,8 @@ async function updatePlanAntiContent(username, password) {
             const { error } = await supabase
                 .from('pdd_accounts')
                 .update({
-                    anti_content_Plan: fetcher.capturedData.antiContentPlan,
-                    updated_at: new Date().toISOString()
+                  anti_content: fetcher.capturedData.antiContentPlan,
+                  updated_at: new Date().toISOString()
                 })
                 .eq('username', username);
 
