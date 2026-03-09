@@ -101,20 +101,20 @@ jobs:
             echo "❌ 录制视频文件未生成"
           fi
 
-          if [ $DURATION -gt 150 ] || [ $SCRIPT_EXIT_CODE -ne 0 ]; then
+          if [ $DURATION -gt 110 ] || [ $SCRIPT_EXIT_CODE -ne 0 ]; then
             echo "should_upload_video=true" >> $GITHUB_OUTPUT
-            echo "🎥 需要上传视频：运行时间超过150秒或脚本失败"
+            echo "🎥 需要上传视频：运行时间超过110秒或脚本失败"
           else
             echo "should_upload_video=false" >> $GITHUB_OUTPUT
-            echo "⏹️ 不需要上传视频：运行时间不超过150秒且脚本成功"
+            echo "⏹️ 不需要上传视频：运行时间不超过110秒且脚本成功"
           fi
 
-          if [ $SCRIPT_EXIT_CODE -eq 0 ] && [ $DURATION -le 150 ]; then
+          if [ $SCRIPT_EXIT_CODE -eq 0 ] && [ $DURATION -le 110 ]; then
             echo "should_cache=true" >> $GITHUB_OUTPUT
-            echo "💾 需要缓存用户数据：脚本成功且运行时间不超过150秒"
+            echo "💾 需要缓存用户数据：脚本成功且运行时间不超过110秒"
           else
             echo "should_cache=false" >> $GITHUB_OUTPUT
-            echo "🚫 不需要缓存用户数据：脚本失败或运行时间超过150秒"
+            echo "🚫 不需要缓存用户数据：脚本失败或运行时间超过110秒"
           fi
 
           exit $SCRIPT_EXIT_CODE
