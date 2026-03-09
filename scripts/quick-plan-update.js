@@ -53,7 +53,8 @@ class PDDPlanAntiContentFetcher {
         this.page = null;
         this.capturedData = {
             antiContentPlan: null,
-            apiRequestCaptured: false
+            cookieString: '', // 存储Cookie
+            needlogin: false
         };
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
@@ -166,7 +167,7 @@ class PDDPlanAntiContentFetcher {
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContentPlan = headers['anti-content'];
-                    this.capturedData.apiRequestCaptured = true;
+                    
                     console.log('   ✅ 捕获到 anti-content (预估销量):', this.capturedData.antiContentPlan);
                 }
 
@@ -377,6 +378,7 @@ class PDDPlanAntiContentFetcher {
 
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
                     console.log('✅ 登录成功，已进入预估销量页面');
+                    this.capturedData.needlogin = true; // 标记为需要登录，表示我们已经完成了登录流程
                     return true;
                 }
 
@@ -431,6 +433,23 @@ class PDDPlanAntiContentFetcher {
         }
     }
 
+    // 获取Cookies（未修改）
+    async captureCookies() {
+        console.log('\n🍪 捕获Cookies...');
+
+        const cookies = await this.page.cookies();
+        this.capturedData.allCookies = cookies;
+
+        let cookieStr = '';
+        cookies.forEach((cookie, index) => {
+        if (index > 0) cookieStr += '; ';
+        cookieStr += `${cookie.name}=${cookie.value}`;
+        });
+        this.capturedData.cookieString = cookieStr;
+        console.log('   ✅  已构造 Cookie字符串');
+        return cookies;
+    }    
+
     async run() {
         try {
             console.log('🎬 开始执行快速预估销量参数捕获脚本');
@@ -456,6 +475,9 @@ class PDDPlanAntiContentFetcher {
             if (!apiCaptured) {
                 throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
             }
+
+            // 5. 获取cookies
+            await this.captureCookies();
 
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -495,9 +517,9 @@ async function updatePlanAntiContent(username, password) {
         const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase);
         await fetcher.run();
 
-        // 如果成功获取到anti-content，更新到Supabase
-        if (fetcher.capturedData.antiContentPlan) {
-            // 只更新anti_content_Plan字段
+        // 如果成功获取到anti-content,且未重新登录，更新到Supabase
+        if (fetcher.capturedData.antiContentPlan && !fetcher.capturedData.needlogin) {
+            // 只更新anti_content字段
             const { error } = await supabase
                 .from('pdd_accounts')
                 .update({
@@ -512,7 +534,24 @@ async function updatePlanAntiContent(username, password) {
                 console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
             }
-        } else {
+        } else if (fetcher.capturedData.antiContentPlan && fetcher.capturedData.needlogin){
+            // 如果已重新登录，则更新anti_content字段和cookie_string字段
+            const { error } = await supabase
+                .from('pdd_accounts')
+                .update({
+                  anti_content: fetcher.capturedData.antiContentPlan,
+                  cookie_string: fetcher.capturedData.cookieString,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('username', username);
+
+            if (error) {
+                console.log(`❌ 更新失败: ${error.message}`);
+            } else {
+                console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
+                console.log('\n' + '='.repeat(50));
+            }
+        } else {    
             console.log(`⚠️ 未获取到anti-content，跳过更新`);
         }
 

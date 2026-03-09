@@ -65,9 +65,8 @@ class PDDOrderCrawler {
     this.cursor = null; // 将在初始化页面后创建
     this.capturedData = {
       antiContent: null,
-      antiContentPlan: null,
-      antiContentDate: null,
-      allCookies: [],
+   /*   antiContentPlan: null,
+      antiContentDate: null,*/
       orderRequestHeaders: null,
       orderRequestBody: null,
       localStorageData: null,
@@ -820,7 +819,6 @@ class PDDOrderCrawler {
     console.log('\n🍪 捕获Cookies...');
 
     const cookies = await this.page.cookies();
-    this.capturedData.allCookies = cookies;
 
     let cookieStr = '';
     cookies.forEach((cookie, index) => {
@@ -1121,6 +1119,8 @@ class PDDOrderCrawler {
         throw new Error('未捕获到订单查询API请求，无法获取anti-content参数');
       }
 
+/* 经过核查，该部分代码无需执行
+
       console.log('\n📊 开始捕获预估销量查询参数...');
       const planCaptured = await this.capturePlanAntiContent();
       if (!planCaptured && !this.capturedData.antiContentPlan) {
@@ -1132,7 +1132,7 @@ class PDDOrderCrawler {
       if (!dateCaptured && !this.capturedData.antiContentDate) {
         console.log('⚠️ 生产日期查询参数捕获失败，继续执行...');
       }
-
+*/
       await this.captureCookies();
 
     } catch (error) {
@@ -1299,13 +1299,17 @@ async function updateAccount(username, password, verificationCode) {
     const crawler = new PDDOrderCrawler({ username, password }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
     await crawler.run();
 
+/* 修改了新逻辑，取消 hasAntiContentPlan 和 hasAntiContentDate 判断条件中
+
     const hasAntiContent = crawler.capturedData.antiContent && crawler.capturedData.antiContent.trim() !== '';
     const hasAntiContentPlan = crawler.capturedData.antiContentPlan && crawler.capturedData.antiContentPlan.trim() !== '';
     const hasAntiContentDate = crawler.capturedData.antiContentDate && crawler.capturedData.antiContentDate.trim() !== '';
+*/
 
-    if (!hasAntiContent || !hasAntiContentPlan || !hasAntiContentDate) {
+    const hasAntiContent = crawler.capturedData.antiContent && crawler.capturedData.antiContent.trim() !== '';
+    
+    if (!hasAntiContent /*|| !hasAntiContentPlan || !hasAntiContentDate 取消条件判断*/) {
       console.log(`⚠️  账号 ${username} 未捕获到完整的 anti_content 数据，跳过上传`);
-      console.log(`   状态: anti_content=${hasAntiContent ? '有值' : '空'}, anti_content_Plan=${hasAntiContentPlan ? '有值' : '空'}, anti_content_Date=${hasAntiContentDate ? '有值' : '空'}`);
       console.log('\n' + '='.repeat(50));
       return;
     }
@@ -1313,8 +1317,8 @@ async function updateAccount(username, password, verificationCode) {
     const accountData = {
       username,
       anti_content: crawler.capturedData.antiContent,
-      anti_content_Plan: crawler.capturedData.antiContentPlan,
-      anti_content_Date: crawler.capturedData.antiContentDate,
+     /* anti_content_Plan: crawler.capturedData.antiContentPlan,
+      anti_content_Date: crawler.capturedData.antiContentDate,*/
       cookie_string: crawler.capturedData.cookieString,
       expires_at: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
       updated_at: new Date().toISOString(),
