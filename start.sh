@@ -1,16 +1,21 @@
 #!/bin/bash
-# 启动虚拟显示
+set -e  # 出错立即退出，便于排查
+
+echo "=== 启动 Xvfb ==="
 Xvfb :99 -screen 0 1280x800x24 &
-export DISPLAY=:99
+sleep 2
 
-# 启动桌面环境
-startxfce4 &
+echo "=== 启动 D-Bus ==="
+dbus-launch --exit-with-session &
 
-# 启动 VNC 服务器
+echo "=== 启动 LXDE 桌面 ==="
+startlxde &
+
+echo "=== 启动 VNC 服务器 ==="
 x11vnc -display :99 -forever -usepw -rfbauth ~/.vnc/passwd &
 
-# 启动 noVNC (将 VNC 转为 Web 访问)
+echo "=== 启动 noVNC ==="
 /opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
 
-# 保持容器运行
-tail -f /dev/null
+echo "=== 所有服务已启动，保持容器运行 ==="
+wait

@@ -1,21 +1,39 @@
-# 使用 Ubuntu 22.04
-FROM ubuntu:22.04
+# 使用轻量级 Ubuntu 20.04（比 22.04 更稳定）
+FROM ubuntu:20.04
 
-ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Shanghai
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    DISPLAY=:99 \
+    VNC_PASSWORD=vncpassword
 
-# 安装桌面环境、浏览器、VNC 和 noVNC（Web 版 VNC）
+# 安装基础软件、桌面环境（LXDE 比 XFCE 更轻量）、浏览器、VNC 和 noVNC
 RUN apt-get update && apt-get install -y \
-    xfce4 xfce4-terminal firefox \
-    x11vnc xvfb dbus-x11 \
+    lxde \
+    firefox \
+    x11vnc \
+    xvfb \
+    dbus-x11 \
     fonts-wqy-zenhei \
-    wget git \
-    # 安装 noVNC (用于浏览器访问)
-    && git clone https://github.com/novnc/noVNC.git /opt/novnc \
-    && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    wget \
+    git \
+    supervisor \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# 设置 VNC 密码 (默认 Zf123456@，可修改)
-RUN mkdir -p ~/.vnc && x11vnc -storepasswd ${VNC_PASSWORD:-Zf123456@} ~/.vnc/passwd
+# 安装 Google Chrome（官方 .deb 包，避免 Snap）
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 noVNC
+RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
+    && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
+
+# 设置 VNC 密码
+RUN mkdir -p ~/.vnc && x11vnc -storepasswd $VNC_PASSWORD ~/.vnc/passwd
 
 # 复制启动脚本
 COPY start.sh /start.sh
