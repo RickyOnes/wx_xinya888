@@ -1,0 +1,26 @@
+# 使用 Ubuntu 22.04
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Shanghai
+
+# 安装桌面环境、浏览器、VNC 和 noVNC（Web 版 VNC）
+RUN apt-get update && apt-get install -y \
+    xfce4 xfce4-terminal firefox \
+    x11vnc xvfb dbus-x11 \
+    fonts-wqy-zenhei \
+    wget git \
+    # 安装 noVNC (用于浏览器访问)
+    && git clone https://github.com/novnc/noVNC.git /opt/novnc \
+    && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 设置 VNC 密码 (默认 Zf123456@，可修改)
+RUN mkdir -p ~/.vnc && x11vnc -storepasswd ${VNC_PASSWORD:-Zf123456@} ~/.vnc/passwd
+
+# 复制启动脚本
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 5900 6080
+
+CMD ["/start.sh"]
