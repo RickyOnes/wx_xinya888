@@ -1,4 +1,4 @@
-name: Build and Push to GHCR
+name: 创建vnc-browser镜像
 
 on:
   push:
@@ -33,4 +33,4 @@ jobs:
           file: ./Dockerfile.vnc
           push: true
           tags: |
-            ghcr.io/rickones/vnc-browser:latest
+            ghcr.io/rickyones/vnc-browser:latest
