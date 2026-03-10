@@ -4,7 +4,7 @@ FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     DISPLAY=:99 \
-    VNC_PASSWORD=vncpassword
+    VNC_PASSWORD=Zf123456@
 
 # 安装基础软件、桌面环境（LXDE 比 XFCE 更轻量）、浏览器、VNC 和 noVNC
 RUN apt-get update && apt-get install -y \
