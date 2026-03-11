@@ -37,4 +37,4 @@ jobs:
           file: ./Dockerfile.ultimate
           push: true
           tags: |
-            ghcr.io/rickyones/pdd-crawler-ghost:latest
+            ghcr.io/rickyones/ultimate-crawler:latest

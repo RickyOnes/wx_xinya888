@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
 
 # 安装基础工具、依赖、桌面环境、Chrome、ffmpeg、xvfb
+# 同时安装 RustDesk 所需的缺失依赖（libxdo3, libgstreamer...）
 RUN apt-get update && apt-get install -y \
     wget curl gnupg ca-certificates \
     fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
@@ -16,6 +17,11 @@ RUN apt-get update && apt-get install -y \
     libxss1 libxtst6 lsb-release xdg-utils \
     xvfb ffmpeg fonts-wqy-zenhei \
     xfce4 xfce4-terminal dbus-x11 sudo git unzip \
+    # RustDesk 额外依赖
+    libxdo3 \
+    libgstreamer-plugins-base1.0-0 \
+    libappindicator3-1 \
+    gstreamer1.0-pipewire \
     --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -26,17 +32,17 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 安装 Node.js 24（使用 NodeSource）
+# 安装 Node.js 24
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 安装 RustDesk 客户端（1.2.7 或更高版本）
+# 安装 RustDesk 客户端（.deb 包）
 RUN wget https://github.com/rustdesk/rustdesk/releases/download/1.2.7/rustdesk-1.2.7-x86_64.deb \
     && dpkg -i rustdesk-1.2.7-x86_64.deb || apt-get install -f -y \
     && rm rustdesk-1.2.7-x86_64.deb
 
-# 安装 noVNC（备用）
+# 安装 noVNC
 RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
 
@@ -46,7 +52,6 @@ WORKDIR /app
 COPY package-ghost.json ./package.json
 RUN npm install
 
-# 复制你的爬虫脚本（假设所有脚本在 scripts/ 目录下）
 COPY scripts/ ./scripts/
 
 # 复制启动脚本
