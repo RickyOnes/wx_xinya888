@@ -20,7 +20,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 添加这一行 以强制使用 Node.js 24 运行环境   
     container:
-      image: docker pull ghcr.io/rickyones/pdd-crawler-ghost:768a7889a20996b01996feb2a40eebbcfe146a56
+      image: ghcr.io/rickyones/pdd-crawler-ghost:768a7889a20996b01996feb2a40eebbcfe146a56
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
