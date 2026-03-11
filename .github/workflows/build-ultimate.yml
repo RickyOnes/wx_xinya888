@@ -35,4 +35,4 @@ jobs:
           file: ./Dockerfile.ultimate
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/ultimate-crawler:latest
+            ghcr.io/rickyones/pdd-crawler-ghost:latest
