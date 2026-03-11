@@ -15,37 +15,30 @@ dbus-launch --exit-with-session &
 echo "=== 启动桌面环境 (xfce4) ==="
 startxfce4 &
 
-echo "=== 启动 RustDesk 服务端 ==="
-/rustdesk-server/hbbs -r $PUBLIC_IP:21117 &
-/rustdesk-server/hbbr &
-sleep 5
-
-# 显示 Key
-KEY=$(cat /root/id_ed25519.pub 2>/dev/null)
-if [ -z "$KEY" ]; then
-    echo "等待密钥生成..."
-    sleep 5
-    KEY=$(cat /root/id_ed25519.pub 2>/dev/null)
+# 配置 RustDesk 客户端（如果提供了服务器信息）
+if [ -n "$RUSTDESK_SERVER" ] && [ -n "$RUSTDESK_KEY" ]; then
+    echo "=== 配置 RustDesk 客户端 ==="
+    PASSWORD="${RUSTDESK_PASSWORD:-rustdesk123}"
+    /usr/bin/rustdesk --password "$PASSWORD"
+    sleep 2
+    /usr/bin/rustdesk --server "$RUSTDESK_SERVER" --key "$RUSTDESK_KEY"
+    sleep 2
+    /usr/bin/rustdesk --service &
+    sleep 3
+    ID=$(/usr/bin/rustdesk --get-id)
+    echo "======================================"
+    echo "✅ RustDesk ID: $ID"
+    echo "✅ RustDesk Password: $PASSWORD"
+    echo "✅ RustDesk Server: $RUSTDESK_SERVER"
+    echo "✅ RustDesk Key: $RUSTDESK_KEY"
+    echo "======================================"
+else
+    echo "⚠️ 未设置 RUSTDESK_SERVER 和 RUSTDESK_KEY，RustDesk 客户端未启动"
 fi
-echo "RustDesk Key: $KEY"
-
-echo "=== 启动 RustDesk 客户端 ==="
-# 设置密码（从环境变量获取，默认 rustdesk123）
-/usr/bin/rustdesk --password ${RUSTDESK_PASSWORD:-rustdesk123} &
-/usr/bin/rustdesk --service &
-sleep 3
-
-ID=$(/usr/bin/rustdesk --get-id)
-echo "======================================"
-echo "✅ RustDesk ID: $ID"
-echo "✅ RustDesk Password: ${RUSTDESK_PASSWORD:-rustdesk123}"
-echo "✅ RustDesk Server: $PUBLIC_IP"
-echo "✅ RustDesk Key: $KEY"
-echo "======================================"
 
 echo "=== 启动 noVNC (备用) ==="
 mkdir -p ~/.vnc
-x11vnc -storepasswd zf123456 ~/.vnc/passwd
+x11vnc -storepasswd vncpassword ~/.vnc/passwd
 x11vnc -display :99 -forever -usepw -rfbauth ~/.vnc/passwd &
 /opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
 
@@ -53,7 +46,6 @@ x11vnc -display :99 -forever -usepw -rfbauth ~/.vnc/passwd &
 if [ "$RUN_CRAWLER" = "true" ]; then
     echo "=== 运行爬虫脚本 ==="
     cd /app
-    # 传入必要的环境变量（SUPABASE_URL 等已在容器环境中）
     node scripts/update-pdd-new.js
     echo "爬虫运行完毕，容器将继续运行"
 fi
