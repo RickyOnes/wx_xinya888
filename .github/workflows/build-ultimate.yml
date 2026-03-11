@@ -1,4 +1,4 @@
-name: Build Ultimate Image with RustDesk + Crawler
+name: 创建 RustDesk + 爬虫镜像
 
 on:
   push:
