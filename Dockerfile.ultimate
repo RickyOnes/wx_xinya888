@@ -4,8 +4,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
 
-# 安装基础工具、依赖、桌面环境、Chrome、ffmpeg、xvfb
-# 同时安装 RustDesk 所需的缺失依赖（libxdo3, libgstreamer...）
+# 安装基础工具、桌面环境、Chrome、ffmpeg、xvfb、VNC 相关
 RUN apt-get update && apt-get install -y \
     wget curl gnupg ca-certificates \
     fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
@@ -17,11 +16,8 @@ RUN apt-get update && apt-get install -y \
     libxss1 libxtst6 lsb-release xdg-utils \
     xvfb ffmpeg fonts-wqy-zenhei \
     xfce4 xfce4-terminal dbus-x11 sudo git unzip \
-    # RustDesk 额外依赖
-    libxdo3 \
-    libgstreamer-plugins-base1.0-0 \
-    libappindicator3-1 \
-    gstreamer1.0-pipewire \
+    # VNC 相关
+    x11vnc \
     --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -37,18 +33,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 安装 RustDesk 客户端（.deb 包）
-RUN wget https://github.com/rustdesk/rustdesk/releases/download/1.2.7/rustdesk-1.2.7-x86_64.deb \
-    && dpkg -i rustdesk-1.2.7-x86_64.deb || apt-get install -f -y \
-    && rm rustdesk-1.2.7-x86_64.deb
-
 # 安装 noVNC
 RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
 
 WORKDIR /app
 
-# 复制爬虫相关文件（你的 package-ghost.json 和所有脚本）
+# 复制爬虫相关文件（package-ghost.json 和所有脚本）
 COPY package-ghost.json ./package.json
 RUN npm install
 
@@ -58,7 +49,7 @@ COPY scripts/ ./scripts/
 COPY start-ultimate.sh /start.sh
 RUN chmod +x /start.sh
 
-# 暴露端口：RustDesk 服务端（21115-21119）、noVNC（6080）、VNC（5900）
-EXPOSE 5900 6080 21115 21116 21117 21118 21119
+# 只暴露 6080 端口（noVNC），5900 仅在内部使用
+EXPOSE 6080
 
 CMD ["/start.sh"]
