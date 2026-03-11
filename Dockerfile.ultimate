@@ -1,0 +1,65 @@
+# 使用 Ubuntu 22.04
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai
+
+# 安装基础工具、依赖、桌面环境、Chrome、ffmpeg、xvfb
+RUN apt-get update && apt-get install -y \
+    wget curl gnupg ca-certificates \
+    fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+    libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
+    libgbm1 libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 \
+    libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 \
+    libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
+    libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+    libxss1 libxtst6 lsb-release xdg-utils \
+    xvfb ffmpeg fonts-wqy-zenhei \
+    xfce4 xfce4-terminal dbus-x11 sudo git unzip \
+    --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 Chrome（最新稳定版）
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 Node.js 24（使用 NodeSource）
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 RustDesk 服务端
+RUN wget https://github.com/rustdesk/rustdesk-server/releases/download/1.1.10/rustdesk-server-linux-amd64.zip \
+    && unzip rustdesk-server-linux-amd64.zip -d /rustdesk-server \
+    && chmod +x /rustdesk-server/hbbs /rustdesk-server/hbbr \
+    && rm rustdesk-server-linux-amd64.zip
+
+# 安装 RustDesk 客户端
+RUN wget https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-x86_64.deb \
+    && dpkg -i rustdesk-1.2.3-x86_64.deb || apt-get install -f -y \
+    && rm rustdesk-1.2.3-x86_64.deb
+
+# 安装 noVNC（备用）
+RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
+    && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
+
+WORKDIR /app
+
+# 复制爬虫相关文件（你的 package-ghost.json 和所有脚本）
+COPY package-ghost.json ./package.json
+RUN npm install
+
+# 复制你的爬虫脚本（假设所有脚本在 scripts/ 目录下）
+COPY scripts/ ./scripts/
+
+# 复制启动脚本
+COPY start-ultimate.sh /start.sh
+RUN chmod +x /start.sh
+
+# 暴露端口：RustDesk 服务端（21115-21119）、noVNC（6080）、VNC（5900）
+EXPOSE 5900 6080 21115 21116 21117 21118 21119
+
+CMD ["/start.sh"]
