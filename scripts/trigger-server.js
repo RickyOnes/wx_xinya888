@@ -16,8 +16,8 @@
     //   '* 30 * * * *',
     //   $$
     //   SELECT net.http_post(
-    //     url := 'http://&lt;你的容器IP或域名&gt;:3000/trigger',
-    //     headers := '{"Authorization": "Bearer &lt;你的API_KEY&gt;"}'::jsonb,
+    //     url := 'http://&lt;你的容器IP或域名&gt;/trigger',
+    //     headers := '{"Authorization": "Bearer &lt;你的API_KEY&gt;"}'::jsonb, 未设置 API_KEY 时可省略
     //     timeout_milliseconds := 300000
     //   ) AS request_id;
     //   $$
@@ -31,7 +31,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { URL } = require('url');
 
-const PORT = process.env.TRIGGER_PORT || 3000;
+const PORT = process.env.TRIGGER_PORT || 3001;  // 改为 3001
 const API_KEY = process.env.API_KEY || '';
 const CRAWLER_SCRIPT = 'scripts/update-pdd-new.js';
 
@@ -53,8 +53,8 @@ function executeCrawler() {
   return new Promise((resolve) => {
     const child = spawn('node', [CRAWLER_SCRIPT], {
       stdio: 'pipe',
-      env: process.env,
-      cwd: '/app'
+      env: { ...process.env, HEADLESS: 'true' },  // 强制无头模式
+      cwd: '/app'      
     });
 
     let output = '';
@@ -146,15 +146,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 健康检查端点
-  if (path === '/health' && method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      service: 'crawler-trigger',
-      port: PORT,
-      crawler_running: isRunning,
-      last_run: lastRunTime ? lastRunTime.toISOString() : null
-    }));
+  if (path === '/trigger' && method === 'GET') {
+    // 在 Content-Type 中明确指定字符集为 utf-8
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
+    res.end(`
+      <html>
+        <head><meta charset="UTF-8"></head> <!-- 同时 HTML 内部也指定，双重保险 -->
+        <body>
+          <h1>爬虫触发界面</h1>
+          <p>状态: ${isRunning ? '运行中' : '空闲'}</p>
+          <p>上次运行时间: ${lastRunTime ? lastRunTime.toLocaleString() : '从未运行'}</p>
+          <form action="/trigger" method="POST">
+            <button type="submit">触发爬虫执行</button>
+          </form>
+          <p><a href="/status">查看状态</a> | <a href="/health">健康检查</a></p>
+        </body>
+      </html>
+    `);
     return;
   }
 

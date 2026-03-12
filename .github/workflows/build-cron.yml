@@ -7,7 +7,7 @@ on:
       - 'Dockerfile.cron'
       - 'start-cron.sh'
       - 'scripts/**'
-      - 'package-ghost.json'
+      - 'package-cron.json'
   workflow_dispatch:
 
 jobs:

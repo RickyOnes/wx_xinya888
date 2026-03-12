@@ -61,20 +61,6 @@ class PDDPlanAntiContentFetcher {
         this.supabaseClient = supabaseClient || null;
     }
 
-    // 新增：模拟用户随机滚动
-    async randomScroll() {
-        try {
-            await this.page.evaluate(() => {
-                const scrollY = Math.random() * 300;
-                window.scrollBy(0, scrollY);
-            });
-            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
-            console.log('   👆 模拟用户随机滚动');
-        } catch (e) {
-            // 忽略滚动错误
-        }
-    }
-
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
@@ -286,16 +272,12 @@ class PDDPlanAntiContentFetcher {
                 if (tabContainer) {
                     const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                     if (items && items.length >= 2) {
-                        // 在点击切换标签前模拟滚动
-                        await this.randomScroll();
 
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
                             console.log('   ✅ 已切换到账号登录标签');
                             await new Promise(r => setTimeout(r, 500));
-                            // 切换后再滚动一下
-                            await this.randomScroll();
                         }
                     }
                 }
@@ -325,9 +307,6 @@ class PDDPlanAntiContentFetcher {
                         console.log('   ✅ 已输入密码');
                     }
                 } catch (e) {}
-
-                // 在点击登录按钮前模拟随机滚动
-                await this.randomScroll();
 
                 // 尝试点击登录按钮或按回车
                 try {
@@ -563,6 +542,11 @@ async function updatePlanAntiContent(username, password) {
 
 // 从环境变量获取账号信息
 async function main() {
+    // 添加开始时间记录
+    console.log(`==========================================`);
+    console.log(`脚本开始时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
+    const startTime = Date.now();    
+
     const accountsJson = process.env.PDD_ACCOUNTS_JSON;
     if (!accountsJson) {
         console.log('❌ PDD_ACCOUNTS_JSON环境变量未设置');
@@ -584,6 +568,12 @@ async function main() {
         }
 
         console.log('\n🎉 所有账号的预估销量参数更新完成');
+        // 添加结束时间统计
+        const endTime = Date.now();
+        const duration = Math.floor((endTime - startTime) / 1000);
+        console.log(`脚本结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
+        console.log(`总运行时长: ${duration} 秒`);
+        console.log(`==========================================`);        
 
     } catch (error) {
         console.log('❌ 解析账号信息失败:', error.message);
