@@ -50,12 +50,6 @@ RUN chmod +x /app/scripts/trigger-server.js
 COPY start-cron.sh /start.sh
 RUN chmod +x /start.sh
 
-# 设置默认环境变量
-ENV VNC_PASSWORD=zf123456 \
-    API_KEY="" \
-    TRIGGER_PORT=3000 \
-    RUN_CRAWLER="false"
-
 # 暴露 6080 端口（noVNC）、5900 端口（直接 VNC 连接）和 3000 端口（HTTP 触发服务器）
 EXPOSE 6080 5900 3000
 
