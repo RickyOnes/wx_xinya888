@@ -87,8 +87,13 @@ echo "2. 检查端口监听："
 if netstat -tuln | grep -q ":5900 "; then echo "   ✓ 端口 5900 (VNC) 已监听"; else echo "   ✗ 端口 5900 未监听"; fi
 if netstat -tuln | grep -q ":6080 "; then echo "   ✓ 端口 6080 (noVNC) 已监听"; else echo "   ✗ 端口 6080 未监听"; fi
 
-echo "=== 启动 HTTP 触发服务器（Supabase Cron 调用） ==="
+echo "=== 启动 HTTP 触发服务器（内部端口 3001） ==="
+export TRIGGER_PORT=3001
 node /app/scripts/trigger-server.js &
+sleep 3
+
+echo "=== 启动反向代理（公网端口 3000） ==="
+node /app/scripts/proxy.js &
 
 # 如果设置了 RUN_CRAWLER=true，则运行爬虫
 if [ "$RUN_CRAWLER" = "true" ]; then
