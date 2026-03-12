@@ -1,60 +1,53 @@
 #!/usr/bin/env node
 
-/**
- * 触发爬虫执行的 HTTP 服务器
- * 提供 /trigger 端点手动触发爬虫任务
- * 用于 Supabase Cron 定时调用
- *
- * Supabase Cron 配置示例（在 Supabase SQL 编辑器中执行）：
- * -- 启用 pg_cron 和 pg_net 扩展（如果尚未启用）
- * CREATE EXTENSION IF NOT EXISTS pg_cron;
- * CREATE EXTENSION IF NOT EXISTS pg_net;
- * 
-    // -- 添加定时任务，每 30 分钟触发一次爬虫
-    // SELECT cron.schedule(
-    //   'trigger-crawler-every-30min',
-    //   '* 30 * * * *',
-    //   $$
-    //   SELECT net.http_post(
-    //     url := 'http://&lt;你的容器IP或域名&gt;/trigger',
-    //     headers := '{"Authorization": "Bearer &lt;你的API_KEY&gt;"}'::jsonb, 未设置 API_KEY 时可省略
-    //     timeout_milliseconds := 300000
-    //   ) AS request_id;
-    //   $$
-    // );
-    // 
-    // 注意：需要将 &lt;你的容器IP或域名&gt; 替换为实际部署地址，&lt;你的API_KEY&gt; 替换为设置的 API_KEY 环境变量值。
-    // 如果未设置 API_KEY 环境变量，则无需 Authorization 头。
- */
-
 const http = require('http');
 const { spawn } = require('child_process');
 const { URL } = require('url');
+const fs = require('fs').promises;
+const path = require('path');
 
-const PORT = process.env.TRIGGER_PORT || 3001;  // 改为 3001
+const PORT = process.env.TRIGGER_PORT || 3001;
 const API_KEY = process.env.API_KEY || '';
-const CRAWLER_SCRIPT = 'scripts/update-pdd-new.js';
+const SCRIPTS_DIR = '/app/scripts'; // 脚本目录
 
 let isRunning = false;
 let lastRunTime = null;
 let lastRunResult = null;
+let currentScript = null; // 记录当前运行的脚本名
 
-function executeCrawler() {
-  if (isRunning) {
-    return Promise.resolve({ success: false, message: '爬虫正在运行中，请稍后再试' });
+// 获取所有可用的 .js 脚本文件（排除 trigger-server.js 自身）
+async function getAvailableScripts() {
+  try {
+    const files = await fs.readdir(SCRIPTS_DIR);
+    return files.filter(file => 
+      file.endsWith('.js') && 
+      file !== 'trigger-server.js' &&
+      file !== 'proxy.js'
+    );
+  } catch (err) {
+    console.error('读取脚本目录失败:', err);
+    return [];
   }
+}
 
-  isRunning = true;
-  console.log("==========================================");
-  console.log(`CronJob 开始时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-  const startTime = Math.floor(Date.now() / 1000);
-  console.log(`[${new Date().toISOString()}] 开始执行爬虫脚本: ${CRAWLER_SCRIPT}`);
-
+// 执行指定脚本
+function executeScript(scriptName) {
   return new Promise((resolve) => {
-    const child = spawn('node', [CRAWLER_SCRIPT], {
+    if (isRunning) {
+      resolve({ success: false, message: '爬虫正在运行中，请稍后再试', script: scriptName });
+      return;
+    }
+
+    isRunning = true;
+    currentScript = scriptName;
+    console.log("==========================================");
+    console.log(`[${new Date().toISOString()}] 开始执行脚本: ${scriptName}`);
+    const startTime = Math.floor(Date.now() / 1000);
+
+    const child = spawn('node', [scriptName], {
       stdio: 'pipe',
-      env: { ...process.env, HEADLESS: 'true' },  // 强制无头模式
-      cwd: '/app'      
+      env: process.env,
+      cwd: '/app'
     });
 
     let output = '';
@@ -63,56 +56,56 @@ function executeCrawler() {
     child.stdout.on('data', (data) => {
       const str = data.toString();
       output += str;
-      console.log(`[爬虫输出] ${str.trim()}`);
+      console.log(`[${scriptName} 输出] ${str.trim()}`);
     });
 
     child.stderr.on('data', (data) => {
       const str = data.toString();
       errorOutput += str;
-      console.error(`[爬虫错误] ${str.trim()}`);
+      console.error(`[${scriptName} 错误] ${str.trim()}`);
     });
 
     child.on('close', (code) => {
       isRunning = false;
+      currentScript = null;
       lastRunTime = new Date();
       const endTime = Math.floor(Date.now() / 1000);
       const duration = endTime - startTime;
-      
+
       const result = {
         success: code === 0,
         exitCode: code,
+        script: scriptName,
         timestamp: lastRunTime.toISOString(),
         duration: duration,
-        output: output.slice(-5000), // 保留最后5000字符
+        output: output.slice(-5000),
         error: errorOutput.slice(-5000)
       };
-      
+
       lastRunResult = result;
-      console.log(`[${lastRunTime.toISOString()}] 爬虫执行完成，退出码: ${code}`);
-      console.log(`CronJob 结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
+      console.log(`[${lastRunTime.toISOString()}] 脚本 ${scriptName} 执行完成，退出码: ${code}`);
       console.log(`总运行时长: ${duration} 秒`);
-      console.log(`退出码: ${code}`);
       console.log("==========================================");
       resolve(result);
     });
 
     child.on('error', (err) => {
       isRunning = false;
+      currentScript = null;
       lastRunTime = new Date();
       const endTime = Math.floor(Date.now() / 1000);
       const duration = endTime - startTime;
       const result = {
         success: false,
         exitCode: -1,
+        script: scriptName,
         timestamp: lastRunTime.toISOString(),
         duration: duration,
         output: output.slice(-5000),
-        error: err.message  // spawn 错误信息
+        error: err.message
       };
       lastRunResult = result;
-      console.error(`[${lastRunTime.toISOString()}] 爬虫执行错误: ${err.message}`);
-      console.log(`CronJob 结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-      console.log(`总运行时长: ${duration} 秒`);
+      console.error(`[${lastRunTime.toISOString()}] 脚本 ${scriptName} 执行错误: ${err.message}`);
       console.log("==========================================");
       resolve(result);
     });
@@ -136,7 +129,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 验证 API Key（如果设置了）
-  if (API_KEY) {
+  if (API_KEY && (path.startsWith('/run/') || path === '/trigger' && method === 'POST')) {
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${API_KEY}`) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -145,24 +138,17 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 健康检查端点
-  if (path === '/trigger' && method === 'GET') {
-    // 在 Content-Type 中明确指定字符集为 utf-8
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); 
-    res.end(`
-      <html>
-        <head><meta charset="UTF-8"></head> <!-- 同时 HTML 内部也指定，双重保险 -->
-        <body>
-          <h1>爬虫触发界面</h1>
-          <p>状态: ${isRunning ? '运行中' : '空闲'}</p>
-          <p>上次运行时间: ${lastRunTime ? lastRunTime.toLocaleString() : '从未运行'}</p>
-          <form action="/trigger" method="POST">
-            <button type="submit">触发爬虫执行</button>
-          </form>
-          <p><a href="/status">查看状态</a> | <a href="/health">健康检查</a></p>
-        </body>
-      </html>
-    `);
+  // 健康检查端点（放最前面）
+  if (path === '/health' && method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      service: 'crawler-trigger',
+      port: PORT,
+      crawler_running: isRunning,
+      current_script: currentScript,
+      last_run: lastRunTime ? lastRunTime.toISOString() : null
+    }));
     return;
   }
 
@@ -171,10 +157,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       crawler_running: isRunning,
+      current_script: currentScript,
       last_run_time: lastRunTime ? lastRunTime.toISOString() : null,
       last_run_result: lastRunResult ? {
         success: lastRunResult.success,
         exitCode: lastRunResult.exitCode,
+        script: lastRunResult.script,
         timestamp: lastRunResult.timestamp,
         duration: lastRunResult.duration
       } : null
@@ -182,41 +170,336 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 触发爬虫端点
-  if (path === '/trigger' && method === 'POST') {
-    try {
-      const result = await executeCrawler();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        message: '爬虫任务已触发',
-        result: {
-          success: result.success,
-          exitCode: result.exitCode,
-          timestamp: result.timestamp,
-          duration: result.duration
-        }
-      }));
-    } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message }));
+  // 触发指定脚本的端点（新）
+  if (path.startsWith('/run/') && method === 'POST') {
+    const scriptName = path.substring(5); // 去掉 '/run/'
+    if (!scriptName || !scriptName.endsWith('.js')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '无效的脚本名' }));
+      return;
     }
+
+    const availableScripts = await getAvailableScripts();
+    if (!availableScripts.includes(scriptName)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '脚本不存在' }));
+      return;
+    }
+
+    const result = await executeScript(scriptName);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: `脚本 ${scriptName} 已触发`,
+      result: {
+        success: result.success,
+        exitCode: result.exitCode,
+        script: result.script,
+        timestamp: result.timestamp,
+        duration: result.duration
+      }
+    }));
     return;
   }
 
-  // 手动触发端点（GET，用于测试）
+  // 兼容旧的 /trigger POST 端点（默认执行 update-pdd-cron.js）
+  if (path === '/trigger' && method === 'POST') {
+    const result = await executeScript('update-pdd-cron.js');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: '爬虫任务已触发',
+      result: {
+        success: result.success,
+        exitCode: result.exitCode,
+        script: result.script,
+        timestamp: result.timestamp,
+        duration: result.duration
+      }
+    }));
+    return;
+  }
+
+  // 手动触发界面（GET /trigger）- 多按钮 + 模态框
   if (path === '/trigger' && method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    const availableScripts = await getAvailableScripts();
+    const buttonsHtml = availableScripts.map(script => 
+      `<button class="script-btn" data-script="${script}" ${isRunning ? 'disabled' : ''}>运行 ${script}</button>`
+    ).join('\n          ');
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
+      <!DOCTYPE html>
       <html>
-        <head><title>触发爬虫</title></head>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+              font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+            }
+            .card {
+              background: rgba(255,255,255,0.95);
+              backdrop-filter: blur(10px);
+              border-radius: 20px;
+              padding: 30px 40px;
+              box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+              width: 100%;
+              max-width: 700px;
+            }
+            h1 {
+              font-size: 2rem;
+              color: #333;
+              margin-bottom: 10px;
+              border-left: 6px solid #667eea;
+              padding-left: 20px;
+            }
+            .status-bar {
+              background: #f0f4f8;
+              border-radius: 40px;
+              padding: 15px 25px;
+              margin: 20px 0;
+              display: flex;
+              align-items: center;
+              gap: 15px;
+              flex-wrap: wrap;
+            }
+            .status-indicator {
+              display: inline-block;
+              width: 16px;
+              height: 16px;
+              border-radius: 50%;
+              background: ${isRunning ? '#fbbf24' : '#10b981'};
+              box-shadow: 0 0 0 3px ${isRunning ? '#fef3c7' : '#d1fae5'};
+              animation: ${isRunning ? 'pulse 1.5s infinite' : 'none'};
+            }
+            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } }
+            .status-text {
+              font-size: 1.1rem;
+              font-weight: 500;
+              color: #1e293b;
+            }
+            .last-run {
+              margin-left: auto;
+              color: #64748b;
+              font-size: 0.95rem;
+            }
+            .button-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+              gap: 15px;
+              margin: 30px 0 20px;
+            }
+            .script-btn {
+              background: white;
+              border: 2px solid #e2e8f0;
+              border-radius: 60px;
+              padding: 14px 20px;
+              font-size: 1rem;
+              font-weight: 600;
+              color: #1e293b;
+              cursor: pointer;
+              transition: all 0.2s;
+              box-shadow: 0 4px 6px -2px rgba(0,0,0,0.05);
+            }
+            .script-btn:hover:not(:disabled) {
+              border-color: #667eea;
+              background: #f5f3ff;
+              transform: translateY(-2px);
+              box-shadow: 0 10px 15px -3px rgba(102,126,234,0.3);
+            }
+            .script-btn:disabled {
+              opacity: 0.5;
+              cursor: not-allowed;
+              background: #e2e8f0;
+            }
+            .modal {
+              display: none;
+              position: fixed;
+              top: 0; left: 0; width: 100%; height: 100%;
+              background: rgba(0,0,0,0.5);
+              align-items: center;
+              justify-content: center;
+              z-index: 1000;
+            }
+            .modal.active { display: flex; }
+            .modal-content {
+              background: white;
+              border-radius: 20px;
+              max-width: 600px;
+              width: 90%;
+              max-height: 80vh;
+              overflow-y: auto;
+              padding: 30px;
+              box-shadow: 0 25px 50px -12px black;
+              position: relative;
+            }
+            .modal-close {
+              position: absolute;
+              top: 20px; right: 20px;
+              background: none;
+              border: none;
+              font-size: 1.8rem;
+              cursor: pointer;
+              color: #94a3b8;
+            }
+            .modal-close:hover { color: #475569; }
+            .modal-title {
+              font-size: 1.5rem;
+              margin-bottom: 20px;
+              color: #1e293b;
+              border-bottom: 2px solid #e2e8f0;
+              padding-bottom: 10px;
+            }
+            .result-pre {
+              background: #1e293b;
+              color: #e2e8f0;
+              padding: 15px;
+              border-radius: 12px;
+              overflow-x: auto;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 0.9rem;
+            }
+            .loading {
+              display: inline-block;
+              width: 20px;
+              height: 20px;
+              border: 3px solid #e2e8f0;
+              border-top-color: #667eea;
+              border-radius: 50%;
+              animation: spin 1s linear infinite;
+              margin-right: 8px;
+            }
+            @keyframes spin { to { transform: rotate(360deg); } }
+            .footer-links {
+              text-align: center;
+              margin-top: 20px;
+              color: #94a3b8;
+            }
+            .footer-links a {
+              color: #667eea;
+              text-decoration: none;
+              margin: 0 8px;
+            }
+          </style>
+        </head>
         <body>
-          <h1>爬虫触发界面</h1>
-          <p>状态: ${isRunning ? '运行中' : '空闲'}</p>
-          <p>上次运行时间: ${lastRunTime ? lastRunTime.toLocaleString() : '从未运行'}</p>
-          <form action="/trigger" method="POST">
-            <button type="submit">触发爬虫执行</button>
-          </form>
-          <p><a href="/status">查看状态</a> | <a href="/health">健康检查</a></p>
+          <div class="card">
+            <h1>🐞 爬虫控制台</h1>
+
+            <div class="status-bar">
+              <span class="status-indicator"></span>
+              <span class="status-text" id="globalStatus">${isRunning ? '运行中' : '空闲'}</span>
+              <span class="last-run" id="lastRunInfo">
+                上次: ${lastRunTime ? new Date(lastRunTime).toLocaleString() : '无'} 
+                ${lastRunResult ? `(脚本: ${lastRunResult.script})` : ''}
+              </span>
+            </div>
+
+            <div class="button-grid" id="buttonGrid">
+              ${buttonsHtml}
+            </div>
+
+            <div class="footer-links">
+              <a href="/status" target="_blank">📊 状态 API</a> | 
+              <a href="/health" target="_blank">💓 健康检查</a>
+            </div>
+          </div>
+
+          <!-- 模态框 -->
+          <div class="modal" id="resultModal">
+            <div class="modal-content">
+              <button class="modal-close" id="modalClose">&times;</button>
+              <div class="modal-title" id="modalTitle">执行结果</div>
+              <pre class="result-pre" id="modalResult">等待返回…</pre>
+            </div>
+          </div>
+
+          <script>
+            const modal = document.getElementById('resultModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalResult = document.getElementById('modalResult');
+            const globalStatus = document.getElementById('globalStatus');
+            const lastRunInfo = document.getElementById('lastRunInfo');
+            const buttonGrid = document.getElementById('buttonGrid');
+            let isRunning = ${isRunning};
+
+            // 更新 UI 状态
+            function updateUI() {
+              fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                  isRunning = data.crawler_running;
+                  globalStatus.innerText = isRunning ? '运行中' : '空闲';
+                  const last = data.last_run_result;
+                  if (last) {
+                    lastRunInfo.innerText = \`上次: \${new Date(last.timestamp).toLocaleString()} (脚本: \${last.script})\`;
+                  }
+                  // 启用/禁用所有按钮
+                  document.querySelectorAll('.script-btn').forEach(btn => {
+                    btn.disabled = isRunning;
+                  });
+                })
+                .catch(() => {});
+            }
+
+            // 显示模态框
+            function showModal(title, content) {
+              modalTitle.innerText = title;
+              modalResult.innerText = content;
+              modal.classList.add('active');
+            }
+
+            // 执行脚本
+            async function runScript(scriptName, btn) {
+              if (isRunning) {
+                showModal('无法执行', '已有脚本正在运行，请稍后重试。');
+                return;
+              }
+
+              const originalText = btn.innerText;
+              btn.innerText = '⏳ 执行中…';
+              btn.disabled = true;
+
+              try {
+                const response = await fetch('/run/' + scriptName, { method: 'POST' });
+                const data = await response.json();
+                showModal(\`执行结果 - \${scriptName}\`, JSON.stringify(data, null, 2));
+                updateUI(); // 刷新状态
+              } catch (err) {
+                showModal('请求失败', err.message);
+              } finally {
+                btn.innerText = originalText;
+                btn.disabled = isRunning; // 如果仍在运行（不可能），但保持状态一致
+              }
+            }
+
+            // 绑定按钮点击
+            document.querySelectorAll('.script-btn').forEach(btn => {
+              btn.addEventListener('click', (e) => {
+                const script = e.target.dataset.script;
+                runScript(script, e.target);
+              });
+            });
+
+            // 关闭模态框
+            document.getElementById('modalClose').addEventListener('click', () => {
+              modal.classList.remove('active');
+            });
+            modal.addEventListener('click', (e) => {
+              if (e.target === modal) modal.classList.remove('active');
+            });
+
+            // 每隔5秒自动刷新状态
+            setInterval(updateUI, 5000);
+            // 页面加载时先更新一次
+            updateUI();
+          </script>
         </body>
       </html>
     `);
@@ -231,10 +514,11 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
   console.log(`可用端点:`);
-  console.log(`  GET  /health    - 健康检查`);
-  console.log(`  GET  /status    - 爬虫状态`);
-  console.log(`  GET  /trigger   - 触发界面（测试用）`);
-  console.log(`  POST /trigger   - 触发爬虫执行`);
+  console.log(`  GET  /health      - 健康检查`);
+  console.log(`  GET  /status      - 爬虫状态`);
+  console.log(`  GET  /trigger     - 多脚本触发界面`);
+  console.log(`  POST /trigger     - 触发默认脚本 (update-pdd-cron.js)`);
+  console.log(`  POST /run/脚本名   - 触发指定脚本`);
   if (API_KEY) {
     console.log(`⚠️  API Key 验证已启用，请使用 Authorization: Bearer ${API_KEY} 头`);
   }
