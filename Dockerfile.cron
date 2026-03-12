@@ -1,0 +1,62 @@
+# 使用 Ubuntu 22.04
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai
+
+# 安装基础工具、桌面环境、Chrome、xvfb、VNC 相关
+RUN apt-get update && apt-get install -y \
+    wget curl gnupg ca-certificates \
+    fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+    libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 \
+    libgbm1 libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 \
+    libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 \
+    libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 \
+    libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+    libxss1 libxtst6 lsb-release xdg-utils \
+    xvfb fonts-wqy-zenhei \
+    xfce4 xfce4-terminal dbus-x11 sudo git unzip \
+    # VNC 相关
+    x11vnc \
+    --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 Chrome（最新稳定版）
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable --no-install-recommends \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 Node.js 24
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 noVNC
+RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
+    && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
+
+WORKDIR /app
+
+# 复制爬虫相关文件（package-ghost.json 和所有脚本）
+COPY package-ghost.json ./package.json
+RUN npm install
+
+COPY scripts/ ./scripts/
+RUN chmod +x /app/scripts/trigger-server.js
+
+# 复制启动脚本
+COPY start-cron.sh /start.sh
+RUN chmod +x /start.sh
+
+# 设置默认环境变量
+ENV VNC_PASSWORD=zf123456 \
+    API_KEY="" \
+    TRIGGER_PORT=3000 \
+    RUN_CRAWLER="false"
+
+# 暴露 6080 端口（noVNC）、5900 端口（直接 VNC 连接）和 3000 端口（HTTP 触发服务器）
+EXPOSE 6080 5900 3000
+
+CMD ["/start.sh"]
