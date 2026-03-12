@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 libxtst6 lsb-release xdg-utils \
     xvfb fonts-wqy-zenhei \
     xfce4 xfce4-terminal dbus-x11 sudo git unzip \
+    net-tools \
     # VNC 相关
     x11vnc \
     --no-install-recommends \

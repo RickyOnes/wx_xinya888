@@ -10,7 +10,7 @@ set -e
 #   - 健康检查: GET /health
 #   - 触发爬虫: POST /trigger (需 API_KEY 验证，如果设置了 API_KEY 环境变量)
 #   - 状态查询: GET /status
-# 优化参数：x11vnc -quality 6 -speed 5, noVNC --compress 0 --quality 6
+# 基本参数：x11vnc -noxdamage -shared, noVNC --heartbeat 30
 #
 # 部署到 clawcloud 后，可通过 Supabase Cron 定时调用 HTTP 触发服务器来执行爬虫任务。
 # 设置环境变量 API_KEY 可启用授权保护，确保只有携带正确 Bearer Token 的请求才能触发爬虫。
@@ -48,7 +48,8 @@ mkdir -p ~/.vnc
 PASSWORD=${VNC_PASSWORD:-zf123456}
 x11vnc -storepasswd $PASSWORD ~/.vnc/passwd
 echo "启动 x11vnc..."
-x11vnc -display :99 -forever -quality 6 -speed 5 -usepw -rfbauth ~/.vnc/passwd -rfbport 5900 -shared -noxdamage &
+# 移除不支持的 -quality 和 -speed 参数，使用基本参数
+x11vnc -display :99 -forever -usepw -rfbauth ~/.vnc/passwd -rfbport 5900 -shared -noxdamage &
 
 # 等待 VNC 服务就绪
 echo "等待 VNC 服务启动（最大 10 秒）..."
@@ -65,7 +66,8 @@ done
 echo "=== 启动 noVNC (Web 访问) ==="
 echo "启动 noVNC 代理，监听 0.0.0.0:6080，连接到 localhost:5900..."
 # 使用 --web 参数指定静态文件目录，使根路径可访问
-/opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 0.0.0.0:6080 --web /opt/novnc --compress 0 --quality 6 --heartbeat 30 &
+# 移除不支持的 --compress 和 --quality 参数
+/opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 0.0.0.0:6080 --web /opt/novnc --heartbeat 30 &
 sleep 2
 
 # 检查 noVNC 是否启动
@@ -82,8 +84,8 @@ if pgrep -x x11vnc >/dev/null; then echo "   ✓ x11vnc 正在运行"; else echo
 if pgrep -f "novnc_proxy" >/dev/null; then echo "   ✓ noVNC 代理正在运行"; else echo "   ✗ noVNC 代理未运行"; fi
 
 echo "2. 检查端口监听："
-if ss -tuln | grep -q ":5900 "; then echo "   ✓ 端口 5900 (VNC) 已监听"; else echo "   ✗ 端口 5900 未监听"; fi
-if ss -tuln | grep -q ":6080 "; then echo "   ✓ 端口 6080 (noVNC) 已监听"; else echo "   ✗ 端口 6080 未监听"; fi
+if netstat -tuln | grep -q ":5900 "; then echo "   ✓ 端口 5900 (VNC) 已监听"; else echo "   ✗ 端口 5900 未监听"; fi
+if netstat -tuln | grep -q ":6080 "; then echo "   ✓ 端口 6080 (noVNC) 已监听"; else echo "   ✗ 端口 6080 未监听"; fi
 
 echo "=== 启动 HTTP 触发服务器（Supabase Cron 调用） ==="
 node /app/scripts/trigger-server.js &
