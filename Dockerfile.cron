@@ -29,6 +29,18 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ---------- 新增部分：nano、中文支持、Chrome 参数 ----------
+RUN apt-get update && apt-get install -y nano locales \
+    && locale-gen zh_CN.UTF-8 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV LANG zh_CN.UTF-8
+ENV LC_ALL zh_CN.UTF-8
+
+# 修改 Chrome 快捷方式，添加 --no-sandbox 参数
+RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox/' /usr/share/applications/google-chrome.desktop
+# ---------------------------------------------------------
+
 # 安装 Node.js 24
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
@@ -40,7 +52,7 @@ RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
 
 WORKDIR /app
 
-# 复制爬虫相关文件（package-ghost.json 和所有脚本）
+# 复制爬虫相关文件（package-cron.json 和所有脚本）
 COPY package-cron.json ./package.json
 RUN npm install
 
