@@ -15,7 +15,7 @@ let lastRunTime = null;
 let lastRunResult = null;
 let currentScript = null; // 记录当前运行的脚本名
 
-// 获取所有可用的 .js 脚本文件（排除 trigger-server.js 自身）
+// 获取所有可用的 .js 脚本文件（排除 trigger-server.js 和 proxy.js 自身）
 async function getAvailableScripts() {
   try {
     const files = await fs.readdir(SCRIPTS_DIR);
@@ -170,7 +170,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 触发指定脚本的端点（新）
+  // 触发指定脚本的端点
   if (path.startsWith('/run/') && method === 'POST') {
     const scriptName = path.substring(5); // 去掉 '/run/'
     if (!scriptName || !scriptName.endsWith('.js')) {
@@ -218,7 +218,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 手动触发界面（GET /trigger）- 多按钮 + 模态框
+  // 手动触发界面（GET /trigger）- 多按钮界面 + 弹窗 + API 链接
   if (path === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => 
@@ -381,11 +381,13 @@ const server = http.createServer(async (req, res) => {
               margin-top: 20px;
               color: #94a3b8;
             }
-            .footer-links a {
+            .api-link {
               color: #667eea;
-              text-decoration: none;
+              cursor: pointer;
+              text-decoration: underline;
               margin: 0 8px;
             }
+            .api-link:hover { opacity: 0.8; }
           </style>
         </head>
         <body>
@@ -406,8 +408,8 @@ const server = http.createServer(async (req, res) => {
             </div>
 
             <div class="footer-links">
-              <a href="/status" target="_blank">📊 状态 API</a> | 
-              <a href="/health" target="_blank">💓 健康检查</a>
+              <span class="api-link" data-url="/status">📊 查看状态</span> | 
+              <span class="api-link" data-url="/health">💓 健康检查</span>
             </div>
           </div>
 
@@ -479,11 +481,25 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            // 绑定按钮点击
+            // 绑定脚本按钮点击
             document.querySelectorAll('.script-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
                 const script = e.target.dataset.script;
                 runScript(script, e.target);
+              });
+            });
+
+            // 处理 API 链接点击（状态/健康检查）
+            document.querySelectorAll('.api-link').forEach(span => {
+              span.addEventListener('click', async (e) => {
+                const url = e.target.dataset.url;
+                try {
+                  const response = await fetch(url);
+                  const data = await response.json();
+                  showModal(\`API: \${url}\`, JSON.stringify(data, null, 2));
+                } catch (err) {
+                  showModal('请求失败', err.message);
+                }
               });
             });
 

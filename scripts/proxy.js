@@ -26,8 +26,8 @@ const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const path = parsedUrl.pathname;
 
-  // 判断是否为 API 请求
-  if (path.startsWith('/trigger') || path.startsWith('/status') || path.startsWith('/health')) {
+  // 判断是否为 API 请求（包括 /run/ 开头的路径）
+  if (path.startsWith('/trigger') || path.startsWith('/status') || path.startsWith('/health') || path.startsWith('/run/')) {
     console.log(`[Proxy] API request: ${path}`);
     proxy.web(req, res, { target: API_TARGET });
   } else {
