@@ -13,9 +13,8 @@ const SCRIPTS_DIR = '/app/scripts'; // 脚本目录
 let isRunning = false;
 let lastRunTime = null;
 let lastRunResult = null;
-let currentScript = null; // 记录当前运行的脚本名
+let currentScript = null;
 
-// 获取所有可用的 .js 脚本文件（排除 trigger-server.js 和 proxy.js 自身）
 async function getAvailableScripts() {
   try {
     const files = await fs.readdir(SCRIPTS_DIR);
@@ -30,7 +29,6 @@ async function getAvailableScripts() {
   }
 }
 
-// 执行指定脚本
 function executeScript(scriptName) {
   return new Promise((resolve) => {
     if (isRunning) {
@@ -44,7 +42,9 @@ function executeScript(scriptName) {
     console.log(`[${new Date().toISOString()}] 开始执行脚本: ${scriptName}`);
     const startTime = Math.floor(Date.now() / 1000);
 
-    const child = spawn('node', [scriptName], {
+    const scriptPath = path.join(SCRIPTS_DIR, scriptName); // 绝对路径
+
+    const child = spawn('node', [scriptPath], {
       stdio: 'pipe',
       env: process.env,
       cwd: '/app'
@@ -117,7 +117,6 @@ const server = http.createServer(async (req, res) => {
   const path = parsedUrl.pathname;
   const method = req.method;
 
-  // 设置 CORS 头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -128,7 +127,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 验证 API Key（如果设置了）
   if (API_KEY && (path.startsWith('/run/') || path === '/trigger' && method === 'POST')) {
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${API_KEY}`) {
@@ -138,7 +136,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 健康检查端点（放最前面）
   if (path === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -152,7 +149,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 状态端点
   if (path === '/status' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -170,9 +166,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 触发指定脚本的端点
   if (path.startsWith('/run/') && method === 'POST') {
-    const scriptName = path.substring(5); // 去掉 '/run/'
+    const scriptName = path.substring(5);
     if (!scriptName || !scriptName.endsWith('.js')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的脚本名' }));
@@ -201,7 +196,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 兼容旧的 /trigger POST 端点（默认执行 update-pdd-cron.js）
   if (path === '/trigger' && method === 'POST') {
     const result = await executeScript('update-pdd-cron.js');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -218,7 +212,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 手动触发界面（GET /trigger）- 多按钮界面 + 弹窗 + API 链接
   if (path === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => 
@@ -413,7 +406,6 @@ const server = http.createServer(async (req, res) => {
             </div>
           </div>
 
-          <!-- 模态框 -->
           <div class="modal" id="resultModal">
             <div class="modal-content">
               <button class="modal-close" id="modalClose">&times;</button>
@@ -431,7 +423,6 @@ const server = http.createServer(async (req, res) => {
             const buttonGrid = document.getElementById('buttonGrid');
             let isRunning = ${isRunning};
 
-            // 更新 UI 状态
             function updateUI() {
               fetch('/status')
                 .then(r => r.json())
@@ -442,7 +433,6 @@ const server = http.createServer(async (req, res) => {
                   if (last) {
                     lastRunInfo.innerText = \`上次: \${new Date(last.timestamp).toLocaleString()} (脚本: \${last.script})\`;
                   }
-                  // 启用/禁用所有按钮
                   document.querySelectorAll('.script-btn').forEach(btn => {
                     btn.disabled = isRunning;
                   });
@@ -450,14 +440,12 @@ const server = http.createServer(async (req, res) => {
                 .catch(() => {});
             }
 
-            // 显示模态框
             function showModal(title, content) {
               modalTitle.innerText = title;
               modalResult.innerText = content;
               modal.classList.add('active');
             }
 
-            // 执行脚本
             async function runScript(scriptName, btn) {
               if (isRunning) {
                 showModal('无法执行', '已有脚本正在运行，请稍后重试。');
@@ -472,16 +460,15 @@ const server = http.createServer(async (req, res) => {
                 const response = await fetch('/run/' + scriptName, { method: 'POST' });
                 const data = await response.json();
                 showModal(\`执行结果 - \${scriptName}\`, JSON.stringify(data, null, 2));
-                updateUI(); // 刷新状态
+                updateUI();
               } catch (err) {
                 showModal('请求失败', err.message);
               } finally {
                 btn.innerText = originalText;
-                btn.disabled = isRunning; // 如果仍在运行（不可能），但保持状态一致
+                btn.disabled = isRunning;
               }
             }
 
-            // 绑定脚本按钮点击
             document.querySelectorAll('.script-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
                 const script = e.target.dataset.script;
@@ -489,7 +476,6 @@ const server = http.createServer(async (req, res) => {
               });
             });
 
-            // 处理 API 链接点击（状态/健康检查）
             document.querySelectorAll('.api-link').forEach(span => {
               span.addEventListener('click', async (e) => {
                 const url = e.target.dataset.url;
@@ -503,7 +489,6 @@ const server = http.createServer(async (req, res) => {
               });
             });
 
-            // 关闭模态框
             document.getElementById('modalClose').addEventListener('click', () => {
               modal.classList.remove('active');
             });
@@ -511,9 +496,7 @@ const server = http.createServer(async (req, res) => {
               if (e.target === modal) modal.classList.remove('active');
             });
 
-            // 每隔5秒自动刷新状态
             setInterval(updateUI, 5000);
-            // 页面加载时先更新一次
             updateUI();
           </script>
         </body>
@@ -522,7 +505,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 404 处理
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: '端点未找到' }));
 });
@@ -540,7 +522,6 @@ server.listen(PORT, '0.0.0.0', () => {
   }
 });
 
-// 处理进程退出
 process.on('SIGINT', () => {
   console.log('收到 SIGINT 信号，关闭服务器...');
   server.close(() => {
