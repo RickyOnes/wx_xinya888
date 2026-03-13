@@ -29,7 +29,7 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ---------- 新增部分：nano、中文支持、Chrome 参数 ----------
+# ---------- 中文支持、nano、Chrome 参数 ----------
 RUN apt-get update && apt-get install -y nano locales \
     && locale-gen zh_CN.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -37,9 +37,9 @@ RUN apt-get update && apt-get install -y nano locales \
 ENV LANG zh_CN.UTF-8
 ENV LC_ALL zh_CN.UTF-8
 
-# 修改 Chrome 快捷方式，添加 --no-sandbox 参数
+# 修改 Chrome 系统快捷方式，添加 --no-sandbox
 RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox/' /usr/share/applications/google-chrome.desktop
-# ---------------------------------------------------------
+# -------------------------------------------------
 
 # 安装 Node.js 24
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
@@ -50,6 +50,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
 
+# ---------- 关键：将用户主目录重定向到持久化挂载点 ----------
+ENV HOME=/app/puppeteer_user_data
+# ---------------------------------------------------------
+
 WORKDIR /app
 
 # 复制爬虫相关文件（package-cron.json 和所有脚本）
@@ -57,13 +61,13 @@ COPY package-cron.json ./package.json
 RUN npm install
 
 COPY scripts/ ./scripts/
-RUN chmod +x /app/scripts/trigger-server.js /app/scripts/proxy.js   # 同时授权
+RUN chmod +x /app/scripts/trigger-server.js /app/scripts/proxy.js
 
 # 复制启动脚本
 COPY start-cron.sh /start.sh
 RUN chmod +x /start.sh
 
-# 暴露 6080 端口（noVNC）、5900 端口（直接 VNC 连接）和 3000 端口（HTTP 触发服务器）
+# 暴露端口
 EXPOSE 6080 5900 3000
 
 CMD ["/start.sh"]
