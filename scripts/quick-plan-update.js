@@ -176,84 +176,15 @@ class PDDPlanAntiContentFetcher {
                 timeout: 10000
             });
             
-            // 等待页面稳定并检查是否有重定向
-            let urlStable = true;
-            const initialUrl = this.page.url();
-            console.log(`   初始URL: ${initialUrl}`);
-            
-            // 等待5秒，每1秒检查一次URL是否变化，同时检查是否已捕获到anti-content
-            for (let i = 0; i < 5; i++) {
-                // 检查是否已经捕获到anti-content，如果是则提前结束等待
-                if (this.capturedData.antiContentPlan) {
-                    console.log(`   ✅ 已捕获到anti-content，提前结束等待`);
-                    return true;
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                let currentUrl = '';
-                try {
-                    currentUrl = this.page.url();
-                } catch (e) {
-                    // 忽略错误
-                }
-                console.log(`   等待 ${i+1}/5秒，当前URL: ${currentUrl}`);
-                
-                if (!currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                    console.log(`   ⚠️  URL已变化到: ${currentUrl}，会话可能已失效`);
-                    urlStable = false;
-                    break;
-                }
-            }
-            
-            let finalUrl = '';
-            try {
-                finalUrl = this.page.url();
-            } catch (e) {
-                // 忽略错误
-            }
-            console.log(`   最终URL: ${finalUrl}`);
-            
-            // 加强会话检测：不仅检查URL，还检查页面元素
-            if (urlStable && finalUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                // 如果在导航过程中已经捕获到anti-content，说明会话有效，直接返回
-                if (this.capturedData.antiContentPlan) {
-                    console.log('✅ 会话有效，已捕获到anti-content，直接进入预估销量页面');
-                    return true;
-                }
-                
-                // 检查是否实际在预估销量页面（没有登录表单）
-                const hasLoginForm = await this.page.$('#usernameId, input[placeholder="请输入手机号"]').catch(() => null);
-                const hasPasswordInput = await this.page.$('#passwordId').catch(() => null);
-                const hasLoginButton = await this.page.$('button[data-testid="beast-core-button"]').catch(() => null);
-                
-                if (hasLoginForm || hasPasswordInput || hasLoginButton) {
-                    // 即使检测到登录表单，如果已经捕获到 anti-content，仍然认为会话有效
-                    if (this.capturedData.antiContentPlan) {
-                        console.log('   ✅ 已捕获到anti-content，会话有效，忽略登录表单');
-                        return true;
-                    }
-                    console.log('⚠️ 检测到登录相关元素，会话可能已失效');
-                    // 继续执行登录流程
-                } else {
-                    console.log('✅ 会话有效，直接进入预估销量页面');
-                    return true;
-                }
-            } else {
-                // 即使URL不稳定，如果已经捕获到 anti-content，仍然认为会话有效
-                if (this.capturedData.antiContentPlan) {
-                    console.log('   ✅ 已捕获到anti-content，会话有效，提前退出');
-                    return true;
-                }
-                console.log('ℹ️ 会话无效或URL不稳定，开始登录流程');
-            }
+            // 等待页面核心元素出现，确认已在目标页面
+            await this.page.waitForSelector('[data-testid="beast-core-table"]', {
+                timeout: 5000,
+                visible: true
+            });
+            console.log('✅ 会话有效，已进入预估销量页面');
+            return true;
         } catch (error) {
-            console.log(`ℹ️ 会话检测失败: ${error.message}`);
-            // 即使导航失败，如果已经捕获到 anti-content，仍然认为会话有效
-            if (this.capturedData.antiContentPlan) {
-                console.log(`   ✅ 已捕获到anti-content，会话有效，提前退出`);
-                return true;
-            }
-            console.log(`开始登录流程`);
+            console.log('⚠️ 现有会话无效或超时，开始登录流程');
         }
         
         console.log('\n🌐 开始登录流程，从登录URL直接登录...');
@@ -393,26 +324,21 @@ class PDDPlanAntiContentFetcher {
             return true;
         }
         
-        const startTime = Date.now();
-        const maxWaitTime = 90000; // 90秒钟
-        while (!this.capturedData.antiContentPlan && (Date.now() - startTime) < maxWaitTime) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-            if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
-                console.log(`   已等待 ${elapsedSeconds} 秒...`);
-            }
-        }
-
-        if (this.capturedData.antiContentPlan) {
+        try {
+            // 精确等待目标API响应
+            await this.page.waitForResponse(
+                response => response.url().includes(CONFIG.targetApiEndpointPlan),
+                { timeout: 90000 }
+            );
             console.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
             return true;
-        } else {
-            console.log(`❌ 在 ${maxWaitTime/1000/60} 分钟内未捕获到预估销量查询API请求`);
+        } catch (error) {
+            console.log('❌ 在90秒内未捕获到预估销量查询API请求');
             return false;
         }
     }
 
-    // 获取Cookies（未修改）
+    // 获取Cookies
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
 
@@ -455,10 +381,8 @@ class PDDPlanAntiContentFetcher {
                 throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
             }
 
-            // 只在重新登录时才抓取 Cookie
-            if (this.capturedData.needlogin) {
-                await this.captureCookies();
-            }
+            // 5. 获取cookies
+            await this.captureCookies();
 
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -512,7 +436,7 @@ async function updatePlanAntiContent(username, password) {
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
             } else {
-                console.log(`✅ 账号 ${username} 的anti_content已更新到Supabase`);
+                console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
             }
         } else if (fetcher.capturedData.antiContentPlan && fetcher.capturedData.needlogin){
@@ -529,7 +453,7 @@ async function updatePlanAntiContent(username, password) {
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
             } else {
-                console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
+                console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
             }
         } else {    
