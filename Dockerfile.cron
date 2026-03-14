@@ -34,8 +34,8 @@ RUN apt-get update && apt-get install -y nano locales \
     && locale-gen zh_CN.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-ENV LANG zh_CN.UTF-8
-ENV LC_ALL zh_CN.UTF-8
+ENV LANG=zh_CN.UTF-8
+ENV LC_ALL=zh_CN.UTF-8
 
 # 修改 Chrome 系统快捷方式，添加 --no-sandbox
 RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox/' /usr/share/applications/google-chrome.desktop
