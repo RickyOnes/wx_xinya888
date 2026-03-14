@@ -15,11 +15,11 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}  # 使用内置 token 拉取镜像（如果镜像公开可省略）
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     # 只恢复最近的用户数据缓存，不保存新缓存（节约存储空间）
     - name: 恢复 puppeteer 用户数据缓存（只读）
-      uses: actions/cache/restore@v4  # ✅ 使用 restore 专用 action
+      uses: actions/cache/restore@v5  # ✅ 使用 restore 专用 action
       with:
         path: ./puppeteer_user_data
         key: ${{ runner.os }}-user-data-readonly  # 永不命中
