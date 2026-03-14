@@ -455,8 +455,10 @@ class PDDPlanAntiContentFetcher {
                 throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
             }
 
-            // 5. 获取cookies
-            await this.captureCookies();
+            // 只在重新登录时才抓取 Cookie
+            if (this.capturedData.needlogin) {
+                await this.captureCookies();
+            }
 
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -510,7 +512,7 @@ async function updatePlanAntiContent(username, password) {
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
             } else {
-                console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
+                console.log(`✅ 账号 ${username} 的anti_content已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
             }
         } else if (fetcher.capturedData.antiContentPlan && fetcher.capturedData.needlogin){
@@ -527,7 +529,7 @@ async function updatePlanAntiContent(username, password) {
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
             } else {
-                console.log(`✅ 账号 ${username} 的预估销量参数已更新到Supabase`);
+                console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
             }
         } else {    
