@@ -29,6 +29,10 @@ Thumbs.db
 
 # Puppeteer user data
 puppeteer_user_data/
+supabase/
+supabase/**/*
+edge-functions/          # 忽略整个edge functions目录及其所有内容（注意目录名有空格）
+edge-functions/**/*     # 确保所有子目录和文件都被忽略
 
 # Build outputs
 dist/
@@ -76,7 +80,6 @@ run-local.js
 /images/
 /pages/
 /utils/
-/supabase/
 
 # 备份文件
 *.backup
