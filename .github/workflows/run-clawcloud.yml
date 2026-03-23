@@ -1,0 +1,71 @@
+name: 运行 ClawCloud Token 更新器（定时任务）
+
+on:
+  schedule:
+    # 每6天北京时间5点运行（UTC 21点，忽略夏令时）
+    - cron: '0 21 */6 * *'
+  workflow_dispatch:  # 支持手动触发
+    inputs:
+      headless:
+        description: '是否以无头模式运行（true/false）'
+        required: false
+        default: 'true'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: rickyones/wx_xinya888/clawcloud-token-updater
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read  # 仅需读取权限拉取镜像
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 恢复 Puppeteer 用户数据缓存
+        uses: actions/cache@v5
+        with:
+          path: puppeteer-user-data
+          key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            clawcloud-puppeteer-data-
+
+      - name: 确保缓存目录存在
+        run: mkdir -p puppeteer-user-data
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取最新镜像
+        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: 运行 Token 更新容器（挂载缓存目录）
+        run: |
+          # 获取主机用户 ID 以确保挂载目录可写
+          HOST_UID=$(id -u)
+          HOST_GID=$(id -g)
+          echo "使用用户 ID: $HOST_UID:$HOST_GID 运行容器"
+          
+          docker run --rm \
+            -v $(pwd)/puppeteer-user-data:/app/puppeteer-user-data \
+            --user $HOST_UID:$HOST_GID \
+            -e USERNAME_GITHUB="${{ secrets.USERNAME_GITHUB }}" \
+            -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
+            -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \
+            -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
+            -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: 保存 Puppeteer 用户数据缓存
+        uses: actions/cache@v5
+        with:
+          path: puppeteer-user-data
+          key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
