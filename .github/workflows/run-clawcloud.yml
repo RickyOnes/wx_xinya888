@@ -34,8 +34,10 @@ jobs:
           restore-keys: |
             clawcloud-puppeteer-data-
 
-      - name: 确保缓存目录存在
-        run: mkdir -p puppeteer-user-data
+      - name: 确保缓存目录存在并设置正确权限
+        run: |
+          mkdir -p puppeteer-user-data
+          chmod 777 puppeteer-user-data  # 确保容器内用户可写
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -49,14 +51,8 @@ jobs:
 
       - name: 运行 Token 更新容器（挂载缓存目录）
         run: |
-          # 获取主机用户 ID 以确保挂载目录可写
-          HOST_UID=$(id -u)
-          HOST_GID=$(id -g)
-          echo "使用用户 ID: $HOST_UID:$HOST_GID 运行容器"
-          
           docker run --rm \
             -v $(pwd)/puppeteer-user-data:/app/puppeteer-user-data \
-            --user $HOST_UID:$HOST_GID \
             -e USERNAME_GITHUB="${{ secrets.USERNAME_GITHUB }}" \
             -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
             -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \

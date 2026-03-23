@@ -5,7 +5,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/clawcloud-token-updater
+  IMAGE_NAME: rickyones/wx_xinya888/clawcloud-token-updater
 
 jobs:
   build:
