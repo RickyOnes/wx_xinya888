@@ -1,22 +1,14 @@
-name: 更新ClawCloud Token
+name: 构建 ClawCloud Token 更新器镜像
 
 on:
-  schedule:
-    # 每6天北京时间5点运行（UTC 21点，忽略夏令时）
-    - cron: '0 21 */6 * *'
-  workflow_dispatch:  # 支持手动触发
-    inputs:
-      headless:
-        description: '是否以无头模式运行（true/false）'
-        required: false
-        default: 'true'
+  workflow_dispatch:  # 仅手动触发构建
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/clawcloud-token-updater
 
 jobs:
-  build-and-run:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,23 +47,13 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.clawcloud
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             NODE_ENV=production
-
-      - name: Run token updater container
-        run: |
-          docker run --rm \
-            -e USERNAME_GITHUB="${{ secrets.USERNAME_GITHUB }}" \
-            -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
-            -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \
-            -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
-            -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
       - name: Logout from GitHub Container Registry
         if: always()
