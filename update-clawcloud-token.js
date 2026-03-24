@@ -17,9 +17,88 @@ const PASSWORD_GITHUB = process.env.PASSWORD_GITHUB;
 const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
 const ACCESS_TOKEN_SUPABASE = process.env.ACCESS_TOKEN_SUPABASE; // 你的管理令牌
 
+// GitHub 2FA 验证码轮询配置
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const MAX_VERIFICATION_WAIT_TIME = 120000; // 120秒超时
+const VERIFICATION_POLL_INTERVAL = 3000;   // 3秒轮询间隔
+const VERIFICATION_CODE_FRESHNESS_THRESHOLD = 5 * 60 * 1000; // 5分钟新鲜度阈值
+
 // 浏览器无头模式配置（默认 true，生产环境建议 true）
 const HEADLESS = process.env.HEADLESS !== 'false';
 // ==================================================
+
+// 延迟函数
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 轮询 Supabase 获取 GitHub 2FA 验证码
+async function pollGitHubVerificationCode(githubUsername) {
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+        throw new Error('SUPABASE_SERVICE_ROLE_KEY 环境变量未设置');
+    }
+    
+    const dbUsername = `github_${githubUsername}`;
+    console.log(`\n🔐 检测到 GitHub 2FA，开始轮询验证码...`);
+    console.log(`   数据库标识: ${dbUsername}`);
+    console.log(`   等待时间: ${MAX_VERIFICATION_WAIT_TIME / 1000}秒，轮询间隔: ${VERIFICATION_POLL_INTERVAL / 1000}秒\n`);
+    
+    const startTime = Date.now();
+    let attemptCount = 0;
+    
+    while (Date.now() - startTime < MAX_VERIFICATION_WAIT_TIME) {
+        attemptCount++;
+        try {
+            const url = `https://${SUPABASE_PROJECT_REF}.supabase.co/rest/v1/pdd_verification_codes?username=eq.${encodeURIComponent(dbUsername)}&select=code,updated_at`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                    'apikey': SUPABASE_SERVICE_ROLE_KEY,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.length > 0 && data[0].code) {
+                    const code = data[0].code;
+                    const updatedAt = data[0].updated_at ? new Date(data[0].updated_at) : new Date(0);
+                    const now = new Date();
+                    const ageMs = now - updatedAt;
+                    const ageSeconds = Math.floor(ageMs / 1000);
+                    
+                    // 检查验证码是否"新鲜"（5分钟内更新）
+                    if (ageMs <= VERIFICATION_CODE_FRESHNESS_THRESHOLD) {
+                        console.log(`✅ 获取到新鲜验证码: ${code} (${ageSeconds}秒前更新)`);
+                        return code;
+                    } else {
+                        // 验证码存在但已过期
+                        const ageMinutes = Math.floor(ageSeconds / 60);
+                        console.log(`⏳ 验证码已过期: ${ageMinutes}分钟前更新，等待新验证码...`);
+                        // 继续轮询，不返回过期验证码
+                    }
+                } else {
+                    // 没有验证码或code字段为空
+                    console.log('⏳ 数据库中暂无有效验证码，等待更新...');
+                }
+            }
+            
+            // 每10次尝试打印一次提示
+            if (attemptCount % 10 === 0) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                console.log(`⏳ 已等待 ${elapsed}秒，请在 Supabase 中更新 github_${githubUsername} 的验证码...`);
+            }
+            
+            await delay(VERIFICATION_POLL_INTERVAL);
+            
+        } catch (error) {
+            console.log(`   轮询出错: ${error.message}`);
+            await delay(VERIFICATION_POLL_INTERVAL);
+        }
+    }
+    
+    throw new Error(`❌ ${MAX_VERIFICATION_WAIT_TIME / 1000}秒内未获取到验证码`);
+}
 
 async function updateSupabaseSecrets(authHeader, cookie) {
     const finalCookie = cookie || '';
@@ -77,7 +156,81 @@ async function handleGitHubAuth(authPage) {
         await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
     }
 
-    // 2. 处理授权按钮（无论之前是否登录，都可能出现）
+    // 2. 处理 GitHub 2FA 验证码（邮箱验证）
+    try {
+        await delay(3000); // 等待页面稳定
+        
+        // GitHub 2FA 输入框选择器
+        const otpSelectors = [
+            '#app_totp',
+            '#otp',
+            'input[name="otp"]',
+            'input[autocomplete="one-time-code"]',
+            'input[type="text"][id*="code" i]',
+            'input[type="text"][name*="code" i]',
+            'input[aria-label*="code" i]'
+        ];
+        
+        let otpInput = null;
+        let foundSelector = '';
+        
+        for (const selector of otpSelectors) {
+            try {
+                otpInput = await authPage.$(selector);
+                if (otpInput) {
+                    foundSelector = selector;
+                    break;
+                }
+            } catch (e) {
+                // 继续检查下一个选择器
+            }
+        }
+        
+        if (otpInput) {
+            console.log(`\n🔑 检测到 2FA 输入框: ${foundSelector}`);
+            
+            // 从 Supabase 轮询验证码
+            const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
+            
+            console.log(`⌨️  正在填充验证码: ${verificationCode}`);
+            await otpInput.type(verificationCode);
+            
+            // 查找并点击提交按钮
+            const submitSelectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Verify")',
+                'button:has-text("Continue")'
+            ];
+            
+            let submitClicked = false;
+            for (const selector of submitSelectors) {
+                try {
+                    const btn = await authPage.$(selector);
+                    if (btn) {
+                        await btn.click();
+                        submitClicked = true;
+                        break;
+                    }
+                } catch (e) {}
+            }
+            
+            if (!submitClicked) {
+                await authPage.keyboard.press('Enter');
+            }
+            
+            console.log('📤 验证码已提交，等待验证...');
+            await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+            console.log('✅ 2FA 验证通过\n');
+        }
+    } catch (error) {
+        if (error.message.includes('未获取到验证码') || error.message.includes('未设置')) {
+            throw error;
+        }
+        console.log('ℹ️ 无需 2FA 验证或已处理:', error.message);
+    }
+
+    // 3. 处理授权按钮（无论之前是否登录，都可能出现）
     try {
         console.log('检查授权按钮...');
         await authPage.waitForSelector('button[type="submit"]', { timeout: 10000 });
@@ -124,6 +277,13 @@ async function main() {
     if (!ACCESS_TOKEN_SUPABASE) {
         throw new Error('请设置环境变量 ACCESS_TOKEN_SUPABASE');
     }
+    
+    // 检查 GitHub 2FA 所需的环境变量
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+        console.warn('⚠️  警告: SUPABASE_SERVICE_ROLE_KEY 环境变量未设置，如果出现 GitHub 2FA 验证将失败');
+    } else {
+        console.log('✅ GitHub 2FA 验证码轮询功能已启用');
+    }
 
     // ========== 生产环境浏览器配置 ==========
     const browserOptions = {
@@ -135,6 +295,9 @@ async function main() {
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
+            '--disable-crashpad',
+            '--disable-crash-reporter',
+            '--disable-breakpad',
             '--disable-accelerated-2d-canvas',
             '--disable-gpu',
             ...(HEADLESS ? [] : ['--window-size=1366,768']), // 非无头模式设置窗口大小
