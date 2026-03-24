@@ -52,6 +52,7 @@ jobs:
       - name: 运行 Token 更新容器（挂载缓存目录）
         run: |
           docker run --rm \
+            --user root \
             -v $(pwd)/puppeteer-user-data:/app/puppeteer-user-data \
             -e USERNAME_GITHUB="${{ secrets.USERNAME_GITHUB }}" \
             -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
@@ -61,7 +62,16 @@ jobs:
             -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
+      - name: 修复缓存目录权限
+        if: always()
+        run: |
+          # 确保宿主机用户对 puppeteer-user-data 目录有完全访问权限
+          sudo chown -R $USER:$USER puppeteer-user-data 2>/dev/null || true
+          sudo chmod -R 755 puppeteer-user-data
+          echo "✅ 权限修复完成"
+
       - name: 保存 Puppeteer 用户数据缓存
+        if: always()
         uses: actions/cache@v5
         with:
           path: puppeteer-user-data
