@@ -57,6 +57,7 @@ jobs:
             -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
             -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \
             -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
+            -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
