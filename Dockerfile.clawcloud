@@ -67,8 +67,8 @@ COPY update-clawcloud-token.js ./
 # 设置文件权限
 RUN chown -R nodejs:nodejs /app
 
-# 切换到非 root 用户
-USER nodejs
+# 切换到非 root 用户（已禁用，使用 root 用户解决挂载权限问题）
+# USER nodejs
 
 # 健康检查（可选）
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
