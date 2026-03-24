@@ -186,63 +186,69 @@ async function handleGitHubAuth(authPage) {
             }
         }
         
-        if (otpInput) {
-            console.log(`\n🔑 检测到 2FA 输入框: ${foundSelector}`);
-            
-            // 从 Supabase 轮询验证码
-            const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
-            
-            console.log(`⌨️  正在填充验证码: ${verificationCode}`);
-            await otpInput.type(verificationCode);
-            
-            // 查找并点击提交按钮
-            const submitSelectors = [
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'button:has-text("Verify")',
-                'button:has-text("Continue")'
-            ];
-            
-            let submitClicked = false;
-            for (const selector of submitSelectors) {
-                try {
-                    const btn = await authPage.$(selector);
-                    if (btn) {
-                        await btn.click();
-                        submitClicked = true;
-                        break;
-                    }
-                } catch (e) {}
-            }
-            
-            if (!submitClicked) {
-                await authPage.keyboard.press('Enter');
-            }
-            
-            console.log('📤 验证码已提交，等待验证...');
-            await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-            console.log('✅ 2FA 验证通过\n');
+        // ===== 新增：如果没有找到任何 2FA 输入框，直接退出函数 =====
+        if (!otpInput) {
+            console.log('未检测到二次验证输入框，无需 2FA，直接退出函数。');
+            return;  // 直接返回，不执行后续任何代码（包括授权按钮）
         }
+        
+        console.log(`\n🔑 检测到 2FA 输入框: ${foundSelector}`);
+        
+        // 从 Supabase 轮询验证码
+        const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
+        
+        console.log(`⌨️  正在填充验证码: ${verificationCode}`);
+        await otpInput.type(verificationCode);
+        
+        // 查找并点击提交按钮
+        const submitSelectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Verify")',
+            'button:has-text("Continue")'
+        ];
+        
+        let submitClicked = false;
+        for (const selector of submitSelectors) {
+            try {
+                const btn = await authPage.$(selector);
+                if (btn) {
+                    await btn.click();
+                    submitClicked = true;
+                    break;
+                }
+            } catch (e) {}
+        }
+        
+        if (!submitClicked) {
+            await authPage.keyboard.press('Enter');
+        }
+        
+        console.log('📤 验证码已提交，等待验证...');
+        await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+        console.log('✅ 2FA 验证通过\n');
+        
+        // 只有 2FA 验证通过后，才会继续执行后续授权按钮的处理
+        // 3. 处理授权按钮（因为 2FA 验证后通常会出现授权界面）
+        try {
+            console.log('检查授权按钮...');
+            await authPage.waitForSelector('button[type="submit"]', { timeout: 10000 });
+            console.log('点击授权按钮');
+            await authPage.click('button[type="submit"]');
+            await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+        } catch (e) {
+            console.log('没有授权按钮或已自动跳转');
+        }
+        
     } catch (error) {
+        // 如果是在 2FA 验证过程中抛出的错误（如验证码获取失败），重新抛出
         if (error.message.includes('未获取到验证码') || error.message.includes('未设置')) {
             throw error;
         }
-        console.log('ℹ️ 无需 2FA 验证或已处理:', error.message);
+        // 其他异常（如页面结构变化）打印日志但不影响流程
+        console.log('ℹ️ 2FA 验证过程异常:', error.message);
+        // 注意：这里如果之前没有找到 2FA 输入框已经 return，不会执行到这里
     }
-
-    // 3. 处理授权按钮（无论之前是否登录，都可能出现）
-    try {
-        console.log('检查授权按钮...');
-        await authPage.waitForSelector('button[type="submit"]', { timeout: 10000 });
-        console.log('点击授权按钮');
-        await authPage.click('button[type="submit"]');
-        await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-    } catch (e) {
-        console.log('没有授权按钮或已自动跳转');
-    }
-
-    // 注意：最终跳转回 ClawCloud 主页由外层 loginWithGitHub 中的 
-    // await page.waitForSelector('div.apps-container.css-1stzn3a', { timeout: 30000 }) 保证
 }
 
 async function loginWithGitHub(page) {
@@ -253,7 +259,7 @@ async function loginWithGitHub(page) {
     const popupPromise = new Promise(resolve => {
         page.once('popup', (popup) => resolve({ type: 'popup', page: popup }));
     });
-    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 })
+    const navigationPromise = page.waitForSelector('div.authentication-body', { timeout: 10000 })
         .then(() => ({ type: 'navigation', page: page }))
         .catch(() => null);
 
@@ -378,7 +384,7 @@ async function main() {
 
         const loginSelector = 'button.chakra-button.css-1ggp06u';
         const menuSelector = 'button[id="menu-button-:rd:"]';
-
+     //   await new Promise(resolve => setTimeout(resolve, 1000000));
         const detected = await Promise.race([
             page.waitForSelector(menuSelector, { visible: true, timeout: 10000 }).then(() => 'menu'),
             page.waitForSelector(loginSelector, { visible: true, timeout: 10000 }).then(() => 'login')
