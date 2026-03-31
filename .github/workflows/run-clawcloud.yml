@@ -3,7 +3,7 @@ name: 运行 ClawCloud Token 更新器（定时任务）
 on:
   schedule:
     # 每6天北京时间5点运行（UTC 21点，忽略夏令时）
-    - cron: '0 21 */6 * *'
+    - cron: '8 0 */4 * *'
   workflow_dispatch:  # 支持手动触发
     inputs:
       headless:
