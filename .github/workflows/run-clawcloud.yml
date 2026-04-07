@@ -1,0 +1,75 @@
+name: 运行 ClawCloud Token 更新器（定时任务）
+
+on:
+  workflow_dispatch:  # 支持手动触发
+    inputs:
+      headless:
+        description: '是否以无头模式运行（true/false）'
+        required: false
+        default: 'true'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: rickyones/wx_xinya888/clawcloud-token-updater
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read  # 仅需读取权限拉取镜像
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 恢复 Puppeteer 用户数据缓存
+        uses: actions/cache@v5
+        with:
+          path: puppeteer-user-data
+          key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            clawcloud-puppeteer-data-
+
+      - name: 确保缓存目录存在并设置正确权限
+        run: |
+          mkdir -p puppeteer-user-data
+          chmod 777 puppeteer-user-data  # 确保容器内用户可写
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取最新镜像
+        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: 运行 Token 更新容器（挂载缓存目录）
+        run: |
+          docker run --rm \
+            --user root \
+            -v $(pwd)/puppeteer-user-data:/app/puppeteer-user-data \
+            -e USERNAME_GITHUB="${{ secrets.USERNAME_GITHUB }}" \
+            -e PASSWORD_GITHUB="${{ secrets.PASSWORD_GITHUB }}" \
+            -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \
+            -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
+            -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: 修复缓存目录权限
+        if: always()
+        run: |
+          # 确保宿主机用户对 puppeteer-user-data 目录有完全访问权限
+          sudo chown -R $USER:$USER puppeteer-user-data 2>/dev/null || true
+          sudo chmod -R 755 puppeteer-user-data
+          echo "✅ 权限修复完成"
+
+      - name: 保存 Puppeteer 用户数据缓存
+        if: always()
+        uses: actions/cache@v5
+        with:
+          path: puppeteer-user-data
+          key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
