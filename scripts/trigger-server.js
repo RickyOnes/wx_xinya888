@@ -33,23 +33,14 @@ function getDisplayName(scriptFileName) {
 // ---------- 全局状态 ----------
 let isRunning = false;
 let currentScript = null;
-let currentChild = null;          // 当前运行的子进程
-let currentTimeout = null;        // 超时定时器
-let taskQueue = [];               // 队列元素：{ scriptName, resolve, reject }
+let currentChild = null;
+let currentTimeout = null;
+let taskQueue = [];
 let lastRunResult = null;
 let lastRunTime = null;
 
-// 性能统计
-let stats = {
-  totalExecutions: 0,
-  successCount: 0,
-  failCount: 0,
-  totalDurationSeconds: 0,
-  lastExecution: null
-};
-
 // 历史记录（内存）
-let history = [];                 // 每个元素: { timestamp, script, duration, success, exitCode }
+let history = [];
 
 // SSE 客户端列表
 let sseClients = [];
@@ -59,16 +50,34 @@ function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
 
-function sendSSE(data) {
-  const message = `data: ${JSON.stringify(data)}\n\n`;
+// 广播所有事件
+function sendSSE(event, data) {
+  const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   sseClients.forEach(client => client.write(message));
 }
 
 function broadcastLog(level, message) {
-  sendSSE({ level, message, timestamp: beijingTime() });
+  sendSSE('log', { level, message, timestamp: beijingTime() });
 }
 
-// 记录到持久化日志文件（简化格式，仅追加，不清理）
+// 广播状态变化（运行状态、当前脚本、队列长度、上次运行结果）
+function broadcastState() {
+  const state = {
+    isRunning,
+    currentScript,
+    queueLength: taskQueue.length,
+    lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
+    lastRunResult: lastRunResult ? {
+      script: lastRunResult.script,
+      success: lastRunResult.success,
+      duration: lastRunResult.duration,
+      timestamp: lastRunResult.timestamp
+    } : null
+  };
+  sendSSE('state', state);
+}
+
+// 记录到持久化日志文件（仅追加）
 async function appendHistoryLog(entry) {
   const line = `${entry.timestamp} | ${entry.script} | 耗时:${entry.duration}s | ${entry.success ? '成功' : '失败'} | 退出码:${entry.exitCode}\n`;
   try {
@@ -109,12 +118,8 @@ function addToHistory(script, duration, success, exitCode) {
   };
   history.unshift(record);
   if (history.length > MAX_HISTORY) history.pop();
-  // 更新统计
-  stats.totalExecutions++;
-  if (success) stats.successCount++;
-  else stats.failCount++;
-  stats.totalDurationSeconds += duration;
-  stats.lastExecution = record.timestamp;
+  // 持久化
+  appendHistoryLog(record);
 }
 
 // 执行脚本的核心函数（实际运行）
@@ -126,12 +131,12 @@ function runScriptTask(scriptName, resolve, reject) {
 
   isRunning = true;
   currentScript = scriptName;
+  broadcastState();  // 推送状态变化
   const startTime = Date.now();
   console.log("==========================================");
   console.log(`[${beijingTime()}] 开始执行脚本: ${scriptName}`);
   broadcastLog('info', `开始执行脚本: ${scriptName}`);
 
-  // 获取脚本路径
   getScriptPath(scriptName).then(scriptPath => {
     if (!scriptPath) throw new Error(`脚本 ${scriptName} 不存在`);
 
@@ -142,7 +147,6 @@ function runScriptTask(scriptName, resolve, reject) {
     });
     currentChild = child;
 
-    // 超时控制（30分钟）
     currentTimeout = setTimeout(() => {
       broadcastLog('error', `脚本 ${scriptName} 执行超时，强制终止`);
       child.kill('SIGTERM');
@@ -189,18 +193,10 @@ function runScriptTask(scriptName, resolve, reject) {
       broadcastLog('info', `脚本 ${scriptName} 执行完成，退出码: ${code}，耗时 ${duration} 秒`);
       console.log("==========================================");
 
-      // 记录历史和持久化
       addToHistory(scriptName, duration, success, code);
-      appendHistoryLog({
-        timestamp: beijingTime(endTime),
-        script: scriptName,
-        duration,
-        success,
-        exitCode: code
-      });
+      broadcastState();  // 推送状态变化（包括最新历史）
 
       resolve(result);
-      // 执行下一个任务
       runNext();
     });
 
@@ -223,18 +219,11 @@ function runScriptTask(scriptName, resolve, reject) {
       console.error(`[${beijingTime()}] 脚本 ${scriptName} 执行错误: ${err.message}`);
       broadcastLog('error', `脚本 ${scriptName} 执行错误: ${err.message}`);
       addToHistory(scriptName, duration, false, -1);
-      appendHistoryLog({
-        timestamp: beijingTime(),
-        script: scriptName,
-        duration,
-        success: false,
-        exitCode: -1
-      });
+      broadcastState();
       resolve(result);
       runNext();
     });
   }).catch(err => {
-    // 获取路径失败
     const duration = 0;
     const result = {
       success: false,
@@ -249,15 +238,9 @@ function runScriptTask(scriptName, resolve, reject) {
     console.error(`[${beijingTime()}] 脚本 ${scriptName} 定位失败: ${err.message}`);
     broadcastLog('error', `脚本 ${scriptName} 定位失败: ${err.message}`);
     addToHistory(scriptName, duration, false, -1);
-    appendHistoryLog({
-      timestamp: beijingTime(),
-      script: scriptName,
-      duration,
-      success: false,
-      exitCode: -1
-    });
     isRunning = false;
     currentScript = null;
+    broadcastState();
     resolve(result);
     runNext();
   });
@@ -267,6 +250,7 @@ function runScriptTask(scriptName, resolve, reject) {
 function queueScript(scriptName) {
   return new Promise((resolve, reject) => {
     taskQueue.push({ scriptName, resolve, reject });
+    broadcastState();  // 队列长度变化
     if (!isRunning) runNext();
   });
 }
@@ -275,6 +259,7 @@ function runNext() {
   if (taskQueue.length === 0) return;
   if (isRunning) return;
   const { scriptName, resolve, reject } = taskQueue.shift();
+  broadcastState();  // 队列长度变化
   runScriptTask(scriptName, resolve, reject);
 }
 
@@ -289,10 +274,11 @@ async function stopCurrentScript() {
   currentTimeout = null;
   isRunning = false;
   currentScript = null;
+  broadcastState();
   return { success: true, message: '已发送终止信号' };
 }
 
-// 获取脚本列表（合并两个目录）
+// 获取脚本列表
 async function getAvailableScripts() {
   const scriptMap = new Map();
   try {
@@ -322,12 +308,11 @@ async function getScriptPath(scriptName) {
   try { await fs.access(userPath); return userPath; } catch { return null; }
 }
 
-// 初始化：加载历史记录（从日志文件恢复内存 history 和 stats）
+// 加载历史记录
 async function loadHistoryFromFile() {
   try {
     const content = await fs.readFile(LOG_FILE, 'utf8');
     const lines = content.split(/\r?\n/).filter(l => l.trim());
-    // 解析每一行：格式 "2025-04-07 12:34:56 | script.js | 耗时:10s | 成功 | 退出码:0"
     const records = [];
     for (const line of lines.slice(-MAX_HISTORY)) {
       const match = line.match(/^(.+?) \| (.+?) \| 耗时:(\d+)s \| (成功|失败) \| 退出码:(-?\d+)/);
@@ -341,16 +326,7 @@ async function loadHistoryFromFile() {
         });
       }
     }
-    history = records.reverse(); // 最新的在前
-    // 重新计算 stats
-    stats = { totalExecutions: 0, successCount: 0, failCount: 0, totalDurationSeconds: 0, lastExecution: null };
-    for (const r of history) {
-      stats.totalExecutions++;
-      if (r.success) stats.successCount++;
-      else stats.failCount++;
-      stats.totalDurationSeconds += r.duration;
-      if (!stats.lastExecution) stats.lastExecution = r.timestamp;
-    }
+    history = records.reverse();
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('加载历史日志失败:', err.message);
   }
@@ -372,7 +348,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // API Key 验证（只对需要保护的路由）
+  // API Key 验证
   const protectedPaths = ['/run/', '/trigger', '/stop', '/upload', '/script/'];
   if (API_KEY && protectedPaths.some(p => pathname === p || pathname.startsWith(p))) {
     const authHeader = req.headers.authorization;
@@ -383,7 +359,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ---------- 健康检查 ----------
+  // 健康检查
   if (pathname === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -397,7 +373,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 状态查询 ----------
+  // 状态查询（兼容旧调用，但前端不再使用）
   if (pathname === '/status' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -416,43 +392,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 历史记录 ----------
+  // 历史记录
   if (pathname === '/history' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(history));
     return;
   }
 
-  // ---------- Prometheus 指标 ----------
-  if (pathname === '/metrics' && method === 'GET') {
-    const avgDuration = stats.totalExecutions ? (stats.totalDurationSeconds / stats.totalExecutions).toFixed(2) : 0;
-    const successRate = stats.totalExecutions ? ((stats.successCount / stats.totalExecutions) * 100).toFixed(2) : 0;
-    const metrics = [
-      `# HELP crawler_total_executions Total number of script executions`,
-      `# TYPE crawler_total_executions counter`,
-      `crawler_total_executions ${stats.totalExecutions}`,
-      `# HELP crawler_success_count Number of successful executions`,
-      `# TYPE crawler_success_count counter`,
-      `crawler_success_count ${stats.successCount}`,
-      `# HELP crawler_fail_count Number of failed executions`,
-      `# TYPE crawler_fail_count counter`,
-      `crawler_fail_count ${stats.failCount}`,
-      `# HELP crawler_avg_duration_seconds Average execution duration in seconds`,
-      `# TYPE crawler_avg_duration_seconds gauge`,
-      `crawler_avg_duration_seconds ${avgDuration}`,
-      `# HELP crawler_success_rate_percent Success rate percentage`,
-      `# TYPE crawler_success_rate_percent gauge`,
-      `crawler_success_rate_percent ${successRate}`,
-      `# HELP crawler_queue_length Current number of queued scripts`,
-      `# TYPE crawler_queue_length gauge`,
-      `crawler_queue_length ${taskQueue.length}`
-    ];
-    res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
-    res.end(metrics.join('\n'));
-    return;
-  }
-
-  // ---------- 触发脚本（加入队列）----------
+  // 触发脚本（加入队列）
   if (pathname.startsWith('/run/') && method === 'POST') {
     const scriptName = pathname.substring(5);
     if (!scriptName || !scriptName.endsWith('.js')) {
@@ -481,7 +428,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 默认触发（update-pdd-cron.js）----------
+  // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
     const result = await queueScript('update-pdd-cron.js');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -498,7 +445,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 终止脚本 ----------
+  // 终止脚本
   if (pathname === '/stop' && method === 'POST') {
     const result = await stopCurrentScript();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -506,7 +453,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 上传脚本 ----------
+  // 上传脚本
   if (pathname === '/upload' && method === 'POST') {
     const busboy = Busboy({ headers: req.headers });
     let savedFile = null;
@@ -534,15 +481,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 删除脚本 ----------
+  // 删除脚本
   if (pathname.startsWith('/script/') && method === 'DELETE') {
-    const filename = pathname.substring(9); // 去掉 '/script/'
+    const filename = pathname.substring(9);
     if (!filename || !filename.endsWith('.js')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的文件名' }));
       return;
     }
-    // 防止路径遍历
     const safeName = path.basename(filename);
     const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
     try {
@@ -557,8 +503,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- SSE 实时日志 ----------
-  if (pathname === '/logs' && method === 'GET') {
+  // SSE 实时日志和状态
+  if (pathname === '/events' && method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -566,27 +512,55 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     sseClients.push(res);
+    // 立即发送当前状态
+    sendSSE('state', {
+      isRunning,
+      currentScript,
+      queueLength: taskQueue.length,
+      lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
+      lastRunResult: lastRunResult ? {
+        script: lastRunResult.script,
+        success: lastRunResult.success,
+        duration: lastRunResult.duration,
+        timestamp: lastRunResult.timestamp
+      } : null
+    });
     req.on('close', () => {
       sseClients = sseClients.filter(client => client !== res);
     });
     return;
   }
 
-  // ---------- Web 界面（增强版）----------
+  // Web 界面
   if (pathname === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => {
       const displayName = getDisplayName(script);
       return `
         <div class="script-item">
-          <button class="script-btn" data-script="${script}" ${isRunning ? 'disabled' : ''}>${displayName}</button>
+          <button class="script-btn" data-script="${script}">${displayName}</button>
           <button class="delete-btn" data-script="${script}" title="删除脚本">🗑️</button>
         </div>
       `;
     }).join('\n');
-    const lastRunTimeStr = lastRunTime ? beijingTime(lastRunTime) : '无';
-    const lastRunScript = lastRunResult ? `(脚本: ${lastRunResult.script})` : '';
-    const queueLen = taskQueue.length;
+
+    // 计算统计指标（从 history 得出）
+    let totalExecutions = history.length;
+    let successCount = history.filter(h => h.success).length;
+    let failCount = totalExecutions - successCount;
+    let avgDuration = totalExecutions ? (history.reduce((sum, h) => sum + h.duration, 0) / totalExecutions).toFixed(1) : 0;
+
+    // 生成历史记录表格 HTML
+    const historyRows = history.map((h, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td>${h.timestamp}</td>
+        <td>${h.script}</td>
+        <td>${h.duration}秒</td>
+        <td style="color: ${h.success ? 'green' : 'red'}">${h.success ? '成功' : '失败'}</td>
+        <td>${h.exitCode}</td>
+      </tr>
+    `).join('');
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
@@ -608,8 +582,8 @@ const server = http.createServer(async (req, res) => {
               max-width: 1400px;
               margin: 0 auto;
               display: flex;
+              flex-direction: column;
               gap: 20px;
-              flex-wrap: wrap;
             }
             .card {
               background: rgba(255,255,255,0.95);
@@ -617,31 +591,33 @@ const server = http.createServer(async (req, res) => {
               border-radius: 20px;
               padding: 20px 25px;
               box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-              flex: 1;
-              min-width: 300px;
-            }
-            .full-width {
-              width: 100%;
             }
             h1 { font-size: 1.8rem; color: #333; margin-bottom: 10px; border-left: 6px solid #667eea; padding-left: 20px; }
             h2 { font-size: 1.3rem; margin: 15px 0 10px; color: #2d3748; border-bottom: 2px solid #e2e8f0; }
             .status-bar {
               background: #f0f4f8;
               border-radius: 40px;
-              padding: 12px 20px;
-              margin-bottom: 20px;
+              padding: 15px 25px;
               display: flex;
               align-items: center;
-              gap: 15px;
+              gap: 25px;
               flex-wrap: wrap;
             }
+            .status-item {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              font-size: 1rem;
+            }
             .status-indicator {
-              display: inline-block;
-              width: 14px;
-              height: 14px;
+              width: 12px;
+              height: 12px;
               border-radius: 50%;
-              background: ${isRunning ? '#fbbf24' : '#10b981'};
-              animation: ${isRunning ? 'pulse 1.5s infinite' : 'none'};
+              background: #10b981;
+            }
+            .status-indicator.running {
+              background: #fbbf24;
+              animation: pulse 1.5s infinite;
             }
             @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } }
             .script-grid {
@@ -666,11 +642,7 @@ const server = http.createServer(async (req, res) => {
               cursor: pointer;
               transition: all 0.2s;
             }
-            .script-btn:hover:not(:disabled) {
-              border-color: #667eea;
-              background: #f5f3ff;
-              transform: translateY(-1px);
-            }
+            .script-btn:hover { border-color: #667eea; background: #f5f3ff; transform: translateY(-1px); }
             .script-btn:disabled { opacity: 0.5; cursor: not-allowed; }
             .delete-btn {
               background: #fee2e2;
@@ -710,28 +682,47 @@ const server = http.createServer(async (req, res) => {
               margin-top: 8px;
             }
             .btn-small:hover { background: #5a67d8; }
-            input[type="file"] { margin: 8px 0; }
             .metrics {
-              font-size: 0.9rem;
               background: #f1f5f9;
               border-radius: 12px;
               padding: 12px;
               margin-top: 15px;
+              display: flex;
+              gap: 20px;
+              flex-wrap: wrap;
             }
+            .history-table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 0.85rem;
+            }
+            .history-table th, .history-table td {
+              border: 1px solid #ddd;
+              padding: 8px;
+              text-align: left;
+            }
+            .history-table th {
+              background: #f1f5f9;
+              font-weight: 600;
+            }
+            .history-table tr:nth-child(even) { background: #f9f9f9; }
             .footer-links { text-align: center; margin-top: 20px; color: #94a3b8; }
             .api-link { color: #667eea; cursor: pointer; text-decoration: underline; margin: 0 8px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="card full-width">
+            <div class="card">
               <h1>🐞 爬虫控制台</h1>
-              <div class="status-bar">
-                <span class="status-indicator"></span>
-                <span id="globalStatus">${isRunning ? '运行中' : '空闲'}</span>
-                <span>队列: <span id="queueLen">${queueLen}</span></span>
-                <span>当前脚本: <span id="currentScript">${currentScript || '无'}</span></span>
-                <span>上次: ${lastRunTimeStr} ${lastRunScript}</span>
+
+              <div class="status-bar" id="statusBar">
+                <div class="status-item">
+                  <span id="statusIndicator" class="status-indicator"></span>
+                  <span id="globalStatus">空闲</span>
+                </div>
+                <div class="status-item">📋 队列: <span id="queueLen">0</span></div>
+                <div class="status-item">⚙️ 当前脚本: <span id="currentScript">无</span></div>
+                <div class="status-item">🕒 上次运行: <span id="lastRun">无</span></div>
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -750,18 +741,28 @@ const server = http.createServer(async (req, res) => {
               <h2>📡 实时执行日志</h2>
               <div class="log-box" id="logBox"></div>
 
+              <h2>📊 统计指标</h2>
               <div class="metrics">
-                <strong>📊 统计指标</strong><br>
-                总执行次数: <span id="totalExec">${stats.totalExecutions}</span> |
-                成功: <span id="successCount">${stats.successCount}</span> |
-                失败: <span id="failCount">${stats.failCount}</span> |
-                平均耗时: <span id="avgDuration">${stats.totalExecutions ? (stats.totalDurationSeconds/stats.totalExecutions).toFixed(1) : 0}</span> 秒
+                <span>总执行次数: <strong id="totalExec">${totalExecutions}</strong></span>
+                <span>✅ 成功: <strong id="successCount">${successCount}</strong></span>
+                <span>❌ 失败: <strong id="failCount">${failCount}</strong></span>
+                <span>⏱️ 平均耗时: <strong id="avgDuration">${avgDuration}</strong> 秒</span>
+              </div>
+
+              <h2>📜 最近执行记录 (最多${MAX_HISTORY}条)</h2>
+              <div style="overflow-x: auto;">
+                <table class="history-table" id="historyTable">
+                  <thead>
+                    <tr><th>序号</th><th>时间</th><th>脚本</th><th>耗时</th><th>状态</th><th>退出码</th></tr>
+                  </thead>
+                  <tbody id="historyBody">
+                    ${historyRows}
+                  </tbody>
+                </table>
               </div>
 
               <div class="footer-links">
-                <span class="api-link" data-url="/status">📊 状态</span> |
-                <span class="api-link" data-url="/history">📜 历史记录</span> |
-                <span class="api-link" data-url="/metrics">📈 Metrics</span>
+                <span class="api-link" data-url="/health">💓 健康检查</span>
               </div>
             </div>
           </div>
@@ -771,57 +772,100 @@ const server = http.createServer(async (req, res) => {
             const globalStatusSpan = document.getElementById('globalStatus');
             const queueLenSpan = document.getElementById('queueLen');
             const currentScriptSpan = document.getElementById('currentScript');
+            const lastRunSpan = document.getElementById('lastRun');
+            const statusIndicator = document.getElementById('statusIndicator');
             const stopBtn = document.getElementById('stopBtn');
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
 
-            // SSE 连接
-            const evtSource = new EventSource('/logs');
-            evtSource.onmessage = function(e) {
+            // SSE 连接（同时接收 log 和 state 事件）
+            const evtSource = new EventSource('/events');
+            evtSource.addEventListener('log', function(e) {
               const data = JSON.parse(e.data);
               const color = data.level === 'error' ? '#f87171' : (data.level === 'stderr' ? '#fbbf24' : '#a0aec0');
               const line = \`<span style="color:\${color}">[\${data.timestamp}] \${data.message}</span><br>\`;
               logBox.innerHTML += line;
               logBox.scrollTop = logBox.scrollHeight;
-            };
+            });
 
-            function updateUI() {
-              fetch('/status').then(r => r.json()).then(data => {
-                globalStatusSpan.innerText = data.crawler_running ? '运行中' : '空闲';
-                queueLenSpan.innerText = data.queue_length;
-                currentScriptSpan.innerText = data.current_script || '无';
-                document.querySelectorAll('.script-btn').forEach(btn => {
-                  btn.disabled = data.crawler_running;
-                });
-              }).catch(()=>{});
-              fetch('/metrics').then(r => r.text()).then(text => {
-                const lines = text.split('\\n');
-                let total=0, success=0, fail=0, avg=0;
-                for(let l of lines) {
-                  if(l.startsWith('crawler_total_executions')) total = parseInt(l.split(' ')[1]);
-                  if(l.startsWith('crawler_success_count')) success = parseInt(l.split(' ')[1]);
-                  if(l.startsWith('crawler_fail_count')) fail = parseInt(l.split(' ')[1]);
-                  if(l.startsWith('crawler_avg_duration_seconds')) avg = parseFloat(l.split(' ')[1]);
+            evtSource.addEventListener('state', function(e) {
+              const state = JSON.parse(e.data);
+              // 更新状态栏
+              const isRunning = state.isRunning;
+              globalStatusSpan.innerText = isRunning ? '运行中' : '空闲';
+              if (isRunning) {
+                statusIndicator.className = 'status-indicator running';
+              } else {
+                statusIndicator.className = 'status-indicator';
+              }
+              queueLenSpan.innerText = state.queueLength;
+              currentScriptSpan.innerText = state.currentScript || '无';
+              lastRunSpan.innerText = state.lastRun || '无';
+              // 更新脚本按钮禁用状态
+              document.querySelectorAll('.script-btn').forEach(btn => {
+                btn.disabled = isRunning;
+              });
+              // 如果有最新的运行结果，可以刷新历史记录（简单重新加载页面或局部更新）
+              // 为简单，直接重新加载历史记录表格
+              fetchHistoryAndUpdate();
+              fetchStatsAndUpdate();
+            });
+
+            async function fetchHistoryAndUpdate() {
+              try {
+                const res = await fetch('/history');
+                const history = await res.json();
+                const tbody = document.getElementById('historyBody');
+                if (history.length === 0) {
+                  tbody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
+                  return;
                 }
+                let html = '';
+                history.forEach((h, idx) => {
+                  html += \`
+                    <tr>
+                      <td>\${idx + 1}</td>
+                      <td>\${h.timestamp}</td>
+                      <td>\${h.script}</td>
+                      <td>\${h.duration}秒</td>
+                      <td style="color: \${h.success ? 'green' : 'red'}">\${h.success ? '成功' : '失败'}</td>
+                      <td>\${h.exitCode}</td>
+                    </tr>
+                  \`;
+                });
+                tbody.innerHTML = html;
+              } catch(e) { console.error('获取历史失败', e); }
+            }
+
+            async function fetchStatsAndUpdate() {
+              try {
+                const res = await fetch('/history');
+                const history = await res.json();
+                const total = history.length;
+                const success = history.filter(h => h.success).length;
+                const fail = total - success;
+                const avg = total ? (history.reduce((sum, h) => sum + h.duration, 0) / total).toFixed(1) : 0;
                 document.getElementById('totalExec').innerText = total;
                 document.getElementById('successCount').innerText = success;
                 document.getElementById('failCount').innerText = fail;
-                document.getElementById('avgDuration').innerText = avg.toFixed(1);
-              }).catch(()=>{});
+                document.getElementById('avgDuration').innerText = avg;
+              } catch(e) {}
             }
 
             async function runScript(scriptName, btn) {
-              if (!btn.disabled) {
-                const originalText = btn.innerText;
-                btn.innerText = '⏳ 排队中…';
-                btn.disabled = true;
-                try {
-                  const res = await fetch('/run/' + scriptName, { method: 'POST' });
-                  const data = await res.json();
-                  alert(\`脚本 \${scriptName} 执行完成\\n退出码: \${data.result.exitCode}\\n耗时: \${data.result.duration}秒\`);
-                } catch(err) { alert('请求失败: '+err.message); }
-                finally { btn.innerText = originalText; updateUI(); }
+              if (btn.disabled) return;
+              const originalText = btn.innerText;
+              btn.innerText = '⏳ 排队中…';
+              btn.disabled = true;
+              try {
+                const res = await fetch('/run/' + scriptName, { method: 'POST' });
+                const data = await res.json();
+                alert(\`脚本 \${scriptName} 执行完成\\n退出码: \${data.result.exitCode}\\n耗时: \${data.result.duration}秒\`);
+              } catch(err) { alert('请求失败: '+err.message); }
+              finally {
+                btn.innerText = originalText;
+                // 按钮禁用状态由 state 事件控制，无需手动修改
               }
             }
 
@@ -839,7 +883,6 @@ const server = http.createServer(async (req, res) => {
               const res = await fetch('/stop', { method: 'POST' });
               const data = await res.json();
               alert(data.message);
-              updateUI();
             };
 
             uploadBtn.onclick = async () => {
@@ -874,8 +917,9 @@ const server = http.createServer(async (req, res) => {
               });
             });
 
-            setInterval(updateUI, 3000);
-            updateUI();
+            // 初始化：加载一次历史和统计
+            fetchHistoryAndUpdate();
+            fetchStatsAndUpdate();
           </script>
         </body>
       </html>
@@ -909,7 +953,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /logs, /history, /metrics`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /events, /history`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
 });
 
