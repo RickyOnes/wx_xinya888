@@ -599,6 +599,11 @@ const server = http.createServer(async (req, res) => {
               border-radius: 40px;
               padding: 15px 25px;
               display: flex;
+              flex-direction: column;
+              gap: 12px;
+            }
+            .status-row {
+              display: flex;
               align-items: center;
               gap: 25px;
               flex-wrap: wrap;
@@ -716,13 +721,18 @@ const server = http.createServer(async (req, res) => {
               <h1>🐞 爬虫控制台</h1>
 
               <div class="status-bar" id="statusBar">
-                <div class="status-item">
-                  <span id="statusIndicator" class="status-indicator"></span>
-                  <span id="globalStatus">空闲</span>
+                <div class="status-row">
+                  <div class="status-item">
+                    <span id="statusIndicator" class="status-indicator"></span>
+                    <span id="globalStatus">空闲</span>
+                  </div>
+                  <div class="status-item">📋 队列: <span id="queueLen">0</span></div>
+                  <div class="status-item">⚙️ 当前脚本: <span id="currentScript">无</span></div>
+                  <div class="status-item">🕒 上次运行: <span id="lastRun">无</span></div>
                 </div>
-                <div class="status-item">📋 队列: <span id="queueLen">0</span></div>
-                <div class="status-item">⚙️ 当前脚本: <span id="currentScript">无</span></div>
-                <div class="status-item">🕒 上次运行: <span id="lastRun">无</span></div>
+                <div class="status-row">
+                  <div class="status-item">💚 健康状态: <span id="healthStatus">检查中...</span></div>
+                </div>
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -762,7 +772,7 @@ const server = http.createServer(async (req, res) => {
               </div>
 
               <div class="footer-links">
-                <span class="api-link" data-url="/health">💓 健康检查</span>
+                <!-- 健康检查按钮已移除，状态栏已显示健康状态 -->
               </div>
             </div>
           </div>
@@ -774,43 +784,70 @@ const server = http.createServer(async (req, res) => {
             const currentScriptSpan = document.getElementById('currentScript');
             const lastRunSpan = document.getElementById('lastRun');
             const statusIndicator = document.getElementById('statusIndicator');
+            const healthStatusSpan = document.getElementById('healthStatus');
             const stopBtn = document.getElementById('stopBtn');
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
 
-            // SSE 连接（同时接收 log 和 state 事件）
-            const evtSource = new EventSource('/events');
-            evtSource.addEventListener('log', function(e) {
-              const data = JSON.parse(e.data);
-              const color = data.level === 'error' ? '#f87171' : (data.level === 'stderr' ? '#fbbf24' : '#a0aec0');
-              const line = \`<span style="color:\${color}">[\${data.timestamp}] \${data.message}</span><br>\`;
-              logBox.innerHTML += line;
-              logBox.scrollTop = logBox.scrollHeight;
-            });
+            let reconnectTimer = null;
 
-            evtSource.addEventListener('state', function(e) {
-              const state = JSON.parse(e.data);
-              // 更新状态栏
-              const isRunning = state.isRunning;
-              globalStatusSpan.innerText = isRunning ? '运行中' : '空闲';
-              if (isRunning) {
-                statusIndicator.className = 'status-indicator running';
-              } else {
-                statusIndicator.className = 'status-indicator';
+            // 更新健康状态（每30秒）
+            async function updateHealthStatus() {
+              try {
+                const res = await fetch('/health');
+                const data = await res.json();
+                healthStatusSpan.innerText = data.status === 'ok' ? '正常' : '异常';
+              } catch (e) {
+                healthStatusSpan.innerText = '无法连接';
               }
-              queueLenSpan.innerText = state.queueLength;
-              currentScriptSpan.innerText = state.currentScript || '无';
-              lastRunSpan.innerText = state.lastRun || '无';
-              // 更新脚本按钮禁用状态
-              document.querySelectorAll('.script-btn').forEach(btn => {
-                btn.disabled = isRunning;
+            }
+
+            // SSE 连接（自动重连）
+            function connectSSE() {
+              const evtSource = new EventSource('/events');
+              
+              evtSource.addEventListener('log', function(e) {
+                try {
+                  const data = JSON.parse(e.data);
+                  const color = data.level === 'error' ? '#f87171' : (data.level === 'stderr' ? '#fbbf24' : '#a0aec0');
+                  const line = \`<span style="color:\${color}">[\${data.timestamp}] \${data.message}</span><br>\`;
+                  logBox.innerHTML += line;
+                  logBox.scrollTop = logBox.scrollHeight;
+                } catch(err) { console.error('解析日志错误', err); }
               });
-              // 如果有最新的运行结果，可以刷新历史记录（简单重新加载页面或局部更新）
-              // 为简单，直接重新加载历史记录表格
-              fetchHistoryAndUpdate();
-              fetchStatsAndUpdate();
-            });
+
+              evtSource.addEventListener('state', function(e) {
+                try {
+                  const state = JSON.parse(e.data);
+                  const isRunning = state.isRunning;
+                  globalStatusSpan.innerText = isRunning ? '运行中' : '空闲';
+                  if (isRunning) {
+                    statusIndicator.className = 'status-indicator running';
+                  } else {
+                    statusIndicator.className = 'status-indicator';
+                  }
+                  queueLenSpan.innerText = state.queueLength;
+                  currentScriptSpan.innerText = state.currentScript || '无';
+                  lastRunSpan.innerText = state.lastRun || '无';
+                  // 更新脚本按钮禁用状态
+                  document.querySelectorAll('.script-btn').forEach(btn => {
+                    btn.disabled = isRunning;
+                  });
+                  // 刷新历史和统计
+                  fetchHistoryAndUpdate();
+                  fetchStatsAndUpdate();
+                } catch(err) { console.error('解析状态错误', err); }
+              });
+
+              evtSource.onerror = function(err) {
+                console.error('SSE连接错误，5秒后重连', err);
+                evtSource.close();
+                if (reconnectTimer) clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(() => connectSSE(), 5000);
+                healthStatusSpan.innerText = '连接断开，重连中...';
+              };
+            }
 
             async function fetchHistoryAndUpdate() {
               try {
@@ -908,16 +945,13 @@ const server = http.createServer(async (req, res) => {
                 deleteScript(script);
               });
             });
-            document.querySelectorAll('.api-link').forEach(span => {
-              span.addEventListener('click', async (e) => {
-                const url = e.target.dataset.url;
-                const res = await fetch(url);
-                const data = await res.text();
-                alert(data);
-              });
-            });
 
-            // 初始化：加载一次历史和统计
+            // 启动 SSE 连接
+            connectSSE();
+            // 健康状态定时更新（每30秒）
+            updateHealthStatus();
+            setInterval(updateHealthStatus, 30000);
+            // 初始加载历史和统计
             fetchHistoryAndUpdate();
             fetchStatsAndUpdate();
           </script>
@@ -955,6 +989,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /events, /history`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
+  console.log(`⚠️ 重要：请确保 proxy.js 已将 /events 加入 API 路由列表，否则 SSE 将无法工作。`);
 });
 
 process.on('SIGINT', () => server.close(() => process.exit(0)));

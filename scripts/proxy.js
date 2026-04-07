@@ -37,20 +37,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 所有 API 路径都代理到 trigger-server.js
-  const apiPaths = ['/trigger', '/status', '/health', '/history', '/metrics', '/logs', '/stop', '/upload'];
+  // API 路径列表（包括 /events）
+  const apiPaths = ['/trigger', '/status', '/health', '/history', '/logs', '/stop', '/upload', '/events'];
   if (apiPaths.includes(pathname) || pathname.startsWith('/run/') || pathname.startsWith('/script/')) {
     console.log(`[Proxy] API request: ${pathname}`);
     proxy.web(req, res, { target: API_TARGET });
     return;
   }
 
-  // 其余请求（VNC 相关）代理到 noVNC
+  // 其余请求（VNC）
   console.log(`[Proxy] VNC request: ${pathname}`);
   proxy.web(req, res, { target: VNC_TARGET });
 });
 
-// WebSocket 升级（用于 noVNC）
 server.on('upgrade', (req, socket, head) => {
   const pathname = req.url.split('?')[0];
   console.log(`[Proxy] WebSocket upgrade: ${pathname}`);
