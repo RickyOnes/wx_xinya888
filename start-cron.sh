@@ -22,6 +22,12 @@ set -e
 # - TRIGGER_PORT: HTTP触发服务器端口（默认：3000）
 # - RUN_CRAWLER: 容器启动时是否立即运行爬虫（默认：false）
 
+# 强制设置输入法环境变量（对当前 shell 及后续所有进程有效）
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+export DEFAULT_IM=fcitx
+
 echo "=== 启动 Xvfb ==="
 Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
 export DISPLAY=:99
@@ -47,34 +53,24 @@ dbus-daemon --system --fork
 echo "=== 启动会话 D-Bus ==="
 dbus-launch --exit-with-session &
 
-echo "=== 启动桌面环境 (xfce4) ==="
-startxfce4 &
+echo "=== 启动 Fcitx 输入法 ==="
+# 等待 D-Bus 就绪
 sleep 2
-
-echo "=== 配置并启动 Fcitx 输入法（五笔拼音） ==="
-# 创建自动启动目录
+# 如果用户主目录还没有 .config/fcitx，从 /etc/skel 复制
+if [ ! -d /app/puppeteer_user_data/.config/fcitx ]; then
+    mkdir -p /app/puppeteer_user_data/.config
+    cp -r /etc/skel/.config/fcitx /app/puppeteer_user_data/.config/
+fi
+# 确保自动启动目录存在
 mkdir -p /app/puppeteer_user_data/.config/autostart
-cat > /app/puppeteer_user_data/.config/autostart/fcitx.desktop << EOF
-[Desktop Entry]
-Type=Application
-Name=Fcitx
-Exec=fcitx
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-EOF
-
+cp /usr/share/applications/fcitx.desktop /app/puppeteer_user_data/.config/autostart/ 2>/dev/null || true
 # 启动 Fcitx
 fcitx -d 2>/dev/null || true
 sleep 2
 
-# 配置默认输入法为五笔拼音
-mkdir -p /app/puppeteer_user_data/.config/fcitx
-cat > /app/puppeteer_user_data/.config/fcitx/profile << EOF
-[Profile]
-IMName=五笔拼音
-EnabledIMList=fcitx-keyboard-en-us:True,wbpy:True
-EOF
+echo "=== 启动桌面环境 (xfce4) ==="
+startxfce4 &
+sleep 3
 
 echo "=== 设置 VNC 密码并启动 VNC ==="
 mkdir -p ~/.vnc

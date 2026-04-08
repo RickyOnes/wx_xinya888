@@ -5,7 +5,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     LANG=zh_CN.UTF-8 \
     LANGUAGE=zh_CN:zh \
-    LC_ALL=zh_CN.UTF-8
+    LC_ALL=zh_CN.UTF-8 \
+    GTK_IM_MODULE=fcitx \
+    QT_IM_MODULE=fcitx \
+    XMODIFIERS=@im=fcitx
 
 # 安装基础工具、桌面环境、Chrome、xvfb、VNC、中文支持、五笔输入法
 RUN apt-get update && apt-get install -y \
@@ -28,6 +31,8 @@ RUN apt-get update && apt-get install -y \
     fcitx-frontend-qt5 \
     fcitx-config-gtk \
     locales \
+    iso-codes \
+    fcitx-ui-classic \
     --no-install-recommends \
     && locale-gen zh_CN.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -53,6 +58,12 @@ RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
 
 # 将用户主目录重定向到持久化挂载点
 ENV HOME=/app/puppeteer_user_data
+
+# 预配置 Fcitx 输入法（直接写入默认配置文件）
+RUN mkdir -p /etc/skel/.config/fcitx && \
+    echo "[Profile]\nIMName=五笔拼音\nEnabledIMList=fcitx-keyboard-en-us:True,wbpy:True" > /etc/skel/.config/fcitx/profile && \
+    mkdir -p /etc/skel/.config/autostart && \
+    cp /usr/share/applications/fcitx.desktop /etc/skel/.config/autostart/
 
 WORKDIR /app
 
