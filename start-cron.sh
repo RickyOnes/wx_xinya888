@@ -36,9 +36,12 @@ if [ ! -e /tmp/.X11-unix/X99 ]; then
 fi
 
 echo "=== 启动 D-Bus（系统总线） ==="
+# 确保 /run/dbus 目录存在且权限正确
+mkdir -p /run/dbus
+chown messagebus:messagebus /run/dbus 2>/dev/null || true
 # 清理可能残留的 D-Bus 文件
-rm -rf /var/run/dbus/* || true
-# 启动系统 D-Bus 守护进程（Chrome 和 Fcitx 需要）
+rm -rf /run/dbus/* || true
+# 启动系统 D-Bus 守护进程
 dbus-daemon --system --fork
 
 echo "=== 启动会话 D-Bus ==="
