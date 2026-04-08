@@ -16,11 +16,16 @@ proxy.on('error', (err, req, res) => {
   }
 });
 
+// 忽略这些高频 API 路径的日志
+const silentApiPaths = ['/history', '/health', '/events'];
+// 忽略这些 VNC 路径的日志
+const silentVncPaths = ['/favicon.ico'];
+
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
   const pathname = url.split('?')[0];
 
-  // 根路径返回导航页
+  // 根路径导航页
   if (pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
@@ -37,19 +42,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API 路径列表（包括 /events）
+  // API 路径列表（必须包含 /events）
   const apiPaths = ['/trigger', '/status', '/health', '/history', '/logs', '/stop', '/upload', '/events'];
   if (apiPaths.includes(pathname) || pathname.startsWith('/run/') || pathname.startsWith('/script/')) {
-    console.log(`[Proxy] API request: ${pathname}`);
+    // 只打印非静默的 API 请求
+    if (!silentApiPaths.includes(pathname)) {
+      console.log(`[Proxy] API request: ${pathname}`);
+    }
     proxy.web(req, res, { target: API_TARGET });
     return;
   }
 
-  // 其余请求（VNC）
-  console.log(`[Proxy] VNC request: ${pathname}`);
+  // VNC 请求
+  if (!silentVncPaths.includes(pathname)) {
+    console.log(`[Proxy] VNC request: ${pathname}`);
+  }
   proxy.web(req, res, { target: VNC_TARGET });
 });
 
+// WebSocket 升级（用于 noVNC）
 server.on('upgrade', (req, socket, head) => {
   const pathname = req.url.split('?')[0];
   console.log(`[Proxy] WebSocket upgrade: ${pathname}`);

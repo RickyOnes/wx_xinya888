@@ -2,9 +2,12 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=Asia/Shanghai
+    TZ=Asia/Shanghai \
+    LANG=zh_CN.UTF-8 \
+    LANGUAGE=zh_CN:zh \
+    LC_ALL=zh_CN.UTF-8
 
-# 安装基础工具、桌面环境、Chrome、xvfb、VNC 相关
+# 安装基础工具、桌面环境、Chrome、xvfb、VNC、中文支持、五笔输入法
 RUN apt-get update && apt-get install -y \
     wget curl gnupg ca-certificates \
     fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
@@ -17,8 +20,14 @@ RUN apt-get update && apt-get install -y \
     xvfb fonts-wqy-zenhei \
     xfce4 xfce4-terminal dbus-x11 sudo git unzip \
     net-tools \
-    # VNC 相关
     x11vnc \
+    # 输入法相关
+    fcitx \
+    fcitx-table-wbpy \
+    fcitx-frontend-gtk2 \
+    fcitx-frontend-gtk3 \
+    fcitx-frontend-qt5 \
+    fcitx-config-gtk \
     --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -29,17 +38,8 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ---------- 中文支持、nano、Chrome 参数 ----------
-RUN apt-get update && apt-get install -y nano locales \
-    && locale-gen zh_CN.UTF-8 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-ENV LANG=zh_CN.UTF-8
-ENV LC_ALL=zh_CN.UTF-8
-
-# 修改 Chrome 系统快捷方式，添加 --no-sandbox
+# 设置 Chrome 快捷方式添加 --no-sandbox
 RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox/' /usr/share/applications/google-chrome.desktop
-# -------------------------------------------------
 
 # 安装 Node.js 24
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
@@ -50,13 +50,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
 
-# ---------- 关键：将用户主目录重定向到持久化挂载点 ----------
+# 将用户主目录重定向到持久化挂载点
 ENV HOME=/app/puppeteer_user_data
-# ---------------------------------------------------------
 
 WORKDIR /app
 
-# 复制爬虫相关文件（package-cron.json 和所有脚本）
+# 复制爬虫相关文件
 COPY package-cron.json ./package.json
 RUN npm install
 
