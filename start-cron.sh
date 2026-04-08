@@ -22,11 +22,8 @@ set -e
 # - TRIGGER_PORT: HTTP触发服务器端口（默认：3000）
 # - RUN_CRAWLER: 容器启动时是否立即运行爬虫（默认：false）
 
-# 强制设置输入法环境变量（对当前 shell 及后续所有进程有效）
-export GTK_IM_MODULE=fcitx
-export QT_IM_MODULE=fcitx
-export XMODIFIERS=@im=fcitx
-export DEFAULT_IM=fcitx
+# 加载全局环境变量（确保 fcitx 生效）
+source /etc/profile.d/fcitx.sh
 
 echo "=== 启动 Xvfb ==="
 Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
@@ -42,31 +39,32 @@ if [ ! -e /tmp/.X11-unix/X99 ]; then
 fi
 
 echo "=== 启动 D-Bus（系统总线） ==="
-# 确保 /run/dbus 目录存在且权限正确
 mkdir -p /run/dbus
 chown messagebus:messagebus /run/dbus 2>/dev/null || true
-# 清理可能残留的 D-Bus 文件
 rm -rf /run/dbus/* || true
-# 启动系统 D-Bus 守护进程
 dbus-daemon --system --fork
 
 echo "=== 启动会话 D-Bus ==="
 dbus-launch --exit-with-session &
 
 echo "=== 启动 Fcitx 输入法 ==="
-# 等待 D-Bus 就绪
 sleep 2
-# 如果用户主目录还没有 .config/fcitx，从 /etc/skel 复制
+
+# 确保用户目录有正确的配置（从 /etc/skel 复制）
 if [ ! -d /app/puppeteer_user_data/.config/fcitx ]; then
     mkdir -p /app/puppeteer_user_data/.config
     cp -r /etc/skel/.config/fcitx /app/puppeteer_user_data/.config/
 fi
-# 确保自动启动目录存在
 mkdir -p /app/puppeteer_user_data/.config/autostart
 cp /usr/share/applications/fcitx.desktop /app/puppeteer_user_data/.config/autostart/ 2>/dev/null || true
-# 启动 Fcitx
+
+# 启动 Fcitx（如果已运行则先杀掉）
+pkill fcitx 2>/dev/null || true
 fcitx -d 2>/dev/null || true
-sleep 2
+sleep 3
+
+# 强制设置当前会话的输入法为五笔拼音
+fcitx-remote -s wbpy 2>/dev/null || true
 
 echo "=== 启动桌面环境 (xfce4) ==="
 startxfce4 &

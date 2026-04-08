@@ -5,10 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     LANG=zh_CN.UTF-8 \
     LANGUAGE=zh_CN:zh \
-    LC_ALL=zh_CN.UTF-8 \
-    GTK_IM_MODULE=fcitx \
-    QT_IM_MODULE=fcitx \
-    XMODIFIERS=@im=fcitx
+    LC_ALL=zh_CN.UTF-8
 
 # 安装基础工具、桌面环境、Chrome、xvfb、VNC、中文支持、五笔输入法
 RUN apt-get update && apt-get install -y \
@@ -30,9 +27,15 @@ RUN apt-get update && apt-get install -y \
     fcitx-frontend-gtk3 \
     fcitx-frontend-qt5 \
     fcitx-config-gtk \
+    fcitx-ui-classic \
     locales \
     iso-codes \
-    fcitx-ui-classic \
+    adwaita-icon-theme \
+    gnome-icon-theme \
+    elementary-xfce-icon-theme \
+    gtk2-engines-pixbuf \
+    libgtk2.0-0 \
+    libgtk-3-0 \
     --no-install-recommends \
     && locale-gen zh_CN.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -44,8 +47,8 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 设置 Chrome 快捷方式添加 --no-sandbox
-RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox/' /usr/share/applications/google-chrome.desktop
+# 设置 Chrome 快捷方式添加 --no-sandbox 和输入法支持
+RUN sed -i 's/Exec=\/usr\/bin\/google-chrome-stable/Exec=\/usr\/bin\/google-chrome-stable --no-sandbox --enable-wayland-ime --force-device-scale-factor=1 --disable-gpu --disable-webgl/' /usr/share/applications/google-chrome.desktop
 
 # 安装 Node.js 24
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
@@ -59,11 +62,18 @@ RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
 # 将用户主目录重定向到持久化挂载点
 ENV HOME=/app/puppeteer_user_data
 
-# 预配置 Fcitx 输入法（直接写入默认配置文件）
+# 预配置 Fcitx 输入法（直接写入默认配置文件，删除 Unknown）
 RUN mkdir -p /etc/skel/.config/fcitx && \
     echo "[Profile]\nIMName=五笔拼音\nEnabledIMList=fcitx-keyboard-en-us:True,wbpy:True" > /etc/skel/.config/fcitx/profile && \
     mkdir -p /etc/skel/.config/autostart && \
     cp /usr/share/applications/fcitx.desktop /etc/skel/.config/autostart/
+
+# 全局环境变量文件，确保所有图形应用都能加载 fcitx
+RUN echo 'export GTK_IM_MODULE=fcitx' > /etc/profile.d/fcitx.sh && \
+    echo 'export QT_IM_MODULE=fcitx' >> /etc/profile.d/fcitx.sh && \
+    echo 'export XMODIFIERS=@im=fcitx' >> /etc/profile.d/fcitx.sh && \
+    echo 'export DEFAULT_IM=fcitx' >> /etc/profile.d/fcitx.sh && \
+    chmod +x /etc/profile.d/fcitx.sh
 
 WORKDIR /app
 
