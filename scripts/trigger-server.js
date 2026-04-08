@@ -16,7 +16,6 @@ const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
 const MAX_HISTORY = 30;
 const MAX_LOG_DAYS = 30;
 
-// 脚本显示名称映射
 const SCRIPT_DISPLAY_NAMES = {
   'quick-plan-update.js': '【快速更新密钥】',
   'update-pdd.js': '【旧版更新密钥】',
@@ -30,7 +29,6 @@ function getDisplayName(scriptFileName) {
   return SCRIPT_DISPLAY_NAMES[scriptFileName] || scriptFileName.replace(/\.js$/, '');
 }
 
-// ---------- 全局状态 ----------
 let isRunning = false;
 let currentScript = null;
 let currentChild = null;
@@ -38,14 +36,9 @@ let currentTimeout = null;
 let taskQueue = [];
 let lastRunResult = null;
 let lastRunTime = null;
-
-// 历史记录（内存），每条记录包含开始时间、脚本、耗时、成功状态、退出码
 let history = [];
-
-// SSE 客户端列表
 let sseClients = [];
 
-// ---------- 辅助函数 ----------
 function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
@@ -69,7 +62,7 @@ function broadcastState() {
       script: lastRunResult.script,
       success: lastRunResult.success,
       duration: lastRunResult.duration,
-      timestamp: lastRunResult.timestamp   // 这是开始时间
+      timestamp: lastRunResult.timestamp
     } : null
   };
   sendSSE('state', state);
@@ -103,10 +96,9 @@ async function cleanOldLogs() {
   }
 }
 
-// 添加历史记录（使用开始时间、脚本名、耗时、成功标志、退出码）
 function addToHistory(script, startTimeStr, duration, success, exitCode) {
   const record = {
-    timestamp: startTimeStr,   // 脚本开始时间（北京时间字符串）
+    timestamp: startTimeStr,
     script,
     duration,
     success,
@@ -114,11 +106,9 @@ function addToHistory(script, startTimeStr, duration, success, exitCode) {
   };
   history.unshift(record);
   if (history.length > MAX_HISTORY) history.pop();
-  // 持久化
   appendHistoryLog(record);
 }
 
-// 执行脚本的核心函数（实际运行）
 function runScriptTask(scriptName, resolve, reject) {
   if (currentChild) {
     reject(new Error('已有脚本在运行，但队列机制应防止此情况'));
@@ -192,7 +182,6 @@ function runScriptTask(scriptName, resolve, reject) {
 
       addToHistory(scriptName, startTimeStr, duration, success, code);
       broadcastState();
-
       resolve(result);
       runNext();
     });
@@ -282,7 +271,7 @@ async function getAvailableScripts() {
         if (!scriptMap.has(file)) scriptMap.set(file, SCRIPTS_DIR);
       }
     }
-  } catch (err) { /* 忽略 */ }
+  } catch (err) { }
   try {
     const userFiles = await fs.readdir(USER_DATA_SCRIPTS_DIR);
     for (const file of userFiles) {
@@ -297,7 +286,7 @@ async function getAvailableScripts() {
 
 async function getScriptPath(scriptName) {
   const mainPath = path.join(SCRIPTS_DIR, scriptName);
-  try { await fs.access(mainPath); return mainPath; } catch { /* */ }
+  try { await fs.access(mainPath); return mainPath; } catch { }
   const userPath = path.join(USER_DATA_SCRIPTS_DIR, scriptName);
   try { await fs.access(userPath); return userPath; } catch { return null; }
 }
@@ -325,7 +314,6 @@ async function loadHistoryFromFile() {
   }
 }
 
-// ---------- HTTP 服务器 ----------
 const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
@@ -351,21 +339,12 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 健康检查
   if (pathname === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      service: 'crawler-trigger',
-      port: PORT,
-      crawler_running: isRunning,
-      current_script: currentScript,
-      last_run: lastRunTime ? beijingTime(lastRunTime) : null
-    }));
+    res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
     return;
   }
 
-  // 状态查询（兼容）
   if (pathname === '/status' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -384,14 +363,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 历史记录
   if (pathname === '/history' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(history));
     return;
   }
 
-  // 触发脚本（加入队列）
   if (pathname.startsWith('/run/') && method === 'POST') {
     const scriptName = pathname.substring(5);
     if (!scriptName || !scriptName.endsWith('.js')) {
@@ -420,7 +397,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
     const result = await queueScript('update-pdd-cron.js');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -437,7 +413,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 终止脚本
   if (pathname === '/stop' && method === 'POST') {
     const result = await stopCurrentScript();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -445,22 +420,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 上传脚本（适配 busboy@1.6.0）----------
+  // 上传脚本（适配 busboy@1.6.0）
   if (pathname === '/upload' && method === 'POST') {
     const busboy = Busboy({ headers: req.headers, limits: { fileSize: 10 * 1024 * 1024 } });
     let savedFile = null;
     let errorMsg = null;
 
     busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-      // busboy@1.6.0 的回调参数顺序为 (fieldname, file, filename, encoding, mimetype)
-      // filename 可能是字符串或 null，需要转换
       let safeFilename = '';
       if (filename && typeof filename === 'string') safeFilename = filename.trim();
       else if (filename) safeFilename = filename.toString().trim();
 
       if (!safeFilename || !safeFilename.endsWith('.js')) {
         file.resume();
-        errorMsg = '只允许上传 .js 文件';
+        errorMsg = `只允许上传 .js 文件，收到: "${safeFilename || '空'}"`;
         return;
       }
       const baseName = path.basename(safeFilename);
@@ -470,14 +443,14 @@ const server = http.createServer(async (req, res) => {
       savedFile = { success: true, filename: baseName, path: savePath };
       writeStream.on('error', (err) => {
         console.error('写入文件失败:', err);
-        errorMsg = '文件写入失败';
+        errorMsg = '文件写入失败: ' + err.message;
         savedFile = null;
       });
     });
 
     busboy.on('error', (err) => {
       console.error('Busboy 解析错误:', err);
-      errorMsg = '上传解析失败';
+      errorMsg = '上传解析失败: ' + err.message;
     });
 
     busboy.on('finish', () => {
@@ -497,7 +470,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- 删除脚本（安全增强）----------
+  // 删除脚本
   if (pathname.startsWith('/script/') && method === 'DELETE') {
     const filename = pathname.substring(9);
     if (!filename || !filename.endsWith('.js')) {
@@ -531,7 +504,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // SSE 实时日志和状态
   if (pathname === '/events' && method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -558,7 +530,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Web 界面（完整版）
+  // Web 界面
   if (pathname === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => {
@@ -736,6 +708,26 @@ const server = http.createServer(async (req, res) => {
               font-weight: 600;
             }
             .history-table tr:nth-child(even) { background: #f9f9f9; }
+            .message-area {
+              margin-top: 20px;
+              padding: 10px;
+              background: #fff3cd;
+              border-left: 4px solid #ffc107;
+              color: #856404;
+              font-size: 0.9rem;
+              border-radius: 8px;
+              display: none;
+            }
+            .message-area.error {
+              background: #f8d7da;
+              border-left-color: #dc3545;
+              color: #721c24;
+            }
+            .message-area.success {
+              background: #d4edda;
+              border-left-color: #28a745;
+              color: #155724;
+            }
             .footer-links { text-align: center; margin-top: 20px; color: #94a3b8; }
             .api-link { color: #667eea; cursor: pointer; text-decoration: underline; margin: 0 8px; }
           </style>
@@ -785,7 +777,7 @@ const server = http.createServer(async (req, res) => {
               </div>
 
               <h2>📜 最近执行记录 (最多${MAX_HISTORY}条)</h2>
-              <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;">
+              <div style="overflow-x: auto; max-height: 350px; overflow-y: auto;">
                 <table class="history-table" id="historyTable">
                   <thead>
                     <tr><th>序号</th><th>时间</th><th>脚本</th><th>耗时</th><th>状态</th><th>退出码</th></tr>
@@ -796,8 +788,8 @@ const server = http.createServer(async (req, res) => {
                 </table>
               </div>
 
-              <div class="footer-links">
-              </div>
+              <div id="messageArea" class="message-area"></div>
+              <div class="footer-links"></div>
             </div>
           </div>
 
@@ -813,6 +805,16 @@ const server = http.createServer(async (req, res) => {
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
+            const messageArea = document.getElementById('messageArea');
+
+            function showMessage(msg, type = 'info') {
+              messageArea.textContent = msg;
+              messageArea.className = 'message-area ' + (type === 'error' ? 'error' : (type === 'success' ? 'success' : ''));
+              messageArea.style.display = 'block';
+              setTimeout(() => {
+                messageArea.style.display = 'none';
+              }, 5000);
+            }
 
             let reconnectTimer = null;
 
@@ -917,9 +919,14 @@ const server = http.createServer(async (req, res) => {
               try {
                 const res = await fetch('/run/' + scriptName, { method: 'POST' });
                 const data = await res.json();
-                alert(\`脚本 \${scriptName} 执行完成\\n退出码: \${data.result.exitCode}\\n耗时: \${data.result.duration}秒\`);
-              } catch(err) { alert('请求失败: '+err.message); }
-              finally {
+                if (data.result) {
+                  showMessage(\`脚本 \${scriptName} 执行完成，退出码: \${data.result.exitCode}，耗时 \${data.result.duration} 秒\`, data.result.success ? 'success' : 'error');
+                } else {
+                  showMessage(data.message || '执行完成', 'info');
+                }
+              } catch(err) {
+                showMessage('请求失败: ' + err.message, 'error');
+              } finally {
                 btn.innerText = originalText;
               }
             }
@@ -927,28 +934,42 @@ const server = http.createServer(async (req, res) => {
             async function deleteScript(scriptName) {
               if(!confirm(\`确定删除脚本 \${scriptName} 吗？\`)) return;
               try {
-                const res = await fetch('/script/' + scriptName, { method: 'DELETE' });
+                const res = await fetch('/script/' + encodeURIComponent(scriptName), { method: 'DELETE' });
                 const data = await res.json();
-                alert(data.message || data.error);
-                if (data.message) location.reload();
-              } catch(err) { alert('删除失败: '+err.message); }
+                if (data.message) {
+                  showMessage(data.message, 'success');
+                  location.reload();
+                } else {
+                  showMessage(data.error || '删除失败', 'error');
+                }
+              } catch(err) {
+                showMessage('删除失败: ' + err.message, 'error');
+              }
             }
 
             stopBtn.onclick = async () => {
               const res = await fetch('/stop', { method: 'POST' });
               const data = await res.json();
-              alert(data.message);
+              showMessage(data.message, data.success ? 'success' : 'error');
             };
 
             uploadBtn.onclick = async () => {
               const file = uploadFile.files[0];
-              if(!file) { uploadMsg.innerText = '请选择文件'; return; }
+              if(!file) { showMessage('请选择文件', 'error'); return; }
               const formData = new FormData();
               formData.append('script', file);
-              const res = await fetch('/upload', { method: 'POST', body: formData });
-              const data = await res.json();
-              uploadMsg.innerText = data.message || data.error;
-              if(data.message) setTimeout(()=>location.reload(), 1000);
+              try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.message) {
+                  showMessage(data.message, 'success');
+                  setTimeout(()=>location.reload(), 1000);
+                } else {
+                  showMessage(data.error || '上传失败', 'error');
+                }
+              } catch(err) {
+                showMessage('上传请求失败: ' + err.message, 'error');
+              }
             };
 
             document.querySelectorAll('.script-btn').forEach(btn => {
@@ -980,7 +1001,6 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: '端点未找到' }));
 });
 
-// ---------- 定时任务 ----------
 cron.schedule('15 6,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
   console.log(`[${beijingTime()}] 定时任务触发，执行 quick-plan-update.js`);
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
