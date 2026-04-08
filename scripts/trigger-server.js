@@ -13,8 +13,8 @@ const API_KEY = process.env.API_KEY || '';
 const SCRIPTS_DIR = '/app/scripts';
 const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
-const MAX_HISTORY = 30;          // 内存中保留最近30条记录
-const MAX_LOG_DAYS = 30;          // 日志文件保留30天
+const MAX_HISTORY = 30;
+const MAX_LOG_DAYS = 30;
 
 // 脚本显示名称映射
 const SCRIPT_DISPLAY_NAMES = {
@@ -39,7 +39,7 @@ let taskQueue = [];
 let lastRunResult = null;
 let lastRunTime = null;
 
-// 历史记录（内存）
+// 历史记录（内存），每条记录包含开始时间、脚本、耗时、成功状态、退出码
 let history = [];
 
 // SSE 客户端列表
@@ -50,7 +50,6 @@ function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
 
-// 广播所有事件
 function sendSSE(event, data) {
   const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   sseClients.forEach(client => client.write(message));
@@ -60,7 +59,6 @@ function broadcastLog(level, message) {
   sendSSE('log', { level, message, timestamp: beijingTime() });
 }
 
-// 广播状态变化（运行状态、当前脚本、队列长度、上次运行结果）
 function broadcastState() {
   const state = {
     isRunning,
@@ -71,13 +69,12 @@ function broadcastState() {
       script: lastRunResult.script,
       success: lastRunResult.success,
       duration: lastRunResult.duration,
-      timestamp: lastRunResult.timestamp
+      timestamp: lastRunResult.timestamp   // 这是开始时间
     } : null
   };
   sendSSE('state', state);
 }
 
-// 记录到持久化日志文件（仅追加）
 async function appendHistoryLog(entry) {
   const line = `${entry.timestamp} | ${entry.script} | 耗时:${entry.duration}s | ${entry.success ? '成功' : '失败'} | 退出码:${entry.exitCode}\n`;
   try {
@@ -87,7 +84,6 @@ async function appendHistoryLog(entry) {
   }
 }
 
-// 清理超过 MAX_LOG_DAYS 天的旧日志（每天执行一次）
 async function cleanOldLogs() {
   try {
     const content = await fs.readFile(LOG_FILE, 'utf8');
@@ -107,10 +103,10 @@ async function cleanOldLogs() {
   }
 }
 
-// 添加到内存历史
-function addToHistory(script, duration, success, exitCode) {
+// 添加历史记录（使用开始时间、脚本名、耗时、成功标志、退出码）
+function addToHistory(script, startTimeStr, duration, success, exitCode) {
   const record = {
-    timestamp: beijingTime(),
+    timestamp: startTimeStr,   // 脚本开始时间（北京时间字符串）
     script,
     duration,
     success,
@@ -131,10 +127,11 @@ function runScriptTask(scriptName, resolve, reject) {
 
   isRunning = true;
   currentScript = scriptName;
-  broadcastState();  // 推送状态变化
+  broadcastState();
   const startTime = Date.now();
+  const startTimeStr = beijingTime(new Date(startTime));
   console.log("==========================================");
-  console.log(`[${beijingTime()}] 开始执行脚本: ${scriptName}`);
+  console.log(`[${startTimeStr}] 开始执行脚本: ${scriptName}`);
   broadcastLog('info', `开始执行脚本: ${scriptName}`);
 
   getScriptPath(scriptName).then(scriptPath => {
@@ -182,7 +179,7 @@ function runScriptTask(scriptName, resolve, reject) {
         success,
         exitCode: code,
         script: scriptName,
-        timestamp: beijingTime(endTime),
+        timestamp: startTimeStr,
         duration,
         output: output.slice(-5000),
         error: errorOutput.slice(-5000)
@@ -193,8 +190,8 @@ function runScriptTask(scriptName, resolve, reject) {
       broadcastLog('info', `脚本 ${scriptName} 执行完成，退出码: ${code}，耗时 ${duration} 秒`);
       console.log("==========================================");
 
-      addToHistory(scriptName, duration, success, code);
-      broadcastState();  // 推送状态变化（包括最新历史）
+      addToHistory(scriptName, startTimeStr, duration, success, code);
+      broadcastState();
 
       resolve(result);
       runNext();
@@ -210,7 +207,7 @@ function runScriptTask(scriptName, resolve, reject) {
         success: false,
         exitCode: -1,
         script: scriptName,
-        timestamp: beijingTime(),
+        timestamp: startTimeStr,
         duration,
         output: output.slice(-5000),
         error: err.message
@@ -218,7 +215,7 @@ function runScriptTask(scriptName, resolve, reject) {
       lastRunResult = result;
       console.error(`[${beijingTime()}] 脚本 ${scriptName} 执行错误: ${err.message}`);
       broadcastLog('error', `脚本 ${scriptName} 执行错误: ${err.message}`);
-      addToHistory(scriptName, duration, false, -1);
+      addToHistory(scriptName, startTimeStr, duration, false, -1);
       broadcastState();
       resolve(result);
       runNext();
@@ -229,7 +226,7 @@ function runScriptTask(scriptName, resolve, reject) {
       success: false,
       exitCode: -1,
       script: scriptName,
-      timestamp: beijingTime(),
+      timestamp: startTimeStr,
       duration,
       output: '',
       error: err.message
@@ -237,7 +234,7 @@ function runScriptTask(scriptName, resolve, reject) {
     lastRunResult = result;
     console.error(`[${beijingTime()}] 脚本 ${scriptName} 定位失败: ${err.message}`);
     broadcastLog('error', `脚本 ${scriptName} 定位失败: ${err.message}`);
-    addToHistory(scriptName, duration, false, -1);
+    addToHistory(scriptName, startTimeStr, duration, false, -1);
     isRunning = false;
     currentScript = null;
     broadcastState();
@@ -246,11 +243,10 @@ function runScriptTask(scriptName, resolve, reject) {
   });
 }
 
-// 队列调度
 function queueScript(scriptName) {
   return new Promise((resolve, reject) => {
     taskQueue.push({ scriptName, resolve, reject });
-    broadcastState();  // 队列长度变化
+    broadcastState();
     if (!isRunning) runNext();
   });
 }
@@ -259,11 +255,10 @@ function runNext() {
   if (taskQueue.length === 0) return;
   if (isRunning) return;
   const { scriptName, resolve, reject } = taskQueue.shift();
-  broadcastState();  // 队列长度变化
+  broadcastState();
   runScriptTask(scriptName, resolve, reject);
 }
 
-// 终止当前脚本
 async function stopCurrentScript() {
   if (!currentChild) {
     return { success: false, message: '没有正在运行的脚本' };
@@ -278,7 +273,6 @@ async function stopCurrentScript() {
   return { success: true, message: '已发送终止信号' };
 }
 
-// 获取脚本列表
 async function getAvailableScripts() {
   const scriptMap = new Map();
   try {
@@ -308,7 +302,6 @@ async function getScriptPath(scriptName) {
   try { await fs.access(userPath); return userPath; } catch { return null; }
 }
 
-// 加载历史记录
 async function loadHistoryFromFile() {
   try {
     const content = await fs.readFile(LOG_FILE, 'utf8');
@@ -348,7 +341,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // API Key 验证
   const protectedPaths = ['/run/', '/trigger', '/stop', '/upload', '/script/'];
   if (API_KEY && protectedPaths.some(p => pathname === p || pathname.startsWith(p))) {
     const authHeader = req.headers.authorization;
@@ -373,7 +365,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 状态查询（兼容旧调用，但前端不再使用）
+  // 状态查询（兼容）
   if (pathname === '/status' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -453,52 +445,88 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 上传脚本
+  // ---------- 上传脚本（适配 busboy@1.6.0）----------
   if (pathname === '/upload' && method === 'POST') {
-    const busboy = Busboy({ headers: req.headers });
+    const busboy = Busboy({ headers: req.headers, limits: { fileSize: 10 * 1024 * 1024 } });
     let savedFile = null;
+    let errorMsg = null;
+
     busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-      if (!filename.endsWith('.js')) {
+      // busboy@1.6.0 的回调参数顺序为 (fieldname, file, filename, encoding, mimetype)
+      // filename 可能是字符串或 null，需要转换
+      let safeFilename = '';
+      if (filename && typeof filename === 'string') safeFilename = filename.trim();
+      else if (filename) safeFilename = filename.toString().trim();
+
+      if (!safeFilename || !safeFilename.endsWith('.js')) {
         file.resume();
-        savedFile = { error: '只允许上传 .js 文件' };
+        errorMsg = '只允许上传 .js 文件';
         return;
       }
-      const savePath = path.join(USER_DATA_SCRIPTS_DIR, path.basename(filename));
+      const baseName = path.basename(safeFilename);
+      const savePath = path.join(USER_DATA_SCRIPTS_DIR, baseName);
       const writeStream = require('fs').createWriteStream(savePath);
       file.pipe(writeStream);
-      savedFile = { success: true, filename, path: savePath };
+      savedFile = { success: true, filename: baseName, path: savePath };
+      writeStream.on('error', (err) => {
+        console.error('写入文件失败:', err);
+        errorMsg = '文件写入失败';
+        savedFile = null;
+      });
     });
+
+    busboy.on('error', (err) => {
+      console.error('Busboy 解析错误:', err);
+      errorMsg = '上传解析失败';
+    });
+
     busboy.on('finish', () => {
-      if (savedFile && savedFile.error) {
+      if (errorMsg) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: savedFile.error }));
-      } else {
+        res.end(JSON.stringify({ error: errorMsg }));
+      } else if (savedFile) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ message: '上传成功', file: savedFile.filename }));
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '未收到有效文件' }));
       }
     });
+
     req.pipe(busboy);
     return;
   }
 
-  // 删除脚本
+  // ---------- 删除脚本（安全增强）----------
   if (pathname.startsWith('/script/') && method === 'DELETE') {
     const filename = pathname.substring(9);
     if (!filename || !filename.endsWith('.js')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '无效的文件名' }));
+      res.end(JSON.stringify({ error: '无效的文件名，仅支持 .js 文件' }));
       return;
     }
     const safeName = path.basename(filename);
+    if (!safeName || safeName.startsWith('.')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '非法的文件名' }));
+      return;
+    }
     const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
     try {
       await fs.access(targetPath);
       await fs.unlink(targetPath);
+      console.log(`[${beijingTime()}] 已删除脚本: ${safeName}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ message: `脚本 ${safeName} 已删除` }));
     } catch (err) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '文件不存在或无法删除' }));
+      if (err.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
+      } else {
+        console.error(`删除失败: ${err.message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '删除失败: ' + err.message }));
+      }
     }
     return;
   }
@@ -512,7 +540,6 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     sseClients.push(res);
-    // 立即发送当前状态
     sendSSE('state', {
       isRunning,
       currentScript,
@@ -531,7 +558,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Web 界面
+  // Web 界面（完整版）
   if (pathname === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => {
@@ -544,13 +571,11 @@ const server = http.createServer(async (req, res) => {
       `;
     }).join('\n');
 
-    // 计算统计指标（从 history 得出）
     let totalExecutions = history.length;
     let successCount = history.filter(h => h.success).length;
     let failCount = totalExecutions - successCount;
     let avgDuration = totalExecutions ? (history.reduce((sum, h) => sum + h.duration, 0) / totalExecutions).toFixed(1) : 0;
 
-    // 生成历史记录表格 HTML
     const historyRows = history.map((h, idx) => `
       <tr>
         <td>${idx + 1}</td>
@@ -760,7 +785,7 @@ const server = http.createServer(async (req, res) => {
               </div>
 
               <h2>📜 最近执行记录 (最多${MAX_HISTORY}条)</h2>
-              <div style="overflow-x: auto;">
+              <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;">
                 <table class="history-table" id="historyTable">
                   <thead>
                     <tr><th>序号</th><th>时间</th><th>脚本</th><th>耗时</th><th>状态</th><th>退出码</th></tr>
@@ -772,7 +797,6 @@ const server = http.createServer(async (req, res) => {
               </div>
 
               <div class="footer-links">
-                <!-- 健康检查按钮已移除，状态栏已显示健康状态 -->
               </div>
             </div>
           </div>
@@ -792,7 +816,6 @@ const server = http.createServer(async (req, res) => {
 
             let reconnectTimer = null;
 
-            // 更新健康状态（每30秒）
             async function updateHealthStatus() {
               try {
                 const res = await fetch('/health');
@@ -803,10 +826,8 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            // SSE 连接（自动重连）
             function connectSSE() {
               const evtSource = new EventSource('/events');
-              
               evtSource.addEventListener('log', function(e) {
                 try {
                   const data = JSON.parse(e.data);
@@ -830,11 +851,9 @@ const server = http.createServer(async (req, res) => {
                   queueLenSpan.innerText = state.queueLength;
                   currentScriptSpan.innerText = state.currentScript || '无';
                   lastRunSpan.innerText = state.lastRun || '无';
-                  // 更新脚本按钮禁用状态
                   document.querySelectorAll('.script-btn').forEach(btn => {
                     btn.disabled = isRunning;
                   });
-                  // 刷新历史和统计
                   fetchHistoryAndUpdate();
                   fetchStatsAndUpdate();
                 } catch(err) { console.error('解析状态错误', err); }
@@ -902,7 +921,6 @@ const server = http.createServer(async (req, res) => {
               } catch(err) { alert('请求失败: '+err.message); }
               finally {
                 btn.innerText = originalText;
-                // 按钮禁用状态由 state 事件控制，无需手动修改
               }
             }
 
@@ -912,7 +930,7 @@ const server = http.createServer(async (req, res) => {
                 const res = await fetch('/script/' + scriptName, { method: 'DELETE' });
                 const data = await res.json();
                 alert(data.message || data.error);
-                location.reload();
+                if (data.message) location.reload();
               } catch(err) { alert('删除失败: '+err.message); }
             }
 
@@ -946,12 +964,9 @@ const server = http.createServer(async (req, res) => {
               });
             });
 
-            // 启动 SSE 连接
             connectSSE();
-            // 健康状态定时更新（每30秒）
             updateHealthStatus();
             setInterval(updateHealthStatus, 30000);
-            // 初始加载历史和统计
             fetchHistoryAndUpdate();
             fetchStatsAndUpdate();
           </script>
@@ -965,23 +980,16 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: '端点未找到' }));
 });
 
-// ---------- 初始化定时任务 ----------
-// 1. 每小时执行 quick-plan-update.js（北京时间）
+// ---------- 定时任务 ----------
 cron.schedule('15 6,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
   console.log(`[${beijingTime()}] 定时任务触发，执行 quick-plan-update.js`);
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
-}, {
-  timezone: "Asia/Shanghai"
-});
+}, { timezone: "Asia/Shanghai" });
 
-// 2. 每天凌晨 6:00（北京时间）清理超过 30 天的旧日志
 cron.schedule('0 6 * * *', () => {
   cleanOldLogs();
-}, {
-  timezone: "Asia/Shanghai"
-});
+}, { timezone: "Asia/Shanghai" });
 
-// 启动服务器
 server.listen(PORT, '0.0.0.0', async () => {
   await loadHistoryFromFile();
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
@@ -989,7 +997,6 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /events, /history`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
-  console.log(`⚠️ 重要：请确保 proxy.js 已将 /events 加入 API 路由列表，否则 SSE 将无法工作。`);
 });
 
 process.on('SIGINT', () => server.close(() => process.exit(0)));
