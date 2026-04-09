@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
 const Busboy = require('busboy');
+const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.TRIGGER_PORT || 3001;
 const API_KEY = process.env.API_KEY || '';
@@ -16,6 +17,66 @@ const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
 const MAX_HISTORY = 30;
 const MAX_LOG_DAYS = 30;
 
+// Supabase 配置（从环境变量读取）
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+let supabase = null;
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  console.log('Supabase 客户端已初始化');
+} else {
+  console.warn('警告：未设置 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY，认证功能将不可用！');
+}
+
+// 会话配置
+const COOKIE_MAX_AGE = 15 * 24 * 60 * 60; // 15 天（秒）
+const COOKIE_SECRET = process.env.COOKIE_SECRET || 'crawler-console-secret-key-change-me';
+
+// 辅助函数：解析 Cookie
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(';').forEach(cookie => {
+    const [name, value] = cookie.trim().split('=');
+    if (name && value) cookies[name] = decodeURIComponent(value);
+  });
+  return cookies;
+}
+
+// 辅助函数：设置 Cookie（httpOnly, secure 可选）
+function setCookie(res, name, value, maxAge = COOKIE_MAX_AGE) {
+  let cookie = `${name}=${encodeURIComponent(value)}; HttpOnly; Path=/; Max-Age=${maxAge}`;
+  // 如果使用 HTTPS（ClawCloud 默认是 https），添加 Secure 标志
+  if (process.env.NODE_ENV === 'production' || process.env.USE_SECURE_COOKIE === 'true') {
+    cookie += '; Secure';
+  }
+  res.setHeader('Set-Cookie', cookie);
+}
+
+// 清除 Cookie
+function clearCookie(res, name) {
+  res.setHeader('Set-Cookie', `${name}=; HttpOnly; Path=/; Max-Age=0`);
+}
+
+// 验证 Token（从 Cookie 中读取 access_token）
+async function authenticateFromCookie(req, res) {
+  if (!supabase) return false;
+  const cookies = parseCookies(req.headers.cookie);
+  const accessToken = cookies['crawler_token'];
+  if (!accessToken) return false;
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+    if (error || !user) return false;
+    // 可选：将用户信息挂载到 req.user
+    req.user = user;
+    return true;
+  } catch (err) {
+    console.error('Token 验证失败:', err.message);
+    return false;
+  }
+}
+
+// ---------- 脚本显示名称映射 ----------
 const SCRIPT_DISPLAY_NAMES = {
   'quick-plan-update.js': '【快速更新密钥】',
   'update-pdd.js': '【旧版更新密钥】',
@@ -29,6 +90,7 @@ function getDisplayName(scriptFileName) {
   return SCRIPT_DISPLAY_NAMES[scriptFileName] || scriptFileName.replace(/\.js$/, '');
 }
 
+// ---------- 全局状态 ----------
 let isRunning = false;
 let currentScript = null;
 let currentChild = null;
@@ -314,6 +376,7 @@ async function loadHistoryFromFile() {
   }
 }
 
+// ---------- HTTP 服务器 ----------
 const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
@@ -329,22 +392,184 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const protectedPaths = ['/run/', '/trigger', '/stop', '/upload', '/script/'];
-  if (API_KEY && protectedPaths.some(p => pathname === p || pathname.startsWith(p))) {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${API_KEY}`) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '未授权访问' }));
-      return;
-    }
+  // ==================== 认证相关路由（无需登录） ====================
+  // 登录页面
+  if (pathname === '/login' && method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>爬虫控制台 - 登录</title>
+          <style>
+            body {
+              font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin: 0;
+              padding: 20px;
+            }
+            .login-card {
+              background: rgba(255,255,255,0.95);
+              border-radius: 20px;
+              padding: 40px;
+              width: 100%;
+              max-width: 400px;
+              box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            }
+            h1 { text-align: center; color: #333; margin-bottom: 30px; }
+            input {
+              width: 100%;
+              padding: 12px;
+              margin: 8px 0 20px;
+              border: 1px solid #ddd;
+              border-radius: 8px;
+              font-size: 16px;
+            }
+            button {
+              width: 100%;
+              padding: 12px;
+              background: #667eea;
+              color: white;
+              border: none;
+              border-radius: 8px;
+              font-size: 16px;
+              cursor: pointer;
+            }
+            button:hover { background: #5a67d8; }
+            .error { color: #e53e3e; margin-top: 10px; text-align: center; }
+            .info { text-align: center; margin-top: 20px; color: #718096; }
+          </style>
+        </head>
+        <body>
+          <div class="login-card">
+            <h1>🐞 爬虫控制台登录</h1>
+            <form id="loginForm">
+              <input type="email" id="email" placeholder="邮箱" required>
+              <input type="password" id="password" placeholder="密码" required>
+              <button type="submit">登录</button>
+              <div id="errorMsg" class="error"></div>
+            </form>
+            <div class="info">使用 Supabase 账号登录</div>
+          </div>
+          <script>
+            document.getElementById('loginForm').addEventListener('submit', async (e) => {
+              e.preventDefault();
+              const email = document.getElementById('email').value;
+              const password = document.getElementById('password').value;
+              const errorDiv = document.getElementById('errorMsg');
+              try {
+                const response = await fetch('/login', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ email, password })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                  window.location.href = '/trigger';
+                } else {
+                  errorDiv.textContent = data.error || '登录失败';
+                }
+              } catch (err) {
+                errorDiv.textContent = '网络错误，请稍后重试';
+              }
+            });
+          </script>
+        </body>
+      </html>
+    `);
+    return;
   }
 
+  // 登录 API（POST）
+  if (pathname === '/login' && method === 'POST') {
+    if (!supabase) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '认证服务未配置' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { email, password } = JSON.parse(body);
+        if (!email || !password) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '邮箱和密码不能为空' }));
+          return;
+        }
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+          return;
+        }
+        // 设置 httpOnly Cookie
+        setCookie(res, 'crawler_token', data.session.access_token, COOKIE_MAX_AGE);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '无效的请求' }));
+      }
+    });
+    return;
+  }
+
+  // 登出
+  if (pathname === '/logout' && method === 'POST') {
+    clearCookie(res, 'crawler_token');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // 检查登录状态（前端可用）
+  if (pathname === '/check-auth' && method === 'GET') {
+    const isAuth = await authenticateFromCookie(req, res);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ authenticated: isAuth }));
+    return;
+  }
+
+  // ==================== 需要认证的路由（先验证登录） ====================
+  // 定义需要认证的路径
+  const protectedPaths = ['/trigger', '/run/', '/stop', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
+  const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
+
+  if (isProtected && supabase) {
+    const isAuth = await authenticateFromCookie(req, res);
+    if (!isAuth) {
+      // 如果是 API 请求返回 401，如果是页面请求重定向到登录页
+      if (pathname === '/trigger' && method === 'GET') {
+        res.writeHead(302, { 'Location': '/login' });
+        res.end();
+        return;
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '未授权，请先登录' }));
+        return;
+      }
+    }
+  } else if (isProtected && !supabase) {
+    // 如果未配置 Supabase，允许所有访问（降级模式）
+    console.warn('认证未配置，允许所有访问');
+  }
+
+  // ==================== 原有业务逻辑（无需修改） ====================
+  // 健康检查
   if (pathname === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
     return;
   }
 
+  // 状态查询
   if (pathname === '/status' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -363,12 +588,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 历史记录
   if (pathname === '/history' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(history));
     return;
   }
 
+  // 触发脚本
   if (pathname.startsWith('/run/') && method === 'POST') {
     const scriptName = pathname.substring(5);
     if (!scriptName || !scriptName.endsWith('.js')) {
@@ -397,6 +624,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
     const result = await queueScript('update-pdd-cron.js');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -413,6 +641,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 终止脚本
   if (pathname === '/stop' && method === 'POST') {
     const result = await stopCurrentScript();
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -420,12 +649,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 上传脚本（修复中文文件名乱码）
+  // 上传脚本
   if (pathname === '/upload' && method === 'POST') {
     const busboy = Busboy({
       headers: req.headers,
       limits: { fileSize: 10 * 1024 * 1024 },
-      defCharset: 'utf-8'   // 关键：告诉 busboy 使用 UTF-8 解码文件名
+      defCharset: 'utf-8'
     });
     let savedFile = null;
     let errorMsg = null;
@@ -439,10 +668,8 @@ const server = http.createServer(async (req, res) => {
       } else if (filenameOrInfo) {
         rawFilename = filenameOrInfo.toString();
       }
-      // 如果依然乱码，尝试手动转换（latin1 -> utf8）
       let safeFilename = rawFilename;
       try {
-        // 检测是否包含 latin1 编码的中文（常见于未设置 defCharset 时）
         if (/^[\x00-\xFF]*$/.test(rawFilename) && rawFilename !== '') {
           safeFilename = Buffer.from(rawFilename, 'latin1').toString('utf8');
         }
@@ -488,21 +715,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 删除脚本（最终稳定版，避免自动解码问题）
+  // 删除脚本（使用原始 URL 避免自动解码问题）
   if (req.url.startsWith('/script/') && method === 'DELETE') {
-    // 直接从原始 req.url 中提取路径部分（不经过 URL 解析）
     let rawPath = req.url;
-    // 去掉查询参数（如果有）
     const queryIndex = rawPath.indexOf('?');
     if (queryIndex !== -1) rawPath = rawPath.substring(0, queryIndex);
-    // 提取 /script/ 后面的部分
     let encodedFilename = rawPath.substring('/script/'.length);
     if (!encodedFilename) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的文件名' }));
       return;
     }
-    // 手动解码一次（因为浏览器发送的是编码后的字符串）
     let filename = '';
     try {
       filename = decodeURIComponent(encodedFilename);
@@ -546,6 +769,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // SSE 实时日志和状态
   if (pathname === '/events' && method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -572,7 +796,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Web 界面
+  // Web 控制台界面（已通过认证中间件保护，这里直接返回 HTML）
   if (pathname === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => {
@@ -774,12 +998,27 @@ const server = http.createServer(async (req, res) => {
               90% { opacity: 1; }
               100% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
             }
+            .logout-btn {
+              position: absolute;
+              top: 20px;
+              right: 30px;
+              background: #e53e3e;
+              color: white;
+              border: none;
+              border-radius: 30px;
+              padding: 8px 16px;
+              cursor: pointer;
+            }
+            .logout-btn:hover { background: #c53030; }
           </style>
         </head>
         <body>
           <div class="container">
             <div class="card">
-              <h1>🐞 爬虫控制台</h1>
+              <div style="position: relative;">
+                <h1>🐞 爬虫控制台</h1>
+                <button id="logoutBtn" class="logout-btn">登出</button>
+              </div>
 
               <div class="status-bar" id="statusBar">
                 <div class="status-row">
@@ -831,8 +1070,6 @@ const server = http.createServer(async (req, res) => {
                   </tbody>
                 </table>
               </div>
-
-              <div class="footer-links"></div>
             </div>
           </div>
 
@@ -848,6 +1085,7 @@ const server = http.createServer(async (req, res) => {
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
+            const logoutBtn = document.getElementById('logoutBtn');
 
             function showToast(msg, type = 'info') {
               const toast = document.createElement('div');
@@ -917,7 +1155,7 @@ const server = http.createServer(async (req, res) => {
                 const history = await res.json();
                 const tbody = document.getElementById('historyBody');
                 if (history.length === 0) {
-                  tbody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
+                  tbody.innerHTML = '<td><td colspan="6">暂无记录</td></tr>';
                   return;
                 }
                 let html = '';
@@ -1015,6 +1253,16 @@ const server = http.createServer(async (req, res) => {
               }
             };
 
+            logoutBtn.onclick = async () => {
+              const res = await fetch('/logout', { method: 'POST' });
+              const data = await res.json();
+              if (data.success) {
+                window.location.href = '/login';
+              } else {
+                showToast('登出失败', 'error');
+              }
+            };
+
             document.querySelectorAll('.script-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
                 const script = e.target.getAttribute('data-script');
@@ -1044,6 +1292,7 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: '端点未找到' }));
 });
 
+// ---------- 定时任务 ----------
 cron.schedule('15 6,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
   console.log(`[${beijingTime()}] 定时任务触发，执行 quick-plan-update.js`);
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
@@ -1060,6 +1309,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /events, /history`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
+  if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
 
 process.on('SIGINT', () => server.close(() => process.exit(0)));
