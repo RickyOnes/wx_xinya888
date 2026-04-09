@@ -488,14 +488,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 删除脚本
-  if (pathname.startsWith('/script/') && method === 'DELETE') {
-    let rawFilename = pathname.substring(9);
-    let decoded = rawFilename;
+  // 删除脚本（最终稳定版，避免自动解码问题）
+  if (req.url.startsWith('/script/') && method === 'DELETE') {
+    // 直接从原始 req.url 中提取路径部分（不经过 URL 解析）
+    let rawPath = req.url;
+    // 去掉查询参数（如果有）
+    const queryIndex = rawPath.indexOf('?');
+    if (queryIndex !== -1) rawPath = rawPath.substring(0, queryIndex);
+    // 提取 /script/ 后面的部分
+    let encodedFilename = rawPath.substring('/script/'.length);
+    if (!encodedFilename) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '无效的文件名' }));
+      return;
+    }
+    // 手动解码一次（因为浏览器发送的是编码后的字符串）
+    let filename = '';
     try {
-      decoded = decodeURIComponent(rawFilename);
-    } catch (e) {}
-    let filename = decoded;
+      filename = decodeURIComponent(encodedFilename);
+    } catch (e) {
+      filename = encodedFilename;
+    }
     if (!filename || !filename.endsWith('.js')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的文件名，仅支持 .js 文件' }));
@@ -508,7 +521,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
-    console.log(`[删除] 原始: ${rawFilename}, 解码: ${decoded}, 最终路径: ${targetPath}`);
+    console.log(`[删除] 原始URL: ${req.url}, 编码后: ${encodedFilename}, 解码后: ${filename}, 最终路径: ${targetPath}`);
     try {
       await fs.access(targetPath);
       await fs.unlink(targetPath);
@@ -523,7 +536,7 @@ const server = http.createServer(async (req, res) => {
         } catch(e) {}
         console.error(`文件不存在: ${targetPath}, 目录内容: ${dirList.join(', ')}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在于 ${USER_DATA_SCRIPTS_DIR}` }));
+        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
       } else {
         console.error(`删除失败: ${err.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
