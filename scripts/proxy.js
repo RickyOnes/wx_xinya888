@@ -42,8 +42,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API 路径列表（必须包含 /events）
-  const apiPaths = ['/trigger', '/status', '/health', '/history', '/logs', '/stop', '/upload', '/events'];
+  // API 路径列表（包含认证相关路由）
+  const apiPaths = [
+    '/trigger', '/status', '/health', '/history', '/logs', '/stop', '/upload', '/events',
+    '/login', '/logout', '/check-auth'   // 认证接口（必须添加，否则会被转发到 VNC 导致 404）
+  ];
   if (apiPaths.includes(pathname) || pathname.startsWith('/run/') || pathname.startsWith('/script/')) {
     // 只打印非静默的 API 请求
     if (!silentApiPaths.includes(pathname)) {
