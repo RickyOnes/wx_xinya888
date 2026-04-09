@@ -14,7 +14,7 @@ const API_KEY = process.env.API_KEY || '';
 const SCRIPTS_DIR = '/app/scripts';
 const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
-const MAX_HISTORY = 30;
+const MAX_HISTORY = 20;
 const MAX_LOG_DAYS = 30;
 
 // Supabase 配置（从环境变量读取）
@@ -30,7 +30,6 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 
 // 会话配置
 const COOKIE_MAX_AGE = 15 * 24 * 60 * 60; // 15 天（秒）
-const COOKIE_SECRET = process.env.COOKIE_SECRET || 'crawler-console-secret-key-change-me';
 
 // 辅助函数：解析 Cookie
 function parseCookies(cookieHeader) {
@@ -537,28 +536,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ==================== 需要认证的路由（先验证登录） ====================
-  // 定义需要认证的路径
+  // ==================== 需要认证的路由 ====================
   const protectedPaths = ['/trigger', '/run/', '/stop', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
-  if (isProtected && supabase) {
-    const isAuth = await authenticateFromCookie(req, res);
-    if (!isAuth) {
-      // 如果是 API 请求返回 401，如果是页面请求重定向到登录页
-      if (pathname === '/trigger' && method === 'GET') {
-        res.writeHead(302, { 'Location': '/login' });
-        res.end();
-        return;
-      } else {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: '未授权，请先登录' }));
-        return;
+  if (isProtected) {
+    // 优先检查 API_KEY（如果设置且请求提供了正确的 Bearer Token）
+    let authByApiKey = false;
+    if (API_KEY) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader === `Bearer ${API_KEY}`) {
+        authByApiKey = true;
       }
     }
-  } else if (isProtected && !supabase) {
-    // 如果未配置 Supabase，允许所有访问（降级模式）
-    console.warn('认证未配置，允许所有访问');
+
+    if (authByApiKey) {
+      // API_KEY 验证通过，允许访问，跳过 Supabase 认证
+      // 继续处理后续业务逻辑
+    } else if (supabase) {
+      // 没有 API_KEY 或验证失败，尝试 Supabase Cookie 认证
+      const isAuth = await authenticateFromCookie(req, res);
+      if (!isAuth) {
+        if (pathname === '/trigger' && method === 'GET') {
+          res.writeHead(302, { 'Location': '/login' });
+          res.end();
+          return;
+        } else {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '未授权，请先登录或提供有效的 API_KEY' }));
+          return;
+        }
+      }
+    } else if (!supabase && !API_KEY) {
+      // 如果两者都未配置，允许所有访问（降级模式）
+      console.warn('认证未配置，允许所有访问');
+    } else {
+      // 有 Supabase 但未配置 API_KEY，且认证失败
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未授权，请先登录' }));
+      return;
+    }
   }
 
   // ==================== 原有业务逻辑（无需修改） ====================
@@ -659,7 +676,7 @@ const server = http.createServer(async (req, res) => {
     let savedFile = null;
     let errorMsg = null;
 
-    busboy.on('file', (fieldname, file, filenameOrInfo, encoding, mimetype) => {
+    busboy.on('file', (fieldname, file, filenameOrInfo) => {
       let rawFilename = '';
       if (filenameOrInfo && typeof filenameOrInfo === 'object') {
         rawFilename = filenameOrInfo.filename || '';
@@ -1155,7 +1172,7 @@ const server = http.createServer(async (req, res) => {
                 const history = await res.json();
                 const tbody = document.getElementById('historyBody');
                 if (history.length === 0) {
-                  tbody.innerHTML = '<td><td colspan="6">暂无记录</td></tr>';
+                  tbody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
                   return;
                 }
                 let html = '';
