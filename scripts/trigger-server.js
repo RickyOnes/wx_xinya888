@@ -13,7 +13,7 @@ const API_KEY = process.env.API_KEY || '';
 const SCRIPTS_DIR = '/app/scripts';
 const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
-const MAX_HISTORY = 20;
+const MAX_HISTORY = 30;
 const MAX_LOG_DAYS = 30;
 
 const SCRIPT_DISPLAY_NAMES = {
@@ -420,25 +420,35 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 上传脚本（修复 filename 为对象问题，兼容新旧 busboy）
+  // 上传脚本（修复中文文件名乱码）
   if (pathname === '/upload' && method === 'POST') {
-    const busboy = Busboy({ headers: req.headers, limits: { fileSize: 10 * 1024 * 1024 } });
+    const busboy = Busboy({
+      headers: req.headers,
+      limits: { fileSize: 10 * 1024 * 1024 },
+      defCharset: 'utf-8'   // 关键：告诉 busboy 使用 UTF-8 解码文件名
+    });
     let savedFile = null;
     let errorMsg = null;
 
-    // 同时支持新旧版本参数
     busboy.on('file', (fieldname, file, filenameOrInfo, encoding, mimetype) => {
-      let safeFilename = '';
-      // 判断参数类型：如果是对象（新版本 info），则取 info.filename；否则是字符串
+      let rawFilename = '';
       if (filenameOrInfo && typeof filenameOrInfo === 'object') {
-        safeFilename = filenameOrInfo.filename || '';
+        rawFilename = filenameOrInfo.filename || '';
       } else if (typeof filenameOrInfo === 'string') {
-        safeFilename = filenameOrInfo;
+        rawFilename = filenameOrInfo;
       } else if (filenameOrInfo) {
-        safeFilename = filenameOrInfo.toString();
+        rawFilename = filenameOrInfo.toString();
       }
-
+      // 如果依然乱码，尝试手动转换（latin1 -> utf8）
+      let safeFilename = rawFilename;
+      try {
+        // 检测是否包含 latin1 编码的中文（常见于未设置 defCharset 时）
+        if (/^[\x00-\xFF]*$/.test(rawFilename) && rawFilename !== '') {
+          safeFilename = Buffer.from(rawFilename, 'latin1').toString('utf8');
+        }
+      } catch(e) {}
       safeFilename = safeFilename.trim();
+
       if (!safeFilename || !safeFilename.endsWith('.js')) {
         file.resume();
         errorMsg = `只允许上传 .js 文件，收到: "${safeFilename || '空'}"`;
@@ -478,16 +488,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 删除脚本（修复文件名完整传递）
+  // 删除脚本
   if (pathname.startsWith('/script/') && method === 'DELETE') {
-    // 获取原始路径中的文件名（可能包含编码）
-    let filename = pathname.substring(9);
-    // 解码 URL 编码
+    let rawFilename = pathname.substring(9);
+    let decoded = rawFilename;
     try {
-      filename = decodeURIComponent(filename);
-    } catch (e) {
-      // 解码失败则保持原样
-    }
+      decoded = decodeURIComponent(rawFilename);
+    } catch (e) {}
+    let filename = decoded;
     if (!filename || !filename.endsWith('.js')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的文件名，仅支持 .js 文件' }));
@@ -500,6 +508,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+    console.log(`[删除] 原始: ${rawFilename}, 解码: ${decoded}, 最终路径: ${targetPath}`);
     try {
       await fs.access(targetPath);
       await fs.unlink(targetPath);
@@ -508,8 +517,13 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ message: `脚本 ${safeName} 已删除` }));
     } catch (err) {
       if (err.code === 'ENOENT') {
+        let dirList = [];
+        try {
+          dirList = await fs.readdir(USER_DATA_SCRIPTS_DIR);
+        } catch(e) {}
+        console.error(`文件不存在: ${targetPath}, 目录内容: ${dirList.join(', ')}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
+        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在于 ${USER_DATA_SCRIPTS_DIR}` }));
       } else {
         console.error(`删除失败: ${err.message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -550,12 +564,10 @@ const server = http.createServer(async (req, res) => {
     const availableScripts = await getAvailableScripts();
     const buttonsHtml = availableScripts.map(script => {
       const displayName = getDisplayName(script);
-      // 注意：data-script 存储原始文件名，会被 encodeURIComponent 编码
-      const encodedScript = encodeURIComponent(script);
       return `
         <div class="script-item">
-          <button class="script-btn" data-script="${encodedScript}">${displayName}</button>
-          <button class="delete-btn" data-script="${encodedScript}" title="删除脚本">🗑️</button>
+          <button class="script-btn" data-script="${script.replace(/"/g, '&quot;')}">${displayName}</button>
+          <button class="delete-btn" data-script="${script.replace(/"/g, '&quot;')}" title="删除脚本">🗑️</button>
         </div>
       `;
     }).join('\n');
@@ -725,29 +737,30 @@ const server = http.createServer(async (req, res) => {
               font-weight: 600;
             }
             .history-table tr:nth-child(even) { background: #f9f9f9; }
-            .message-area {
-              margin-top: 15px;
-              padding: 12px;
+            .toast {
+              position: fixed;
+              top: 20px;
+              left: 50%;
+              transform: translateX(-50%);
+              background: #333;
+              color: #fff;
+              padding: 12px 24px;
               border-radius: 8px;
-              font-size: 0.9rem;
-              display: none;
+              z-index: 10000;
+              font-size: 14px;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+              animation: fadeInOut 3s ease forwards;
+              pointer-events: none;
             }
-            .message-area.error {
-              background: #f8d7da;
-              border-left: 4px solid #dc3545;
-              color: #721c24;
+            .toast.success { background: #28a745; }
+            .toast.error { background: #dc3545; }
+            .toast.info { background: #17a2b8; }
+            @keyframes fadeInOut {
+              0% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+              10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+              90% { opacity: 1; }
+              100% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
             }
-            .message-area.success {
-              background: #d4edda;
-              border-left: 4px solid #28a745;
-              color: #155724;
-            }
-            .message-area.info {
-              background: #d1ecf1;
-              border-left: 4px solid #17a2b8;
-              color: #0c5460;
-            }
-            .footer-links { text-align: center; margin-top: 20px; color: #94a3b8; }
           </style>
         </head>
         <body>
@@ -769,8 +782,6 @@ const server = http.createServer(async (req, res) => {
                   <div class="status-item">💚 健康状态: <span id="healthStatus">检查中...</span></div>
                 </div>
               </div>
-
-              <div id="messageArea" class="message-area"></div>
 
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h2>📜 可用脚本</h2>
@@ -824,15 +835,13 @@ const server = http.createServer(async (req, res) => {
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
-            const messageArea = document.getElementById('messageArea');
 
-            function showMessage(msg, type = 'info') {
-              messageArea.textContent = msg;
-              messageArea.className = 'message-area ' + type;
-              messageArea.style.display = 'block';
-              setTimeout(() => {
-                messageArea.style.display = 'none';
-              }, 5000);
+            function showToast(msg, type = 'info') {
+              const toast = document.createElement('div');
+              toast.className = 'toast ' + type;
+              toast.textContent = msg;
+              document.body.appendChild(toast);
+              setTimeout(() => toast.remove(), 3000);
             }
 
             let reconnectTimer = null;
@@ -930,79 +939,79 @@ const server = http.createServer(async (req, res) => {
               } catch(e) {}
             }
 
-            async function runScript(scriptNameEncoded, btn) {
+            async function runScript(scriptName, btn) {
               if (btn.disabled) return;
               const originalText = btn.innerText;
               btn.innerText = '⏳ 排队中…';
               btn.disabled = true;
               try {
-                const scriptName = decodeURIComponent(scriptNameEncoded);
-                const res = await fetch('/run/' + scriptName, { method: 'POST' });
+                const encoded = encodeURIComponent(scriptName);
+                const res = await fetch('/run/' + encoded, { method: 'POST' });
                 const data = await res.json();
                 if (data.result) {
-                  showMessage(\`脚本 \${scriptName} 执行完成，退出码: \${data.result.exitCode}，耗时 \${data.result.duration} 秒\`, data.result.success ? 'success' : 'error');
+                  showToast(\`脚本 \${scriptName} 执行完成，退出码: \${data.result.exitCode}，耗时 \${data.result.duration} 秒\`, data.result.success ? 'success' : 'error');
                 } else {
-                  showMessage(data.message || '执行完成', 'info');
+                  showToast(data.message || '执行完成', 'info');
                 }
               } catch(err) {
-                showMessage('请求失败: ' + err.message, 'error');
+                showToast('请求失败: ' + err.message, 'error');
               } finally {
                 btn.innerText = originalText;
               }
             }
 
-            async function deleteScript(scriptNameEncoded) {
+            async function deleteScript(scriptName) {
               if(!confirm('确定删除该脚本吗？')) return;
               try {
-                const res = await fetch('/script/' + scriptNameEncoded, { method: 'DELETE' });
+                const encoded = encodeURIComponent(scriptName);
+                const res = await fetch('/script/' + encoded, { method: 'DELETE' });
                 const data = await res.json();
                 if (data.message) {
-                  showMessage(data.message, 'success');
+                  showToast(data.message, 'success');
                   setTimeout(() => location.reload(), 1000);
                 } else {
-                  showMessage(data.error || '删除失败', 'error');
+                  showToast(data.error || '删除失败', 'error');
                 }
               } catch(err) {
-                showMessage('删除失败: ' + err.message, 'error');
+                showToast('删除失败: ' + err.message, 'error');
               }
             }
 
             stopBtn.onclick = async () => {
               const res = await fetch('/stop', { method: 'POST' });
               const data = await res.json();
-              showMessage(data.message, data.success ? 'success' : 'error');
+              showToast(data.message, data.success ? 'success' : 'error');
             };
 
             uploadBtn.onclick = async () => {
               const file = uploadFile.files[0];
-              if(!file) { showMessage('请选择文件', 'error'); return; }
+              if(!file) { showToast('请选择文件', 'error'); return; }
               const formData = new FormData();
               formData.append('script', file);
               try {
                 const res = await fetch('/upload', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.message) {
-                  showMessage(data.message, 'success');
+                  showToast(data.message, 'success');
                   setTimeout(() => location.reload(), 1000);
                 } else {
-                  showMessage(data.error || '上传失败', 'error');
+                  showToast(data.error || '上传失败', 'error');
                 }
               } catch(err) {
-                showMessage('上传请求失败: ' + err.message, 'error');
+                showToast('上传请求失败: ' + err.message, 'error');
               }
             };
 
-            // 绑定事件：注意 data-script 已经是编码后的字符串
             document.querySelectorAll('.script-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
-                const scriptEncoded = e.target.dataset.script;
-                runScript(scriptEncoded, e.target);
+                const script = e.target.getAttribute('data-script');
+                runScript(script, e.target);
               });
             });
             document.querySelectorAll('.delete-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
-                const scriptEncoded = e.target.dataset.script;
-                deleteScript(scriptEncoded);
+                const script = e.target.getAttribute('data-script');
+                deleteScript(script);
               });
             });
 
