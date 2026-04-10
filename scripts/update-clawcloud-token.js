@@ -1,5 +1,9 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+<<<<<<< HEAD
+=======
+require('dotenv').config();
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
 
 // 使用 stealth 插件避免被检测
 puppeteer.use(StealthPlugin());
@@ -140,6 +144,7 @@ async function logout(page) {
         'https://ap-northeast-1.run.claw.cloud/signin'
     );
     console.log('已退出登录，回到登录页');
+<<<<<<< HEAD
 }
 
 async function handleGitHubAuth(authPage) {
@@ -248,13 +253,192 @@ async function handleGitHubAuth(authPage) {
         }
         console.log('ℹ️ 2FA/授权处理过程异常:', error.message);
     }
+=======
+}
+
+async function findFirstMatchedElement(page, selectors) {
+    for (const selector of selectors) {
+        try {
+            const element = await page.$(selector);
+            if (element) {
+                return { element, selector };
+            }
+        } catch (error) {
+            // 忽略单个 selector 检测失败
+        }
+    }
+    return null;
+}
+
+async function getClawCloudReadySelector(page) {
+    const readySelectors = [
+        'div.apps-container.css-1stzn3a',
+        'div.system-applaunchpad.css-y0ay84',
+        'button[id^="menu-button-"]'
+    ];
+
+    for (const selector of readySelectors) {
+        try {
+            if (await page.$(selector)) {
+                return selector;
+            }
+        } catch (error) {
+            // 忽略单个 selector 检测失败
+        }
+    }
+
+    return null;
+}
+
+async function waitForClawCloudReady(page, timeout = 90000) {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+        if (page.isClosed()) {
+            return 'page-closed';
+        }
+
+        const readySelector = await getClawCloudReadySelector(page);
+        if (readySelector) {
+            return readySelector;
+        }
+
+        await delay(1000);
+    }
+
+    throw new Error(`等待 ClawCloud 主页面超时，当前 URL: ${page.url()}`);
+}
+
+async function handleGitHubAuth(authPage) {
+    const loginFieldSelectors = [
+        '#login_field',
+        'input[name="login"]',
+        'input[autocomplete="username"]'
+    ];
+    const passwordFieldSelectors = [
+        '#password',
+        'input[name="password"]',
+        'input[type="password"]'
+    ];
+    const loginSubmitSelectors = [
+        'input[type="submit"]',
+        'button[type="submit"]'
+    ];
+    const otpSelectors = [
+        '#app_totp',
+        '#otp',
+        'input[name="otp"]',
+        'input[autocomplete="one-time-code"]',
+        'input[type="text"][id*="code" i]',
+        'input[type="text"][name*="code" i]',
+        'input[aria-label*="code" i]'
+    ];
+    const authorizeButtonSelectors = [
+        'button#js-oauth-authorize-btn',
+        'button[name="authorize"]',
+        'button[type="submit"]',
+        'input[type="submit"]'
+    ];
+
+    console.log(`进入 GitHub 认证处理，当前 URL: ${authPage.url()}`);
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < 120000) {
+        if (authPage.isClosed()) {
+            console.log('GitHub 认证窗口已关闭，继续等待 ClawCloud 主页面...');
+            return;
+        }
+
+        const readySelector = await getClawCloudReadySelector(authPage);
+        if (readySelector) {
+            console.log(`检测到已回到 ClawCloud 页面: ${readySelector}`);
+            return;
+        }
+
+        const currentUrl = authPage.url();
+        console.log(`认证处理中，当前 URL: ${currentUrl}`);
+
+        const loginField = await findFirstMatchedElement(authPage, loginFieldSelectors);
+        const passwordField = await findFirstMatchedElement(authPage, passwordFieldSelectors);
+        if (loginField && passwordField) {
+            console.log(`检测到 GitHub 登录表单: ${loginField.selector}`);
+            await authPage.click(loginField.selector, { clickCount: 3 });
+            await authPage.type(loginField.selector, USERNAME_GITHUB);
+            await authPage.click(passwordField.selector, { clickCount: 3 });
+            await authPage.type(passwordField.selector, PASSWORD_GITHUB);
+
+            const submitButton = await findFirstMatchedElement(authPage, loginSubmitSelectors);
+            const loginNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+
+            if (submitButton) {
+                await submitButton.element.click();
+            } else {
+                await authPage.keyboard.press('Enter');
+            }
+
+            await loginNavigationPromise;
+            await delay(2000);
+            continue;
+        }
+
+        const otpInput = await findFirstMatchedElement(authPage, otpSelectors);
+        if (otpInput) {
+            console.log(`🔑 检测到 2FA 输入框: ${otpInput.selector}`);
+            const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
+            console.log(`⌨️  正在填充验证码: ${verificationCode}`);
+            await otpInput.element.click({ clickCount: 3 });
+            await otpInput.element.type(verificationCode);
+
+            const submitButton = await findFirstMatchedElement(authPage, loginSubmitSelectors);
+            const otpNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+
+            if (submitButton) {
+                await submitButton.element.click();
+            } else {
+                await authPage.keyboard.press('Enter');
+            }
+
+            console.log('📤 验证码已提交，等待验证...');
+            await otpNavigationPromise;
+            await delay(2000);
+            continue;
+        }
+
+        const authorizeButton = await findFirstMatchedElement(authPage, authorizeButtonSelectors);
+        if (authorizeButton) {
+            const buttonText = await authPage
+                .evaluate(el => (el.textContent || el.value || '').trim(), authorizeButton.element)
+                .catch(() => '');
+            console.log(`检测到授权/继续按钮: ${buttonText || authorizeButton.selector}`);
+
+            const authorizeNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+            await authorizeButton.element.click();
+            await authorizeNavigationPromise;
+            await delay(2000);
+            continue;
+        }
+
+        await delay(2000);
+    }
+
+    throw new Error(`GitHub 认证流程超时，当前 URL: ${authPage.isClosed() ? 'page-closed' : authPage.url()}`);
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
 }
 
 async function loginWithGitHub(page) {
     console.log('开始 GitHub 登录流程...');
     await page.waitForSelector('button.chakra-button.css-1ggp06u', { timeout: 30000 });
 
+<<<<<<< HEAD
     // 先监听，再点击，避免漏掉 popup 事件
+=======
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
     const popupPromise = new Promise(resolve => {
         page.once('popup', (popup) => resolve({ type: 'popup', page: popup }));
     });
@@ -262,7 +446,11 @@ async function loginWithGitHub(page) {
         .then(() => ({ type: 'navigation', page }))
         .catch(() => null);
 
+<<<<<<< HEAD
     await page.click('button.chakra-button.css-1ggp06u'); // 点击 "Sign in with GitHub" 按钮
+=======
+    await page.click('button.chakra-button.css-1ggp06u');
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
 
     const result = await Promise.race([popupPromise, navigationPromise]);
     if (!result) {
@@ -272,8 +460,13 @@ async function loginWithGitHub(page) {
 
     await handleGitHubAuth(result.page);
 
+<<<<<<< HEAD
     await page.waitForSelector('div.apps-container.css-1stzn3a', { timeout: 90000 });
     console.log('GitHub 登录完成，已回到 ClawCloud 主页');
+=======
+    const readySelector = await waitForClawCloudReady(page, 90000);
+    console.log(`GitHub 登录完成，已回到 ClawCloud 主页: ${readySelector}`);
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
 }
 
 async function main() {
@@ -296,7 +489,11 @@ async function main() {
         headless: HEADLESS, // 由环境变量 HEADLESS 控制，默认 true
         defaultViewport: null,
         // 可执行路径，可由环境变量 PUPPETEER_EXECUTABLE_PATH 覆盖
+<<<<<<< HEAD
         executablePath: '/usr/bin/google-chrome',
+=======
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -357,6 +554,7 @@ async function main() {
 
         let authHeader = null;
         let cookieString = null;
+<<<<<<< HEAD
         let interceptionCleared = false;
 
         const clearRequestHooks = async () => {
@@ -370,6 +568,11 @@ async function main() {
         };
 
         const requestHandler = async (request) => {
+=======
+
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
             const url = request.url();
             if (url === GET_INIT_DATA_URL) {
                 const headers = request.headers();
@@ -381,8 +584,13 @@ async function main() {
                     cookieString = headers['cookie'];
                     console.log('✅ 捕获到 Cookie');
                 }
+                if (resolveRequest) {
+                    resolveRequest();
+                    resolveRequest = null;
+                }
             }
 
+<<<<<<< HEAD
             try {
                 await request.continue();
             } catch (error) {
@@ -401,6 +609,8 @@ async function main() {
         await page.setRequestInterception(true);
         page.on('request', requestHandler);
 
+=======
+>>>>>>> 8427cb3c4c96e196ca876432b14122ce4d49c62f
         console.log('访问主页，检测登录状态...');
         await page.goto(CLAWCLOUD_HOME_URL, { waitUntil: 'networkidle2' });
 
