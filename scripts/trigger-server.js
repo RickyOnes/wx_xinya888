@@ -939,6 +939,12 @@ const server = http.createServer(async (req, res) => {
               transition: 0.2s;
             }
             .delete-btn:hover { background: #fecaca; }
+            .log-section {
+              display: none;
+            }
+            .log-section.visible {
+              display: block;
+            }
             .log-box {
               background: #1e293b;
               color: #e2e8f0;
@@ -1065,8 +1071,10 @@ const server = http.createServer(async (req, res) => {
                 <span id="uploadMsg" style="margin-left: 10px;"></span>
               </div>
 
-              <h2>📡 实时执行日志</h2>
-              <div class="log-box" id="logBox"></div>
+              <div class="log-section" id="logSection">
+                <h2>📡 实时执行日志</h2>
+                <div class="log-box" id="logBox"></div>
+              </div>
 
               <h2>📊 统计指标</h2>
               <div class="metrics">
@@ -1092,6 +1100,7 @@ const server = http.createServer(async (req, res) => {
 
           <script>
             const logBox = document.getElementById('logBox');
+            const logSection = document.getElementById('logSection');
             const globalStatusSpan = document.getElementById('globalStatus');
             const queueLenSpan = document.getElementById('queueLen');
             const currentScriptSpan = document.getElementById('currentScript');
@@ -1113,6 +1122,23 @@ const server = http.createServer(async (req, res) => {
             }
 
             let reconnectTimer = null;
+            let hideLogTimer = null;
+
+            function setLogSectionVisible(visible) {
+              if (visible) {
+                if (hideLogTimer) {
+                  clearTimeout(hideLogTimer);
+                  hideLogTimer = null;
+                }
+                logSection.classList.add('visible');
+                return;
+              }
+              if (hideLogTimer) clearTimeout(hideLogTimer);
+              hideLogTimer = setTimeout(() => {
+                logSection.classList.remove('visible');
+                hideLogTimer = null;
+              }, 10000);
+            }
 
             async function updateHealthStatus() {
               try {
@@ -1146,6 +1172,7 @@ const server = http.createServer(async (req, res) => {
                   } else {
                     statusIndicator.className = 'status-indicator';
                   }
+                  setLogSectionVisible(isRunning);
                   queueLenSpan.innerText = state.queueLength;
                   currentScriptSpan.innerText = state.currentScript || '无';
                   lastRunSpan.innerText = state.lastRun || '无';
