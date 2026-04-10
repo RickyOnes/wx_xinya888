@@ -1315,6 +1315,11 @@ cron.schedule('15 6,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
 }, { timezone: "Asia/Shanghai" });
 
+cron.schedule('8 0 */3 * *', () => { //每3天北京时间8：08运行
+  console.log(`[${beijingTime()}] 定时任务触发，执行 update-clawcloud-token.js`);
+  queueScript('update-clawcloud-token.js').catch(err => console.error('定时任务执行失败:', err));
+}, { timezone: "Asia/Shanghai" });
+
 cron.schedule('0 6 * * *', () => {
   cleanOldLogs();
 }, { timezone: "Asia/Shanghai" });
