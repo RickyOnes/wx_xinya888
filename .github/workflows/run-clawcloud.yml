@@ -7,6 +7,10 @@ on:
         description: '是否以无头模式运行（true/false）'
         required: false
         default: 'true'
+      image_tag:
+        description: '镜像标签，例如 latest 或 sha-955439b'
+        required: false
+        default: 'sha-955439b'
 
 env:
   REGISTRY: ghcr.io
@@ -43,8 +47,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 拉取最新镜像
-        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      - name: 显示本次运行镜像
+        run: echo "使用镜像 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'sha-955439b' }}"
+
+      - name: 拉取指定镜像
+        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'sha-955439b' }}
 
       - name: 运行 Token 更新容器（挂载缓存目录）
         run: |
@@ -57,7 +64,7 @@ jobs:
             -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
             -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image_tag || 'sha-955439b' }}
 
       - name: 修复缓存目录权限
         if: always()
