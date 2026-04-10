@@ -143,119 +143,184 @@ async function logout(page) {
     console.log('已退出登录，回到登录页');
 }
 
-async function handleGitHubAuth(authPage) {
-    // 给页面一点加载时间
-    await delay(2000);
+async function findFirstMatchedElement(page, selectors) {
+    for (const selector of selectors) {
+        try {
+            const element = await page.$(selector);
+            if (element) {
+                return { element, selector };
+            }
+        } catch (error) {
+            // 忽略单个 selector 检测失败
+        }
+    }
+    return null;
+}
 
-    // 1. 处理登录表单（如果需要）
-    if (await authPage.$('#login_field')) {
-        console.log('需要输入 GitHub 凭据');
-        await authPage.click('#login_field', { clickCount: 3 });
-        await authPage.type('#login_field', USERNAME_GITHUB);
-        await authPage.click('#password', { clickCount: 3 });
-        await authPage.type('#password', PASSWORD_GITHUB);
+async function getClawCloudReadySelector(page) {
+    const readySelectors = [
+        'div.apps-container.css-1stzn3a',
+        'div.system-applaunchpad.css-y0ay84',
+        'button[id^="menu-button-"]'
+    ];
 
-        const loginNavigationPromise = authPage
-            .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-            .catch(() => null);
-        await authPage.click('input[type="submit"]');
-        await loginNavigationPromise;
+    for (const selector of readySelectors) {
+        try {
+            if (await page.$(selector)) {
+                return selector;
+            }
+        } catch (error) {
+            // 忽略单个 selector 检测失败
+        }
     }
 
-    // 2. 处理 GitHub 2FA 验证码（邮箱验证）
-    try {
-        await delay(3000); // 等待页面稳定
+    return null;
+}
 
-        const otpSelectors = [
-            '#app_totp',
-            '#otp',
-            'input[name="otp"]',
-            'input[autocomplete="one-time-code"]',
-            'input[type="text"][id*="code" i]',
-            'input[type="text"][name*="code" i]',
-            'input[aria-label*="code" i]'
-        ];
+async function waitForClawCloudReady(page, timeout = 90000) {
+    const startTime = Date.now();
 
-        let otpInput = null;
-        let foundSelector = '';
-
-        for (const selector of otpSelectors) {
-            try {
-                otpInput = await authPage.$(selector);
-                if (otpInput) {
-                    foundSelector = selector;
-                    break;
-                }
-            } catch (e) {
-                // 继续检查下一个选择器
-            }
+    while (Date.now() - startTime < timeout) {
+        if (page.isClosed()) {
+            return 'page-closed';
         }
 
-        if (otpInput) {
-            console.log(`\n🔑 检测到 2FA 输入框: ${foundSelector}`);
+        const readySelector = await getClawCloudReadySelector(page);
+        if (readySelector) {
+            return readySelector;
+        }
 
-            const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
-            console.log(`⌨️  正在填充验证码: ${verificationCode}`);
-            await otpInput.type(verificationCode);
+        await delay(1000);
+    }
 
-            const submitSelectors = [
-                'button[type="submit"]',
-                'input[type="submit"]'
-            ];
+    throw new Error(`等待 ClawCloud 主页面超时，当前 URL: ${page.url()}`);
+}
 
-            let submitClicked = false;
-            for (const selector of submitSelectors) {
-                try {
-                    const btn = await authPage.$(selector);
-                    if (btn) {
-                        await btn.click();
-                        submitClicked = true;
-                        break;
-                    }
-                } catch (e) {}
+async function handleGitHubAuth(authPage) {
+    const loginFieldSelectors = [
+        '#login_field',
+        'input[name="login"]',
+        'input[autocomplete="username"]'
+    ];
+    const passwordFieldSelectors = [
+        '#password',
+        'input[name="password"]',
+        'input[type="password"]'
+    ];
+    const loginSubmitSelectors = [
+        'input[type="submit"]',
+        'button[type="submit"]'
+    ];
+    const otpSelectors = [
+        '#app_totp',
+        '#otp',
+        'input[name="otp"]',
+        'input[autocomplete="one-time-code"]',
+        'input[type="text"][id*="code" i]',
+        'input[type="text"][name*="code" i]',
+        'input[aria-label*="code" i]'
+    ];
+    const authorizeButtonSelectors = [
+        'button#js-oauth-authorize-btn',
+        'button[name="authorize"]',
+        'button[type="submit"]',
+        'input[type="submit"]'
+    ];
+
+    console.log(`进入 GitHub 认证处理，当前 URL: ${authPage.url()}`);
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < 120000) {
+        if (authPage.isClosed()) {
+            console.log('GitHub 认证窗口已关闭，继续等待 ClawCloud 主页面...');
+            return;
+        }
+
+        const readySelector = await getClawCloudReadySelector(authPage);
+        if (readySelector) {
+            console.log(`检测到已回到 ClawCloud 页面: ${readySelector}`);
+            return;
+        }
+
+        const currentUrl = authPage.url();
+        console.log(`认证处理中，当前 URL: ${currentUrl}`);
+
+        const loginField = await findFirstMatchedElement(authPage, loginFieldSelectors);
+        const passwordField = await findFirstMatchedElement(authPage, passwordFieldSelectors);
+        if (loginField && passwordField) {
+            console.log(`检测到 GitHub 登录表单: ${loginField.selector}`);
+            await authPage.click(loginField.selector, { clickCount: 3 });
+            await authPage.type(loginField.selector, USERNAME_GITHUB);
+            await authPage.click(passwordField.selector, { clickCount: 3 });
+            await authPage.type(passwordField.selector, PASSWORD_GITHUB);
+
+            const submitButton = await findFirstMatchedElement(authPage, loginSubmitSelectors);
+            const loginNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+
+            if (submitButton) {
+                await submitButton.element.click();
+            } else {
+                await authPage.keyboard.press('Enter');
             }
 
-            if (!submitClicked) {
+            await loginNavigationPromise;
+            await delay(2000);
+            continue;
+        }
+
+        const otpInput = await findFirstMatchedElement(authPage, otpSelectors);
+        if (otpInput) {
+            console.log(`🔑 检测到 2FA 输入框: ${otpInput.selector}`);
+            const verificationCode = await pollGitHubVerificationCode(USERNAME_GITHUB);
+            console.log(`⌨️  正在填充验证码: ${verificationCode}`);
+            await otpInput.element.click({ clickCount: 3 });
+            await otpInput.element.type(verificationCode);
+
+            const submitButton = await findFirstMatchedElement(authPage, loginSubmitSelectors);
+            const otpNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+
+            if (submitButton) {
+                await submitButton.element.click();
+            } else {
                 await authPage.keyboard.press('Enter');
             }
 
             console.log('📤 验证码已提交，等待验证...');
-            await authPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => null);
-            console.log('✅ 2FA 验证通过\n');
-        } else {
-            console.log('未检测到二次验证输入框，继续检查是否需要授权...');
+            await otpNavigationPromise;
+            await delay(2000);
+            continue;
         }
 
-        // 3. 处理授权按钮（无论是否触发 2FA，都可能出现）
-        try {
-            console.log('检查授权按钮...');
-            await authPage.waitForSelector('button[type="submit"], input[type="submit"]', { timeout: 10000 });
-            const authButton = await authPage.$('button[type="submit"], input[type="submit"]');
-            if (authButton) {
-                console.log('点击授权按钮');
-                const authorizeNavigationPromise = authPage
-                    .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-                    .catch(() => null);
-                await authButton.click();
-                await authorizeNavigationPromise;
-            }
-        } catch (e) {
-            console.log('没有授权按钮或已自动跳转');
+        const authorizeButton = await findFirstMatchedElement(authPage, authorizeButtonSelectors);
+        if (authorizeButton) {
+            const buttonText = await authPage
+                .evaluate(el => (el.textContent || el.value || '').trim(), authorizeButton.element)
+                .catch(() => '');
+            console.log(`检测到授权/继续按钮: ${buttonText || authorizeButton.selector}`);
+
+            const authorizeNavigationPromise = authPage
+                .waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                .catch(() => null);
+            await authorizeButton.element.click();
+            await authorizeNavigationPromise;
+            await delay(2000);
+            continue;
         }
 
-    } catch (error) {
-        if (error.message.includes('未获取到验证码') || error.message.includes('未设置')) {
-            throw error;
-        }
-        console.log('ℹ️ 2FA/授权处理过程异常:', error.message);
+        await delay(2000);
     }
+
+    throw new Error(`GitHub 认证流程超时，当前 URL: ${authPage.isClosed() ? 'page-closed' : authPage.url()}`);
 }
 
 async function loginWithGitHub(page) {
     console.log('开始 GitHub 登录流程...');
     await page.waitForSelector('button.chakra-button.css-1ggp06u', { timeout: 30000 });
 
-    // 先监听，再点击，避免漏掉 popup 事件
     const popupPromise = new Promise(resolve => {
         page.once('popup', (popup) => resolve({ type: 'popup', page: popup }));
     });
@@ -263,7 +328,7 @@ async function loginWithGitHub(page) {
         .then(() => ({ type: 'navigation', page }))
         .catch(() => null);
 
-    await page.click('button.chakra-button.css-1ggp06u'); // 点击 "Sign in with GitHub" 按钮
+    await page.click('button.chakra-button.css-1ggp06u');
 
     const result = await Promise.race([popupPromise, navigationPromise]);
     if (!result) {
@@ -273,8 +338,8 @@ async function loginWithGitHub(page) {
 
     await handleGitHubAuth(result.page);
 
-    await page.waitForSelector('div.apps-container.css-1stzn3a', { timeout: 90000 });
-    console.log('GitHub 登录完成，已回到 ClawCloud 主页');
+    const readySelector = await waitForClawCloudReady(page, 90000);
+    console.log(`GitHub 登录完成，已回到 ClawCloud 主页: ${readySelector}`);
 }
 
 async function main() {
