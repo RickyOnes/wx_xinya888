@@ -16,6 +16,8 @@ const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
 const MAX_HISTORY = 20;
 const MAX_LOG_DAYS = 30;
+const SSE_HEARTBEAT_INTERVAL = 25000;
+const SSE_RETRY_INTERVAL = 5000;
 
 // Supabase 配置（从环境变量读取）
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -106,8 +108,22 @@ function beijingTime(date = new Date()) {
 
 function sendSSE(event, data) {
   const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  sseClients.forEach(client => client.write(message));
+  sseClients = sseClients.filter(client => {
+    try {
+      client.write(message);
+      return true;
+    } catch (err) {
+      console.error('SSE 推送失败，移除失效连接:', err.message);
+      return false;
+    }
+  });
 }
+
+setInterval(() => {
+  if (sseClients.length > 0) {
+    sendSSE('heartbeat', { timestamp: beijingTime() });
+  }
+}, SSE_HEARTBEAT_INTERVAL);
 
 function broadcastLog(level, message) {
   sendSSE('log', { level, message, timestamp: beijingTime() });
@@ -790,10 +806,13 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/events' && method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': '*',
+      'X-Accel-Buffering': 'no'
     });
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    res.write(`retry: ${SSE_RETRY_INTERVAL}\n\n`);
     sseClients.push(res);
     sendSSE('state', {
       isRunning,
@@ -1123,6 +1142,15 @@ const server = http.createServer(async (req, res) => {
 
             let reconnectTimer = null;
             let hideLogTimer = null;
+            let evtSource = null;
+            let heartbeatCheckTimer = null;
+            let lastSSEActivityAt = 0;
+            let serviceHealthy = true;
+            let sseStatus = 'connecting';
+            let reconnectAttempts = 0;
+            const SSE_BASE_RECONNECT_DELAY = 5000;
+            const SSE_MAX_RECONNECT_DELAY = 30000;
+            const HEALTH_CHECK_TIMEOUT = 5000;
 
             function setLogSectionVisible(visible) {
               if (visible) {
@@ -1140,19 +1168,122 @@ const server = http.createServer(async (req, res) => {
               }, 10000);
             }
 
-            async function updateHealthStatus() {
-              try {
-                const res = await fetch('/health');
-                const data = await res.json();
-                healthStatusSpan.innerText = data.status === 'ok' ? '正常' : '异常';
-              } catch (e) {
-                healthStatusSpan.innerText = '无法连接';
+            function renderHealthStatus() {
+              if (sseStatus === 'reconnecting') {
+                healthStatusSpan.innerText = '连接断开，重连中...';
+                return;
+              }
+              if (sseStatus === 'connecting') {
+                healthStatusSpan.innerText = '连接中...';
+                return;
+              }
+              healthStatusSpan.innerText = serviceHealthy ? '正常' : '异常';
+            }
+
+            function setSSEStatus(status) {
+              sseStatus = status;
+              renderHealthStatus();
+            }
+
+            function clearReconnectTimer() {
+              if (!reconnectTimer) return;
+              clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+
+            function markSSEAlive() {
+              lastSSEActivityAt = Date.now();
+              reconnectAttempts = 0;
+              clearReconnectTimer();
+              setSSEStatus('connected');
+            }
+
+            function closeSSE() {
+              if (evtSource) {
+                evtSource.close();
+                evtSource = null;
               }
             }
 
+            function scheduleReconnect(delayOverride) {
+              clearReconnectTimer();
+              const delay = typeof delayOverride === 'number'
+                ? delayOverride
+                : Math.min(SSE_BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), SSE_MAX_RECONNECT_DELAY);
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectSSE();
+              }, delay);
+              if (typeof delayOverride !== 'number') {
+                reconnectAttempts += 1;
+              }
+              return delay;
+            }
+
+            function reconnectSSE(delayOverride) {
+              setSSEStatus('reconnecting');
+              closeSSE();
+              if (delayOverride === 0) {
+                connectSSE();
+                return 0;
+              }
+              return scheduleReconnect(delayOverride);
+            }
+
+            function ensureHeartbeatWatch() {
+              if (heartbeatCheckTimer) return;
+              heartbeatCheckTimer = setInterval(() => {
+                if (!evtSource || Date.now() - lastSSEActivityAt <= 45000) return;
+                console.warn('SSE 长时间无活动，准备重连');
+                reconnectSSE(0);
+              }, 15000);
+            }
+
+            async function fetchJSONWithTimeout(url, timeout) {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), timeout);
+              try {
+                const res = await fetch(url, {
+                  cache: 'no-store',
+                  signal: controller.signal
+                });
+                if (!res.ok) {
+                  throw new Error('HTTP ' + res.status);
+                }
+                return await res.json();
+              } finally {
+                clearTimeout(timeoutId);
+              }
+            }
+
+            async function updateHealthStatus() {
+              try {
+                const data = await fetchJSONWithTimeout('/health', HEALTH_CHECK_TIMEOUT);
+                serviceHealthy = data.status === 'ok';
+              } catch (e) {
+                serviceHealthy = false;
+              }
+              renderHealthStatus();
+            }
+
             function connectSSE() {
-              const evtSource = new EventSource('/events');
+              if (evtSource && evtSource.readyState !== EventSource.CLOSED) return;
+              clearReconnectTimer();
+              setSSEStatus('connecting');
+              closeSSE();
+              evtSource = new EventSource('/events');
+              ensureHeartbeatWatch();
+
+              evtSource.onopen = function() {
+                markSSEAlive();
+              };
+
+              evtSource.addEventListener('heartbeat', function() {
+                markSSEAlive();
+              });
+
               evtSource.addEventListener('log', function(e) {
+                markSSEAlive();
                 try {
                   const data = JSON.parse(e.data);
                   const color = data.level === 'error' ? '#f87171' : (data.level === 'stderr' ? '#fbbf24' : '#a0aec0');
@@ -1163,6 +1294,7 @@ const server = http.createServer(async (req, res) => {
               });
 
               evtSource.addEventListener('state', function(e) {
+                markSSEAlive();
                 try {
                   const state = JSON.parse(e.data);
                   const isRunning = state.isRunning;
@@ -1185,11 +1317,8 @@ const server = http.createServer(async (req, res) => {
               });
 
               evtSource.onerror = function(err) {
-                console.error('SSE连接错误，5秒后重连', err);
-                evtSource.close();
-                if (reconnectTimer) clearTimeout(reconnectTimer);
-                reconnectTimer = setTimeout(() => connectSSE(), 5000);
-                healthStatusSpan.innerText = '连接断开，重连中...';
+                const delay = reconnectSSE();
+                console.error('SSE连接错误，' + Math.round(delay / 1000) + '秒后重连', err);
               };
             }
 
@@ -1318,6 +1447,26 @@ const server = http.createServer(async (req, res) => {
                 const script = e.target.getAttribute('data-script');
                 deleteScript(script);
               });
+            });
+
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'visible') {
+                connectSSE();
+                updateHealthStatus();
+              }
+            });
+            window.addEventListener('focus', () => {
+              connectSSE();
+              updateHealthStatus();
+            });
+            window.addEventListener('online', () => {
+              connectSSE();
+              updateHealthStatus();
+            });
+            window.addEventListener('beforeunload', () => {
+              if (reconnectTimer) clearTimeout(reconnectTimer);
+              if (heartbeatCheckTimer) clearInterval(heartbeatCheckTimer);
+              closeSSE();
             });
 
             connectSSE();
