@@ -180,6 +180,7 @@ let lastRunResult = null;
 let lastRunTime = null;
 let history = [];
 let sseClients = [];
+let isShuttingDown = false;
 
 function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -214,6 +215,60 @@ function clearForceKillTimer() {
   currentForceKillTimer = null;
 }
 
+function killChildProcess(child, signal) {
+  if (!child) return false;
+
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (err) {
+      if (err.code !== 'ESRCH') throw err;
+    }
+  }
+
+  try {
+    return child.kill(signal);
+  } catch (err) {
+    if (err.code === 'ESRCH') return false;
+    throw err;
+  }
+}
+
+function waitForChildExit(child, timeoutMs = STOP_FORCE_KILL_DELAY + 5000) {
+  return new Promise(resolve => {
+    if (!child || child.exitCode !== null || child.signalCode) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', done);
+      child.removeListener('close', done);
+      resolve();
+    };
+
+    const timer = setTimeout(done, timeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    child.on('exit', done);
+    child.on('close', done);
+  });
+}
+
+function hasSoftFailure(scriptName, output, errorOutput) {
+  const combined = `${output}\n${errorOutput}`;
+
+  if (scriptName === 'quick-plan-update.js') {
+    return /所有浏览器启动尝试均失败|未获取到anti-content，跳过更新|脚本执行出错/.test(combined);
+  }
+
+  return false;
+}
+
 function getStatePayload() {
   return {
     isRunning,
@@ -221,6 +276,7 @@ function getStatePayload() {
     stopRequested: Boolean(currentStopReason),
     stopReason: currentStopReason,
     queueLength: taskQueue.length,
+    shuttingDown: isShuttingDown,
     lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
     lastRunResult: lastRunResult ? {
       script: lastRunResult.script,
@@ -245,7 +301,16 @@ function requestChildStop(reason) {
 
   const child = currentChild;
   const scriptName = currentScript || '未知脚本';
-  const signalSent = child.kill('SIGTERM');
+
+  let signalSent = false;
+  try {
+    signalSent = killChildProcess(child, 'SIGTERM');
+  } catch (err) {
+    console.error(`终止脚本 ${scriptName} 失败: ${err.message}`);
+    broadcastLog('error', `终止脚本 ${scriptName} 失败: ${err.message}`);
+    return { success: false, message: `终止脚本失败: ${err.message}` };
+  }
+
   if (!signalSent) {
     return { success: false, message: '终止信号发送失败，请稍后重试' };
   }
@@ -260,7 +325,7 @@ function requestChildStop(reason) {
     if (currentChild !== child) return;
     broadcastLog('error', `脚本 ${scriptName} 在 ${Math.round(STOP_FORCE_KILL_DELAY / 1000)} 秒内未退出，强制终止`);
     try {
-      child.kill('SIGKILL');
+      killChildProcess(child, 'SIGKILL');
     } catch (err) {
       console.error(`强制终止脚本 ${scriptName} 失败: ${err.message}`);
       broadcastLog('error', `强制终止脚本 ${scriptName} 失败: ${err.message}`);
@@ -269,6 +334,8 @@ function requestChildStop(reason) {
 
   if (reason === 'timeout') {
     broadcastLog('error', `脚本 ${scriptName} 执行超时，已发送终止信号，等待退出`);
+  } else if (reason === 'shutdown') {
+    broadcastLog('info', `服务正在关闭，已向脚本 ${scriptName} 发送终止信号，等待退出`);
   } else {
     broadcastLog('info', `已向脚本 ${scriptName} 发送终止信号，等待退出`);
   }
@@ -276,7 +343,11 @@ function requestChildStop(reason) {
 
   return {
     success: true,
-    message: reason === 'timeout' ? '脚本执行超时，正在终止' : '已发送终止信号，等待脚本退出'
+    message: reason === 'timeout'
+      ? '脚本执行超时，正在终止'
+      : reason === 'shutdown'
+        ? '服务正在关闭，已发送终止信号，等待脚本退出'
+        : '已发送终止信号，等待脚本退出'
   };
 }
 
@@ -344,7 +415,8 @@ function runScriptTask(scriptName, resolve, reject) {
     const child = spawn('node', [scriptPath], {
       stdio: 'pipe',
       env: process.env,
-      cwd: '/app'
+      cwd: '/app',
+      detached: process.platform !== 'win32'
     });
     currentChild = child;
 
@@ -381,13 +453,15 @@ function runScriptTask(scriptName, resolve, reject) {
       const endTime = new Date();
       const duration = Math.floor((Date.now() - startTime) / 1000);
       const exitCode = code === null ? (signal || -1) : code;
-      const success = !stopReason && code === 0;
+      const softFailure = !stopReason && hasSoftFailure(scriptName, output, errorOutput);
+      const success = !stopReason && code === 0 && !softFailure;
       lastRunTime = endTime;
       const result = {
         success,
         exitCode,
         signal: signal || null,
         stopReason,
+        softFailure,
         script: scriptName,
         timestamp: startTimeStr,
         duration,
@@ -402,6 +476,13 @@ function runScriptTask(scriptName, resolve, reject) {
       } else if (stopReason === 'timeout') {
         console.error(`[${beijingTime(endTime)}] 脚本 ${scriptName} 因超时被终止，退出信号: ${signal || 'SIGTERM'}`);
         broadcastLog('error', `脚本 ${scriptName} 因超时被终止，退出信号: ${signal || 'SIGTERM'}，耗时 ${duration} 秒`);
+      } else if (stopReason === 'shutdown') {
+        console.warn(`[${beijingTime(endTime)}] 脚本 ${scriptName} 因服务关闭而终止，退出信号: ${signal || 'SIGTERM'}`);
+        broadcastLog('info', `脚本 ${scriptName} 因服务关闭而终止，退出信号: ${signal || 'SIGTERM'}，耗时 ${duration} 秒`);
+      } else if (softFailure) {
+        console.error(`[${beijingTime(endTime)}] 脚本 ${scriptName} 执行完成，但检测到异常日志，判定为失败，退出码: ${exitCode}`);
+        console.log(`总运行时长: ${duration} 秒`);
+        broadcastLog('error', `脚本 ${scriptName} 执行完成，但检测到异常日志，判定为失败，退出码: ${exitCode}，耗时 ${duration} 秒`);
       } else {
         console.log(`[${beijingTime(endTime)}] 脚本 ${scriptName} 执行完成，退出码: ${exitCode}`);
         console.log(`总运行时长: ${duration} 秒`);
@@ -468,6 +549,11 @@ function runScriptTask(scriptName, resolve, reject) {
 
 function queueScript(scriptName) {
   return new Promise((resolve, reject) => {
+    if (isShuttingDown) {
+      reject(new Error('trigger-server 正在关闭，暂不接受新的脚本任务'));
+      return;
+    }
+
     taskQueue.push({ scriptName, resolve, reject });
     broadcastState();
     if (!isRunning) runNext();
@@ -475,11 +561,77 @@ function queueScript(scriptName) {
 }
 
 function runNext() {
+  if (isShuttingDown) return;
   if (taskQueue.length === 0) return;
   if (isRunning) return;
   const { scriptName, resolve, reject } = taskQueue.shift();
   broadcastState();
   runScriptTask(scriptName, resolve, reject);
+}
+
+function rejectQueuedTasks(message) {
+  if (taskQueue.length === 0) return;
+  const pendingTasks = taskQueue;
+  taskQueue = [];
+  for (const { reject } of pendingTasks) {
+    reject(new Error(message));
+  }
+}
+
+function closeSSEClients() {
+  if (sseClients.length === 0) return;
+  for (const client of sseClients) {
+    try {
+      client.end();
+    } catch {}
+  }
+  sseClients = [];
+}
+
+async function shutdownServer(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  broadcastState();
+
+  const exitTimer = setTimeout(() => {
+    console.error(`[${beijingTime()}] ${signal} 关闭超时，强制退出进程`);
+    process.exit(1);
+  }, STOP_FORCE_KILL_DELAY + 10000);
+  if (typeof exitTimer.unref === 'function') exitTimer.unref();
+
+  console.warn(`[${beijingTime()}] 收到 ${signal}，开始优雅关闭 trigger-server`);
+  broadcastLog('info', `收到 ${signal}，开始优雅关闭服务`);
+  rejectQueuedTasks('trigger-server 正在关闭，已取消排队中的脚本任务');
+  broadcastState();
+
+  try {
+    const child = currentChild;
+    if (child) {
+      if (!currentStopReason) {
+        const stopResult = requestChildStop('shutdown');
+        if (!stopResult.success) {
+          console.warn(`[${beijingTime()}] 关闭时终止脚本失败: ${stopResult.message}`);
+          broadcastLog('error', `关闭时终止脚本失败: ${stopResult.message}`);
+        }
+      } else {
+        broadcastLog('info', `服务关闭中，等待脚本 ${currentScript || '未知脚本'} 退出`);
+      }
+      await waitForChildExit(child);
+    }
+  } catch (err) {
+    console.error(`[${beijingTime()}] 优雅关闭脚本失败: ${err.message}`);
+    broadcastLog('error', `优雅关闭脚本失败: ${err.message}`);
+  }
+
+  closeSSEClients();
+
+  try {
+    await new Promise(resolve => server.close(() => resolve()));
+  } finally {
+    clearTimeout(exitTimer);
+  }
+
+  process.exit(0);
 }
 
 async function stopCurrentScript() {
@@ -1738,5 +1890,16 @@ server.listen(PORT, '0.0.0.0', async () => {
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
 
-process.on('SIGINT', () => server.close(() => process.exit(0)));
-process.on('SIGTERM', () => server.close(() => process.exit(0)));
+process.on('SIGINT', () => {
+  shutdownServer('SIGINT').catch(err => {
+    console.error(`[${beijingTime()}] SIGINT 关闭失败: ${err.message}`);
+    process.exit(1);
+  });
+});
+
+process.on('SIGTERM', () => {
+  shutdownServer('SIGTERM').catch(err => {
+    console.error(`[${beijingTime()}] SIGTERM 关闭失败: ${err.message}`);
+    process.exit(1);
+  });
+});
