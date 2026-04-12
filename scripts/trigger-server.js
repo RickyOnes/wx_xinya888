@@ -18,13 +18,28 @@ const MAX_HISTORY = 20;
 const MAX_LOG_DAYS = 30;
 const SSE_HEARTBEAT_INTERVAL = 25000;
 const SSE_RETRY_INTERVAL = 5000;
+const STOP_FORCE_KILL_DELAY = 15000;
 
 // Supabase 配置（从环境变量读取）
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const AUTH_ACCESS_COOKIE = 'crawler_token';
+const AUTH_REFRESH_COOKIE = 'crawler_refresh_token';
+
+function createSupabaseAuthClient() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  });
+}
+
 let supabase = null;
 if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  supabase = createSupabaseAuthClient();
   console.log('Supabase 客户端已初始化');
 } else {
   console.warn('警告：未设置 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY，认证功能将不可用！');
@@ -44,35 +59,97 @@ function parseCookies(cookieHeader) {
   return cookies;
 }
 
-// 辅助函数：设置 Cookie（httpOnly, secure 可选）
-function setCookie(res, name, value, maxAge = COOKIE_MAX_AGE) {
-  let cookie = `${name}=${encodeURIComponent(value)}; HttpOnly; Path=/; Max-Age=${maxAge}`;
-  // 如果使用 HTTPS（ClawCloud 默认是 https），添加 Secure 标志
+function buildCookie(name, value, maxAge = COOKIE_MAX_AGE) {
+  let cookie = `${name}=${encodeURIComponent(value)}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax`;
   if (process.env.NODE_ENV === 'production' || process.env.USE_SECURE_COOKIE === 'true') {
     cookie += '; Secure';
   }
-  res.setHeader('Set-Cookie', cookie);
+  return cookie;
+}
+
+function appendSetCookie(res, cookie) {
+  const existing = res.getHeader('Set-Cookie');
+  if (!existing) {
+    res.setHeader('Set-Cookie', [cookie]);
+    return;
+  }
+  const cookieList = Array.isArray(existing) ? existing : [existing];
+  res.setHeader('Set-Cookie', [...cookieList, cookie]);
+}
+
+// 辅助函数：设置 Cookie（httpOnly, secure 可选）
+function setCookie(res, name, value, maxAge = COOKIE_MAX_AGE) {
+  appendSetCookie(res, buildCookie(name, value, maxAge));
 }
 
 // 清除 Cookie
 function clearCookie(res, name) {
-  res.setHeader('Set-Cookie', `${name}=; HttpOnly; Path=/; Max-Age=0`);
+  appendSetCookie(res, buildCookie(name, '', 0));
 }
 
-// 验证 Token（从 Cookie 中读取 access_token）
+function setAuthCookies(res, session) {
+  if (!session?.access_token || !session?.refresh_token) return;
+  setCookie(res, AUTH_ACCESS_COOKIE, session.access_token, COOKIE_MAX_AGE);
+  setCookie(res, AUTH_REFRESH_COOKIE, session.refresh_token, COOKIE_MAX_AGE);
+}
+
+function clearAuthCookies(res) {
+  clearCookie(res, AUTH_ACCESS_COOKIE);
+  clearCookie(res, AUTH_REFRESH_COOKIE);
+}
+
+async function refreshAuthSession(accessToken, refreshToken) {
+  if (!refreshToken) return { session: null, user: null, error: new Error('缺少 refresh token') };
+  const authClient = createSupabaseAuthClient();
+  if (!authClient) return { session: null, user: null, error: new Error('认证服务未配置') };
+  const { data, error } = await authClient.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken
+  });
+  return {
+    session: data?.session || null,
+    user: data?.user || data?.session?.user || null,
+    error
+  };
+}
+
+// 验证 Token（从 Cookie 中读取 access_token / refresh_token）
 async function authenticateFromCookie(req, res) {
   if (!supabase) return false;
   const cookies = parseCookies(req.headers.cookie);
-  const accessToken = cookies['crawler_token'];
-  if (!accessToken) return false;
+  const accessToken = cookies[AUTH_ACCESS_COOKIE];
+  const refreshToken = cookies[AUTH_REFRESH_COOKIE];
+  if (!accessToken && !refreshToken) return false;
+
   try {
-    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
-    if (error || !user) return false;
-    // 可选：将用户信息挂载到 req.user
+    if (accessToken) {
+      const authClient = createSupabaseAuthClient();
+      const { data: { user }, error } = await authClient.auth.getUser(accessToken);
+      if (!error && user) {
+        req.user = user;
+        return true;
+      }
+      console.warn('Access Token 验证失败，尝试自动刷新会话:', error?.message || '未知错误');
+    }
+
+    if (!accessToken || !refreshToken) {
+      clearAuthCookies(res);
+      return false;
+    }
+
+    const { session, user, error } = await refreshAuthSession(accessToken, refreshToken);
+    if (error || !session?.access_token || !session?.refresh_token || !user) {
+      console.error('刷新 Supabase 会话失败:', error?.message || '未知错误');
+      clearAuthCookies(res);
+      return false;
+    }
+
+    setAuthCookies(res, session);
     req.user = user;
     return true;
   } catch (err) {
     console.error('Token 验证失败:', err.message);
+    clearAuthCookies(res);
     return false;
   }
 }
@@ -96,6 +173,8 @@ let isRunning = false;
 let currentScript = null;
 let currentChild = null;
 let currentTimeout = null;
+let currentStopReason = null;
+let currentForceKillTimer = null;
 let taskQueue = [];
 let lastRunResult = null;
 let lastRunTime = null;
@@ -129,10 +208,18 @@ function broadcastLog(level, message) {
   sendSSE('log', { level, message, timestamp: beijingTime() });
 }
 
-function broadcastState() {
-  const state = {
+function clearForceKillTimer() {
+  if (!currentForceKillTimer) return;
+  clearTimeout(currentForceKillTimer);
+  currentForceKillTimer = null;
+}
+
+function getStatePayload() {
+  return {
     isRunning,
     currentScript,
+    stopRequested: Boolean(currentStopReason),
+    stopReason: currentStopReason,
     queueLength: taskQueue.length,
     lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
     lastRunResult: lastRunResult ? {
@@ -142,7 +229,55 @@ function broadcastState() {
       timestamp: lastRunResult.timestamp
     } : null
   };
-  sendSSE('state', state);
+}
+
+function broadcastState() {
+  sendSSE('state', getStatePayload());
+}
+
+function requestChildStop(reason) {
+  if (!currentChild) {
+    return { success: false, message: '没有正在运行的脚本' };
+  }
+  if (currentStopReason) {
+    return { success: false, message: '脚本正在终止中，请稍候' };
+  }
+
+  const child = currentChild;
+  const scriptName = currentScript || '未知脚本';
+  const signalSent = child.kill('SIGTERM');
+  if (!signalSent) {
+    return { success: false, message: '终止信号发送失败，请稍后重试' };
+  }
+
+  currentStopReason = reason;
+  if (currentTimeout) {
+    clearTimeout(currentTimeout);
+    currentTimeout = null;
+  }
+  clearForceKillTimer();
+  currentForceKillTimer = setTimeout(() => {
+    if (currentChild !== child) return;
+    broadcastLog('error', `脚本 ${scriptName} 在 ${Math.round(STOP_FORCE_KILL_DELAY / 1000)} 秒内未退出，强制终止`);
+    try {
+      child.kill('SIGKILL');
+    } catch (err) {
+      console.error(`强制终止脚本 ${scriptName} 失败: ${err.message}`);
+      broadcastLog('error', `强制终止脚本 ${scriptName} 失败: ${err.message}`);
+    }
+  }, STOP_FORCE_KILL_DELAY);
+
+  if (reason === 'timeout') {
+    broadcastLog('error', `脚本 ${scriptName} 执行超时，已发送终止信号，等待退出`);
+  } else {
+    broadcastLog('info', `已向脚本 ${scriptName} 发送终止信号，等待退出`);
+  }
+  broadcastState();
+
+  return {
+    success: true,
+    message: reason === 'timeout' ? '脚本执行超时，正在终止' : '已发送终止信号，等待脚本退出'
+  };
 }
 
 async function appendHistoryLog(entry) {
@@ -194,6 +329,8 @@ function runScriptTask(scriptName, resolve, reject) {
 
   isRunning = true;
   currentScript = scriptName;
+  currentStopReason = null;
+  clearForceKillTimer();
   broadcastState();
   const startTime = Date.now();
   const startTimeStr = beijingTime(new Date(startTime));
@@ -212,8 +349,7 @@ function runScriptTask(scriptName, resolve, reject) {
     currentChild = child;
 
     currentTimeout = setTimeout(() => {
-      broadcastLog('error', `脚本 ${scriptName} 执行超时，强制终止`);
-      child.kill('SIGTERM');
+      requestChildStop('timeout');
     }, 30 * 60 * 1000);
 
     let output = '';
@@ -233,18 +369,25 @@ function runScriptTask(scriptName, resolve, reject) {
       broadcastLog('stderr', str.trim());
     });
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      const stopReason = currentStopReason;
       if (currentTimeout) clearTimeout(currentTimeout);
+      clearForceKillTimer();
       currentChild = null;
       currentTimeout = null;
+      currentStopReason = null;
       isRunning = false;
+      currentScript = null;
       const endTime = new Date();
       const duration = Math.floor((Date.now() - startTime) / 1000);
+      const exitCode = code === null ? (signal || -1) : code;
+      const success = !stopReason && code === 0;
       lastRunTime = endTime;
-      const success = code === 0;
       const result = {
         success,
-        exitCode: code,
+        exitCode,
+        signal: signal || null,
+        stopReason,
         script: scriptName,
         timestamp: startTimeStr,
         duration,
@@ -252,12 +395,21 @@ function runScriptTask(scriptName, resolve, reject) {
         error: errorOutput.slice(-5000)
       };
       lastRunResult = result;
-      console.log(`[${beijingTime(endTime)}] 脚本 ${scriptName} 执行完成，退出码: ${code}`);
-      console.log(`总运行时长: ${duration} 秒`);
-      broadcastLog('info', `脚本 ${scriptName} 执行完成，退出码: ${code}，耗时 ${duration} 秒`);
+
+      if (stopReason === 'manual') {
+        console.warn(`[${beijingTime(endTime)}] 脚本 ${scriptName} 已手动终止，退出信号: ${signal || 'SIGTERM'}`);
+        broadcastLog('info', `脚本 ${scriptName} 已手动终止，退出信号: ${signal || 'SIGTERM'}，耗时 ${duration} 秒`);
+      } else if (stopReason === 'timeout') {
+        console.error(`[${beijingTime(endTime)}] 脚本 ${scriptName} 因超时被终止，退出信号: ${signal || 'SIGTERM'}`);
+        broadcastLog('error', `脚本 ${scriptName} 因超时被终止，退出信号: ${signal || 'SIGTERM'}，耗时 ${duration} 秒`);
+      } else {
+        console.log(`[${beijingTime(endTime)}] 脚本 ${scriptName} 执行完成，退出码: ${exitCode}`);
+        console.log(`总运行时长: ${duration} 秒`);
+        broadcastLog('info', `脚本 ${scriptName} 执行完成，退出码: ${exitCode}，耗时 ${duration} 秒`);
+      }
       console.log("==========================================");
 
-      addToHistory(scriptName, startTimeStr, duration, success, code);
+      addToHistory(scriptName, startTimeStr, duration, success, exitCode);
       broadcastState();
       resolve(result);
       runNext();
@@ -265,9 +417,12 @@ function runScriptTask(scriptName, resolve, reject) {
 
     child.on('error', (err) => {
       if (currentTimeout) clearTimeout(currentTimeout);
+      clearForceKillTimer();
       currentChild = null;
       currentTimeout = null;
+      currentStopReason = null;
       isRunning = false;
+      currentScript = null;
       const duration = Math.floor((Date.now() - startTime) / 1000);
       const result = {
         success: false,
@@ -287,6 +442,8 @@ function runScriptTask(scriptName, resolve, reject) {
       runNext();
     });
   }).catch(err => {
+    clearForceKillTimer();
+    currentStopReason = null;
     const duration = 0;
     const result = {
       success: false,
@@ -326,17 +483,7 @@ function runNext() {
 }
 
 async function stopCurrentScript() {
-  if (!currentChild) {
-    return { success: false, message: '没有正在运行的脚本' };
-  }
-  currentChild.kill('SIGTERM');
-  if (currentTimeout) clearTimeout(currentTimeout);
-  currentChild = null;
-  currentTimeout = null;
-  isRunning = false;
-  currentScript = null;
-  broadcastState();
-  return { success: true, message: '已发送终止信号' };
+  return requestChildStop('manual');
 }
 
 async function getAvailableScripts() {
@@ -518,14 +665,19 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ error: '邮箱和密码不能为空' }));
           return;
         }
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        const authClient = createSupabaseAuthClient();
+        const { data, error } = await authClient.auth.signInWithPassword({ email, password });
         if (error) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: error.message }));
           return;
         }
-        // 设置 httpOnly Cookie
-        setCookie(res, 'crawler_token', data.session.access_token, COOKIE_MAX_AGE);
+        if (!data.session?.access_token || !data.session?.refresh_token) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '登录成功，但未获取到完整会话' }));
+          return;
+        }
+        setAuthCookies(res, data.session);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (err) {
@@ -538,7 +690,7 @@ const server = http.createServer(async (req, res) => {
 
   // 登出
   if (pathname === '/logout' && method === 'POST') {
-    clearCookie(res, 'crawler_token');
+    clearAuthCookies(res);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
     return;
@@ -598,7 +750,7 @@ const server = http.createServer(async (req, res) => {
   // 健康检查
   if (pathname === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
+    res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, stop_requested: Boolean(currentStopReason), last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
     return;
   }
 
@@ -608,6 +760,8 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       crawler_running: isRunning,
       current_script: currentScript,
+      stop_requested: Boolean(currentStopReason),
+      stop_reason: currentStopReason,
       queue_length: taskQueue.length,
       last_run_time: lastRunTime ? beijingTime(lastRunTime) : null,
       last_run_result: lastRunResult ? {
@@ -814,18 +968,7 @@ const server = http.createServer(async (req, res) => {
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
     res.write(`retry: ${SSE_RETRY_INTERVAL}\n\n`);
     sseClients.push(res);
-    sendSSE('state', {
-      isRunning,
-      currentScript,
-      queueLength: taskQueue.length,
-      lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
-      lastRunResult: lastRunResult ? {
-        script: lastRunResult.script,
-        success: lastRunResult.success,
-        duration: lastRunResult.duration,
-        timestamp: lastRunResult.timestamp
-      } : null
-    });
+    sendSSE('state', getStatePayload());
     req.on('close', () => {
       sseClients = sseClients.filter(client => client !== res);
     });
@@ -1148,9 +1291,13 @@ const server = http.createServer(async (req, res) => {
             let serviceHealthy = true;
             let sseStatus = 'connecting';
             let reconnectAttempts = 0;
+            let authRecoveryPromise = null;
+            let loginRedirectTimer = null;
+            let loginPromptShown = false;
             const SSE_BASE_RECONNECT_DELAY = 5000;
             const SSE_MAX_RECONNECT_DELAY = 30000;
             const HEALTH_CHECK_TIMEOUT = 5000;
+            const AUTH_RECOVERY_DELAY = 1200;
 
             function setLogSectionVisible(visible) {
               if (visible) {
@@ -1169,6 +1316,10 @@ const server = http.createServer(async (req, res) => {
             }
 
             function renderHealthStatus() {
+              if (authRecoveryPromise) {
+                healthStatusSpan.innerText = '连接恢复中...';
+                return;
+              }
               if (sseStatus === 'reconnecting') {
                 healthStatusSpan.innerText = '连接断开，重连中...';
                 return;
@@ -1191,10 +1342,63 @@ const server = http.createServer(async (req, res) => {
               reconnectTimer = null;
             }
 
+            function clearLoginRedirectTimer() {
+              if (!loginRedirectTimer) return;
+              clearTimeout(loginRedirectTimer);
+              loginRedirectTimer = null;
+            }
+
+            function resetLoginPrompt() {
+              loginPromptShown = false;
+              clearLoginRedirectTimer();
+            }
+
+            function promptLogin(message = '登录状态已失效，请重新登录') {
+              if (loginPromptShown) return;
+              loginPromptShown = true;
+              clearLoginRedirectTimer();
+              showToast(message, 'error');
+              loginRedirectTimer = setTimeout(() => {
+                window.location.href = '/login';
+              }, 1200);
+            }
+
+            function sleep(ms) {
+              return new Promise(resolve => setTimeout(resolve, ms));
+            }
+
+            async function attemptSilentAuthRecovery(source) {
+              if (authRecoveryPromise) return authRecoveryPromise;
+              authRecoveryPromise = (async () => {
+                try {
+                  await sleep(AUTH_RECOVERY_DELAY);
+                  const res = await fetch('/check-auth', { cache: 'no-store' });
+                  const data = await res.json().catch(() => ({}));
+                  if (res.ok && data.authenticated) {
+                    resetLoginPrompt();
+                    return true;
+                  }
+                  if (res.ok) {
+                    promptLogin();
+                  }
+                  return false;
+                } catch (err) {
+                  console.warn('静默鉴权恢复检查失败', source, err);
+                  return false;
+                } finally {
+                  authRecoveryPromise = null;
+                  renderHealthStatus();
+                }
+              })();
+              renderHealthStatus();
+              return authRecoveryPromise;
+            }
+
             function markSSEAlive() {
               lastSSEActivityAt = Date.now();
               reconnectAttempts = 0;
               clearReconnectTimer();
+              resetLoginPrompt();
               setSSEStatus('connected');
             }
 
@@ -1248,7 +1452,9 @@ const server = http.createServer(async (req, res) => {
                   signal: controller.signal
                 });
                 if (!res.ok) {
-                  throw new Error('HTTP ' + res.status);
+                  const err = new Error('HTTP ' + res.status);
+                  err.status = res.status;
+                  throw err;
                 }
                 return await res.json();
               } finally {
@@ -1260,8 +1466,19 @@ const server = http.createServer(async (req, res) => {
               try {
                 const data = await fetchJSONWithTimeout('/health', HEALTH_CHECK_TIMEOUT);
                 serviceHealthy = data.status === 'ok';
+                resetLoginPrompt();
               } catch (e) {
-                serviceHealthy = false;
+                if ((e.status === 401 || e.status === 403) && await attemptSilentAuthRecovery('health')) {
+                  try {
+                    const data = await fetchJSONWithTimeout('/health', HEALTH_CHECK_TIMEOUT);
+                    serviceHealthy = data.status === 'ok';
+                    resetLoginPrompt();
+                  } catch (retryError) {
+                    serviceHealthy = false;
+                  }
+                } else {
+                  serviceHealthy = false;
+                }
               }
               renderHealthStatus();
             }
@@ -1298,12 +1515,15 @@ const server = http.createServer(async (req, res) => {
                 try {
                   const state = JSON.parse(e.data);
                   const isRunning = state.isRunning;
-                  globalStatusSpan.innerText = isRunning ? '运行中' : '空闲';
+                  const stopRequested = !!state.stopRequested;
+                  globalStatusSpan.innerText = stopRequested ? '终止中...' : (isRunning ? '运行中' : '空闲');
                   if (isRunning) {
                     statusIndicator.className = 'status-indicator running';
                   } else {
                     statusIndicator.className = 'status-indicator';
                   }
+                  stopBtn.disabled = !isRunning || stopRequested;
+                  stopBtn.innerText = stopRequested ? '⏳ 终止中...' : '⏹️ 终止当前脚本';
                   setLogSectionVisible(isRunning);
                   queueLenSpan.innerText = state.queueLength;
                   currentScriptSpan.innerText = state.currentScript || '无';
@@ -1318,6 +1538,14 @@ const server = http.createServer(async (req, res) => {
 
               evtSource.onerror = function(err) {
                 const delay = reconnectSSE();
+                if (navigator.onLine) {
+                  attemptSilentAuthRecovery('events').then(recovered => {
+                    if (recovered) {
+                      reconnectAttempts = 0;
+                      reconnectSSE(0);
+                    }
+                  });
+                }
                 console.error('SSE连接错误，' + Math.round(delay / 1000) + '秒后重连', err);
               };
             }
