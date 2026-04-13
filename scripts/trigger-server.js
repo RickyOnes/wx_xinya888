@@ -364,8 +364,6 @@ function getStatePayload() {
   return {
     isRunning,
     currentScript,
-    stopRequested: Boolean(currentStopReason),
-    stopReason: currentStopReason,
     queueLength: taskQueue.length,
     shuttingDown: isShuttingDown,
     lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
@@ -1047,7 +1045,7 @@ const server = http.createServer(async (req, res) => {
   // 健康检查
   if (pathname === '/health' && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, stop_requested: Boolean(currentStopReason), last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
+    res.end(JSON.stringify({ status: 'ok', service: 'crawler-trigger', port: PORT, crawler_running: isRunning, current_script: currentScript, last_run: lastRunTime ? beijingTime(lastRunTime) : null }));
     return;
   }
 
@@ -1057,8 +1055,6 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       crawler_running: isRunning,
       current_script: currentScript,
-      stop_requested: Boolean(currentStopReason),
-      stop_reason: currentStopReason,
       queue_length: taskQueue.length,
       last_run_time: lastRunTime ? beijingTime(lastRunTime) : null,
       last_run_result: lastRunResult ? {
@@ -1992,9 +1988,9 @@ const server = http.createServer(async (req, res) => {
                 markSSEAlive();
                 try {
                   const state = JSON.parse(e.data);
-                  const isRunning = state.isRunning;
-                  const stopRequested = !!state.stopRequested;
-                  globalStatusSpan.innerText = stopRequested ? '终止中...' : (isRunning ? '运行中' : '空闲');
+                  const isRunning = !!state.isRunning;
+                  const shuttingDown = !!state.shuttingDown;
+                  globalStatusSpan.innerText = shuttingDown ? '关闭中' : (isRunning ? '运行中' : '空闲');
                   if (isRunning) {
                     statusIndicator.className = 'status-indicator running';
                   } else {
