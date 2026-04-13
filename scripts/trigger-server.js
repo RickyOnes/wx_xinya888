@@ -14,6 +14,7 @@ const API_KEY = process.env.API_KEY || '';
 const SCRIPTS_DIR = '/app/scripts';
 const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
+const HISTORY_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'history.json');
 const MAX_HISTORY = 20;
 const MAX_LOG_DAYS = 30;
 const SSE_HEARTBEAT_INTERVAL = 25000;
@@ -168,6 +169,14 @@ function getDisplayName(scriptFileName) {
   return SCRIPT_DISPLAY_NAMES[scriptFileName] || scriptFileName.replace(/\.js$/, '');
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 // ---------- 全局状态 ----------
 let isRunning = false;
 let currentScript = null;
@@ -269,6 +278,88 @@ function hasSoftFailure(scriptName, output, errorOutput) {
   return false;
 }
 
+function extractFailureDetail(result) {
+  const lines = `${result.error || ''}\n${result.output || ''}`
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const priorityPatterns = [
+    /❌/i,
+    /错误|失败|异常|超时|终止|未获取到|未捕获到|不存在/i,
+    /Error|Failed|Timeout|ENOENT|EACCES|SIGTERM|SIGKILL|already running|Could not find Chrome/i
+  ];
+
+  const matchedLines = lines.filter(line => priorityPatterns.some(pattern => pattern.test(line)));
+  const selectedLines = (matchedLines.length > 0 ? matchedLines : lines).slice(-8);
+
+  const summaryLines = [
+    `脚本: ${result.script}`,
+    `时间: ${result.timestamp}`,
+    `退出码: ${result.exitCode}`
+  ];
+
+  if (result.stopReason === 'timeout') {
+    summaryLines.push('原因: 脚本执行超时');
+  } else if (result.stopReason === 'shutdown') {
+    summaryLines.push('原因: 服务关闭导致脚本中断');
+  } else if (result.stopReason) {
+    summaryLines.push(`原因: ${result.stopReason}`);
+  } else if (result.softFailure) {
+    summaryLines.push('原因: 虽然进程退出码为 0，但日志中检测到关键失败内容');
+  } else if (result.error) {
+    summaryLines.push('原因: 运行时异常');
+  }
+
+  if (selectedLines.length === 0) {
+    summaryLines.push('关键失败内容: 暂无可展示的失败详情');
+    return summaryLines.join('\n');
+  }
+
+  return `${summaryLines.join('\n')}\n\n关键失败内容:\n${selectedLines.join('\n')}`.slice(0, 1800);
+}
+
+function createHistoryId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeHistoryRecord(record) {
+  if (!record || typeof record !== 'object') return null;
+
+  const duration = Number.parseInt(record.duration, 10);
+  const exitCode = Number.parseInt(record.exitCode, 10);
+
+  return {
+    id: typeof record.id === 'string' && record.id ? record.id : createHistoryId(),
+    timestamp: String(record.timestamp || ''),
+    script: String(record.script || ''),
+    duration: Number.isNaN(duration) ? 0 : duration,
+    success: Boolean(record.success),
+    exitCode: Number.isNaN(exitCode) ? -1 : exitCode,
+    failureDetail: typeof record.failureDetail === 'string' ? record.failureDetail : ''
+  };
+}
+
+function buildHistorySummary(record) {
+  return {
+    id: record.id,
+    timestamp: record.timestamp,
+    script: record.script,
+    duration: record.duration,
+    success: record.success,
+    exitCode: record.exitCode
+  };
+}
+
+function buildHistoryStatusHtml(record) {
+  if (record.success) {
+    return '<span style="color: green;">成功</span>';
+  }
+
+  const historyId = escapeHtml(record.id || '');
+  return `<button type="button" class="history-status-btn failed" data-history-id="${historyId}">失败</button>`;
+}
+
 function getStatePayload() {
   return {
     isRunning,
@@ -351,6 +442,39 @@ function requestChildStop(reason) {
   };
 }
 
+async function readHistoryRecordsFromDisk() {
+  try {
+    const content = await fs.readFile(HISTORY_FILE, 'utf8');
+    if (!content.trim()) return [];
+
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed)) {
+      throw new Error('history.json 格式无效');
+    }
+
+    return parsed
+      .map(normalizeHistoryRecord)
+      .filter(Boolean)
+      .slice(0, MAX_HISTORY);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    console.error('读取历史详情文件失败:', err.message);
+    return null;
+  }
+}
+
+async function writeHistoryRecordsToDisk(records) {
+  try {
+    const normalizedRecords = records
+      .map(normalizeHistoryRecord)
+      .filter(Boolean)
+      .slice(0, MAX_HISTORY);
+    await fs.writeFile(HISTORY_FILE, JSON.stringify(normalizedRecords, null, 2), 'utf8');
+  } catch (err) {
+    console.error('写入历史详情文件失败:', err.message);
+  }
+}
+
 async function appendHistoryLog(entry) {
   const line = `${entry.timestamp} | ${entry.script} | 耗时:${entry.duration}s | ${entry.success ? '成功' : '失败'} | 退出码:${entry.exitCode}\n`;
   try {
@@ -358,6 +482,8 @@ async function appendHistoryLog(entry) {
   } catch (err) {
     console.error('写入历史日志失败:', err.message);
   }
+
+  await writeHistoryRecordsToDisk(history);
 }
 
 async function cleanOldLogs() {
@@ -379,14 +505,16 @@ async function cleanOldLogs() {
   }
 }
 
-function addToHistory(script, startTimeStr, duration, success, exitCode) {
-  const record = {
+function addToHistory(script, startTimeStr, duration, success, exitCode, failureDetail = '') {
+  const record = normalizeHistoryRecord({
+    id: createHistoryId(),
     timestamp: startTimeStr,
     script,
     duration,
     success,
-    exitCode
-  };
+    exitCode,
+    failureDetail
+  });
   history.unshift(record);
   if (history.length > MAX_HISTORY) history.pop();
   appendHistoryLog(record);
@@ -468,6 +596,7 @@ function runScriptTask(scriptName, resolve, reject) {
         output: output.slice(-5000),
         error: errorOutput.slice(-5000)
       };
+      result.failureDetail = success ? '' : extractFailureDetail(result);
       lastRunResult = result;
 
       if (stopReason === 'manual') {
@@ -490,7 +619,7 @@ function runScriptTask(scriptName, resolve, reject) {
       }
       console.log("==========================================");
 
-      addToHistory(scriptName, startTimeStr, duration, success, exitCode);
+      addToHistory(scriptName, startTimeStr, duration, success, exitCode, result.failureDetail);
       broadcastState();
       resolve(result);
       runNext();
@@ -514,10 +643,11 @@ function runScriptTask(scriptName, resolve, reject) {
         output: output.slice(-5000),
         error: err.message
       };
+      result.failureDetail = extractFailureDetail(result);
       lastRunResult = result;
       console.error(`[${beijingTime()}] 脚本 ${scriptName} 执行错误: ${err.message}`);
       broadcastLog('error', `脚本 ${scriptName} 执行错误: ${err.message}`);
-      addToHistory(scriptName, startTimeStr, duration, false, -1);
+      addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail);
       broadcastState();
       resolve(result);
       runNext();
@@ -535,10 +665,11 @@ function runScriptTask(scriptName, resolve, reject) {
       output: '',
       error: err.message
     };
+    result.failureDetail = extractFailureDetail(result);
     lastRunResult = result;
     console.error(`[${beijingTime()}] 脚本 ${scriptName} 定位失败: ${err.message}`);
     broadcastLog('error', `脚本 ${scriptName} 定位失败: ${err.message}`);
-    addToHistory(scriptName, startTimeStr, duration, false, -1);
+    addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail);
     isRunning = false;
     currentScript = null;
     broadcastState();
@@ -634,11 +765,7 @@ async function shutdownServer(signal) {
   process.exit(0);
 }
 
-async function stopCurrentScript() {
-  return requestChildStop('manual');
-}
-
-async function getAvailableScripts() {
+async function getAvailableScriptEntries() {
   const scriptMap = new Map();
   try {
     const mainFiles = await fs.readdir(SCRIPTS_DIR);
@@ -657,7 +784,17 @@ async function getAvailableScripts() {
       }
     }
   } catch (err) { if (err.code !== 'ENOENT') console.error(err); }
-  return Array.from(scriptMap.keys());
+
+  return Array.from(scriptMap.entries()).map(([name, directory]) => ({
+    name,
+    directory,
+    deletable: directory === USER_DATA_SCRIPTS_DIR
+  }));
+}
+
+async function getAvailableScripts() {
+  const entries = await getAvailableScriptEntries();
+  return entries.map(entry => entry.name);
 }
 
 async function getScriptPath(scriptName) {
@@ -668,6 +805,12 @@ async function getScriptPath(scriptName) {
 }
 
 async function loadHistoryFromFile() {
+  const diskHistory = await readHistoryRecordsFromDisk();
+  if (diskHistory) {
+    history = diskHistory;
+    return;
+  }
+
   try {
     const content = await fs.readFile(LOG_FILE, 'utf8');
     const lines = content.split(/\r?\n/).filter(l => l.trim());
@@ -675,16 +818,18 @@ async function loadHistoryFromFile() {
     for (const line of lines.slice(-MAX_HISTORY)) {
       const match = line.match(/^(.+?) \| (.+?) \| 耗时:(\d+)s \| (成功|失败) \| 退出码:(-?\d+)/);
       if (match) {
-        records.push({
+        records.push(normalizeHistoryRecord({
           timestamp: match[1],
           script: match[2],
-          duration: parseInt(match[3]),
+          duration: Number.parseInt(match[3], 10),
           success: match[4] === '成功',
-          exitCode: parseInt(match[5])
-        });
+          exitCode: Number.parseInt(match[5], 10),
+          failureDetail: ''
+        }));
       }
     }
-    history = records.reverse();
+    history = records.filter(Boolean).reverse();
+    await writeHistoryRecordsToDisk(history);
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('加载历史日志失败:', err.message);
   }
@@ -857,7 +1002,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/stop', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -928,9 +1073,42 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 历史记录
-  if (pathname === '/history' && method === 'GET') {
+  if (pathname === '/history/detail' && method === 'GET') {
+    const historyId = parsedUrl.searchParams.get('id');
+    if (!historyId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '缺少历史记录ID' }));
+      return;
+    }
+
+    const diskHistory = await readHistoryRecordsFromDisk();
+    if (diskHistory) {
+      history = diskHistory;
+    }
+
+    const record = (diskHistory || history).find(item => item.id === historyId);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未找到对应的失败记录' }));
+      return;
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(history));
+    res.end(JSON.stringify({
+      id: record.id,
+      failureDetail: record.failureDetail || ''
+    }));
+    return;
+  }
+
+  if (pathname === '/history' && method === 'GET') {
+    const diskHistory = await readHistoryRecordsFromDisk();
+    if (diskHistory) {
+      history = diskHistory;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify((diskHistory || history).map(buildHistorySummary)));
     return;
   }
 
@@ -977,14 +1155,6 @@ const server = http.createServer(async (req, res) => {
         duration: result.duration
       }
     }));
-    return;
-  }
-
-  // 终止脚本
-  if (pathname === '/stop' && method === 'POST') {
-    const result = await stopCurrentScript();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
     return;
   }
 
@@ -1129,13 +1299,14 @@ const server = http.createServer(async (req, res) => {
 
   // Web 控制台界面（已通过认证中间件保护，这里直接返回 HTML）
   if (pathname === '/trigger' && method === 'GET') {
-    const availableScripts = await getAvailableScripts();
-    const buttonsHtml = availableScripts.map(script => {
-      const displayName = getDisplayName(script);
+    const availableScripts = await getAvailableScriptEntries();
+    const buttonsHtml = availableScripts.map(({ name, deletable }) => {
+      const displayName = escapeHtml(getDisplayName(name));
+      const safeScriptName = escapeHtml(name);
       return `
-        <div class="script-item">
-          <button class="script-btn" data-script="${script.replace(/"/g, '&quot;')}">${displayName}</button>
-          <button class="delete-btn" data-script="${script.replace(/"/g, '&quot;')}" title="删除脚本">🗑️</button>
+        <div class="script-item" title="${safeScriptName}">
+          <button class="script-btn" data-script="${safeScriptName}" title="${safeScriptName}">${displayName}</button>
+          ${deletable ? `<button class="delete-btn" data-script="${safeScriptName}" title="删除脚本 ${safeScriptName}">🗑️</button>` : ''}
         </div>
       `;
     }).join('\n');
@@ -1148,10 +1319,10 @@ const server = http.createServer(async (req, res) => {
     const historyRows = history.map((h, idx) => `
       <tr>
         <td>${idx + 1}</td>
-        <td>${h.timestamp}</td>
-        <td>${h.script}</td>
+        <td>${escapeHtml(h.timestamp)}</td>
+        <td>${escapeHtml(h.script)}</td>
         <td>${h.duration}秒</td>
-        <td style="color: ${h.success ? 'green' : 'red'}">${h.success ? '成功' : '失败'}</td>
+        <td>${buildHistoryStatusHtml(h)}</td>
         <td>${h.exitCode}</td>
       </tr>
     `).join('');
@@ -1311,6 +1482,73 @@ const server = http.createServer(async (req, res) => {
               font-weight: 600;
             }
             .history-table tr:nth-child(even) { background: #f9f9f9; }
+            .history-status-btn {
+              background: none;
+              border: none;
+              padding: 0;
+              font: inherit;
+              cursor: pointer;
+              text-decoration: underline;
+              text-underline-offset: 2px;
+            }
+            .history-status-btn.failed {
+              color: #dc2626;
+              font-weight: 600;
+            }
+            .modal-overlay {
+              position: fixed;
+              inset: 0;
+              background: rgba(15, 23, 42, 0.55);
+              display: none;
+              align-items: center;
+              justify-content: center;
+              padding: 20px;
+              z-index: 10001;
+            }
+            .modal-overlay.visible {
+              display: flex;
+            }
+            .modal-card {
+              width: min(720px, 100%);
+              max-height: 80vh;
+              overflow: hidden;
+              background: #fff;
+              border-radius: 16px;
+              box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+              display: flex;
+              flex-direction: column;
+            }
+            .modal-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              padding: 18px 20px;
+              border-bottom: 1px solid #e2e8f0;
+            }
+            .modal-close {
+              border: none;
+              background: #eef2ff;
+              color: #4338ca;
+              border-radius: 999px;
+              width: 34px;
+              height: 34px;
+              cursor: pointer;
+              font-size: 18px;
+            }
+            .modal-content {
+              padding: 20px;
+              overflow: auto;
+            }
+            .modal-pre {
+              margin: 0;
+              white-space: pre-wrap;
+              word-break: break-word;
+              font-family: Consolas, Monaco, monospace;
+              font-size: 13px;
+              line-height: 1.6;
+              color: #1e293b;
+            }
             .toast {
               position: fixed;
               top: 20px;
@@ -1372,10 +1610,7 @@ const server = http.createServer(async (req, res) => {
                 </div>
               </div>
 
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h2>📜 可用脚本</h2>
-                <button id="stopBtn" class="btn-small" style="background:#e53e3e;">⏹️ 终止当前脚本</button>
-              </div>
+              <h2>📜 可用脚本</h2>
               <div class="script-grid" id="buttonGrid">${buttonsHtml}</div>
 
               <div class="upload-area">
@@ -1385,8 +1620,11 @@ const server = http.createServer(async (req, res) => {
                 <span id="uploadMsg" style="margin-left: 10px;"></span>
               </div>
 
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <h2 style="margin-bottom:0;">📡 实时执行日志</h2>
+                <button id="toggleLogBtn" class="btn-small" type="button">👁️ 显示日志</button>
+              </div>
               <div class="log-section" id="logSection">
-                <h2>📡 实时执行日志</h2>
                 <div class="log-box" id="logBox"></div>
               </div>
 
@@ -1412,6 +1650,18 @@ const server = http.createServer(async (req, res) => {
             </div>
           </div>
 
+          <div id="failureModal" class="modal-overlay">
+            <div class="modal-card">
+              <div class="modal-header">
+                <h3>失败详情</h3>
+                <button id="closeFailureModalBtn" class="modal-close" type="button">×</button>
+              </div>
+              <div class="modal-content">
+                <pre id="failureModalContent" class="modal-pre"></pre>
+              </div>
+            </div>
+          </div>
+
           <script>
             const logBox = document.getElementById('logBox');
             const logSection = document.getElementById('logSection');
@@ -1421,11 +1671,15 @@ const server = http.createServer(async (req, res) => {
             const lastRunSpan = document.getElementById('lastRun');
             const statusIndicator = document.getElementById('statusIndicator');
             const healthStatusSpan = document.getElementById('healthStatus');
-            const stopBtn = document.getElementById('stopBtn');
+            const toggleLogBtn = document.getElementById('toggleLogBtn');
             const uploadFile = document.getElementById('uploadFile');
             const uploadBtn = document.getElementById('uploadBtn');
             const uploadMsg = document.getElementById('uploadMsg');
             const logoutBtn = document.getElementById('logoutBtn');
+            const historyBody = document.getElementById('historyBody');
+            const failureModal = document.getElementById('failureModal');
+            const failureModalContent = document.getElementById('failureModalContent');
+            const closeFailureModalBtn = document.getElementById('closeFailureModalBtn');
 
             function showToast(msg, type = 'info') {
               const toast = document.createElement('div');
@@ -1433,6 +1687,47 @@ const server = http.createServer(async (req, res) => {
               toast.textContent = msg;
               document.body.appendChild(toast);
               setTimeout(() => toast.remove(), 3000);
+            }
+
+            function escapeHtmlText(value) {
+              return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+            }
+
+            function buildHistoryStatusCell(historyItem) {
+              if (historyItem.success) {
+                return '<span style="color: green;">成功</span>';
+              }
+
+              const historyId = encodeURIComponent(historyItem.id || '');
+              return '<button type="button" class="history-status-btn failed" data-history-id="' + historyId + '">失败</button>';
+            }
+
+            function showFailureModal(detail) {
+              failureModalContent.textContent = detail || '该失败记录暂无详细内容。';
+              failureModal.classList.add('visible');
+            }
+
+            async function openFailureDetail(historyId) {
+              showFailureModal('加载中...');
+              try {
+                const res = await fetch('/history/detail?id=' + encodeURIComponent(historyId), { cache: 'no-store' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                  throw new Error(data.error || '获取失败详情失败');
+                }
+                showFailureModal(data.failureDetail || '该失败记录暂无详细内容。');
+              } catch (err) {
+                showFailureModal('加载失败详情时出错: ' + err.message);
+              }
+            }
+
+            function closeFailureModal() {
+              failureModal.classList.remove('visible');
             }
 
             let reconnectTimer = null;
@@ -1446,25 +1741,56 @@ const server = http.createServer(async (req, res) => {
             let authRecoveryPromise = null;
             let loginRedirectTimer = null;
             let loginPromptShown = false;
+            let latestIsRunning = false;
+            let manualLogOverride = null;
             const SSE_BASE_RECONNECT_DELAY = 5000;
             const SSE_MAX_RECONNECT_DELAY = 30000;
             const HEALTH_CHECK_TIMEOUT = 5000;
             const AUTH_RECOVERY_DELAY = 1200;
 
-            function setLogSectionVisible(visible) {
-              if (visible) {
+            function updateLogToggleButton() {
+              const visible = logSection.classList.contains('visible');
+              toggleLogBtn.innerText = visible ? '🙈 隐藏日志' : '👁️ 显示日志';
+            }
+
+            function setLogSectionVisible(isRunning) {
+              const wasRunning = latestIsRunning;
+              latestIsRunning = isRunning;
+
+              if (!isRunning && wasRunning && manualLogOverride === false) {
+                manualLogOverride = null;
+              }
+
+              const shouldShowNow = manualLogOverride === true || (manualLogOverride !== false && isRunning);
+              if (shouldShowNow) {
                 if (hideLogTimer) {
                   clearTimeout(hideLogTimer);
                   hideLogTimer = null;
                 }
                 logSection.classList.add('visible');
+                updateLogToggleButton();
                 return;
               }
-              if (hideLogTimer) clearTimeout(hideLogTimer);
-              hideLogTimer = setTimeout(() => {
+
+              if (hideLogTimer) {
+                clearTimeout(hideLogTimer);
+                hideLogTimer = null;
+              }
+
+              if (manualLogOverride === false) {
                 logSection.classList.remove('visible');
+                updateLogToggleButton();
+                return;
+              }
+
+              hideLogTimer = setTimeout(() => {
+                if (!latestIsRunning && manualLogOverride !== true) {
+                  logSection.classList.remove('visible');
+                  updateLogToggleButton();
+                }
                 hideLogTimer = null;
               }, 10000);
+              updateLogToggleButton();
             }
 
             function renderHealthStatus() {
@@ -1674,8 +2000,6 @@ const server = http.createServer(async (req, res) => {
                   } else {
                     statusIndicator.className = 'status-indicator';
                   }
-                  stopBtn.disabled = !isRunning || stopRequested;
-                  stopBtn.innerText = stopRequested ? '⏳ 终止中...' : '⏹️ 终止当前脚本';
                   setLogSectionVisible(isRunning);
                   queueLenSpan.innerText = state.queueLength;
                   currentScriptSpan.innerText = state.currentScript || '无';
@@ -1706,9 +2030,8 @@ const server = http.createServer(async (req, res) => {
               try {
                 const res = await fetch('/history');
                 const history = await res.json();
-                const tbody = document.getElementById('historyBody');
                 if (history.length === 0) {
-                  tbody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
+                  historyBody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
                   return;
                 }
                 let html = '';
@@ -1716,15 +2039,15 @@ const server = http.createServer(async (req, res) => {
                   html += \`
                     <tr>
                       <td>\${idx + 1}</td>
-                      <td>\${h.timestamp}</td>
-                      <td>\${h.script}</td>
+                      <td>\${escapeHtmlText(h.timestamp)}</td>
+                      <td>\${escapeHtmlText(h.script)}</td>
                       <td>\${h.duration}秒</td>
-                      <td style="color: \${h.success ? 'green' : 'red'}">\${h.success ? '成功' : '失败'}</td>
+                      <td>\${buildHistoryStatusCell(h)}</td>
                       <td>\${h.exitCode}</td>
                     </tr>
                   \`;
                 });
-                tbody.innerHTML = html;
+                historyBody.innerHTML = html;
               } catch(e) { console.error('获取历史失败', e); }
             }
 
@@ -1781,10 +2104,21 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            stopBtn.onclick = async () => {
-              const res = await fetch('/stop', { method: 'POST' });
-              const data = await res.json();
-              showToast(data.message, data.success ? 'success' : 'error');
+            toggleLogBtn.onclick = () => {
+              const currentlyVisible = logSection.classList.contains('visible');
+              if (currentlyVisible) {
+                manualLogOverride = latestIsRunning ? false : null;
+                if (hideLogTimer) {
+                  clearTimeout(hideLogTimer);
+                  hideLogTimer = null;
+                }
+                logSection.classList.remove('visible');
+                updateLogToggleButton();
+                return;
+              }
+
+              manualLogOverride = true;
+              setLogSectionVisible(latestIsRunning);
             };
 
             uploadBtn.onclick = async () => {
@@ -1829,6 +2163,27 @@ const server = http.createServer(async (req, res) => {
               });
             });
 
+            historyBody.addEventListener('click', (e) => {
+              const btn = e.target.closest('.history-status-btn.failed');
+              if (!btn) return;
+              const historyId = decodeURIComponent(btn.getAttribute('data-history-id') || '');
+              if (!historyId) {
+                showFailureModal('该失败记录暂无可用标识，无法读取详情。');
+                return;
+              }
+              openFailureDetail(historyId);
+            });
+
+            closeFailureModalBtn.addEventListener('click', closeFailureModal);
+            failureModal.addEventListener('click', (e) => {
+              if (e.target === failureModal) closeFailureModal();
+            });
+            document.addEventListener('keydown', (e) => {
+              if (e.key === 'Escape' && failureModal.classList.contains('visible')) {
+                closeFailureModal();
+              }
+            });
+
             document.addEventListener('visibilitychange', () => {
               if (document.visibilityState === 'visible') {
                 connectSSE();
@@ -1849,6 +2204,7 @@ const server = http.createServer(async (req, res) => {
               closeSSE();
             });
 
+            updateLogToggleButton();
             connectSSE();
             updateHealthStatus();
             setInterval(updateHealthStatus, 30000);
@@ -1876,7 +2232,7 @@ cron.schedule('8 0 */3 * *', () => { //每3天北京时间8：08运行
   queueScript('update-clawcloud-token.js').catch(err => console.error('定时任务执行失败:', err));
 }, { timezone: "Asia/Shanghai" });
 
-cron.schedule('0 6 * * *', () => {
+cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行
   cleanOldLogs();
 }, { timezone: "Asia/Shanghai" });
 
@@ -1885,7 +2241,8 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /stop, /upload, /script/:filename, /events, /history`);
+  console.log(`历史详情文件: ${HISTORY_FILE}`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
