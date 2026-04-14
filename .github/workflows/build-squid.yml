@@ -19,24 +19,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Detect build context and Dockerfile
+      - name: Use docker/squid as build context
         id: detect
         run: |
-          set -e
-          if [ -f "proxy/Dockerfile" ]; then
-            echo "context=proxy" >> $GITHUB_OUTPUT
-            echo "dockerfile=proxy/Dockerfile" >> $GITHUB_OUTPUT
-          elif [ -f "docker/squid/Dockerfile" ]; then
-            echo "context=docker/squid" >> $GITHUB_OUTPUT
-            echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
-          elif [ -f "Dockerfile" ]; then
-            echo "context=." >> $GITHUB_OUTPUT
-            echo "dockerfile=Dockerfile" >> $GITHUB_OUTPUT
-          else
-            # fallback to docker/squid (common location in this repo)
-            echo "context=docker/squid" >> $GITHUB_OUTPUT
-            echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
-          fi
+          echo "context=docker/squid" >> $GITHUB_OUTPUT
+          echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
 
       - name: Set image names
         id: vars
