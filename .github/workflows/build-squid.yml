@@ -19,11 +19,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Use docker/squid as build context
+      - name: Use proxy/squid as build context
         id: detect
         run: |
-          echo "context=docker/squid" >> $GITHUB_OUTPUT
-          echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
+          echo "context=proxy/squid" >> $GITHUB_OUTPUT
+          echo "dockerfile=proxy/squid/Dockerfile" >> $GITHUB_OUTPUT
 
       - name: Set image names
         id: vars
