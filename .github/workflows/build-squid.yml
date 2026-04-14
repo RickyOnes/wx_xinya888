@@ -19,15 +19,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Detect build context
+      - name: Detect build context and Dockerfile
         id: detect
         run: |
-          if [ -d "proxy" ]; then
+          set -e
+          if [ -f "proxy/Dockerfile" ]; then
             echo "context=proxy" >> $GITHUB_OUTPUT
-          elif [ -d "docker/squid" ]; then
+            echo "dockerfile=proxy/Dockerfile" >> $GITHUB_OUTPUT
+          elif [ -f "docker/squid/Dockerfile" ]; then
             echo "context=docker/squid" >> $GITHUB_OUTPUT
-          else
+            echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
+          elif [ -f "Dockerfile" ]; then
             echo "context=." >> $GITHUB_OUTPUT
+            echo "dockerfile=Dockerfile" >> $GITHUB_OUTPUT
+          else
+            # fallback to docker/squid (common location in this repo)
+            echo "context=docker/squid" >> $GITHUB_OUTPUT
+            echo "dockerfile=docker/squid/Dockerfile" >> $GITHUB_OUTPUT
           fi
 
       - name: Set image names
@@ -56,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ steps.detect.outputs.context }}
-          file: ${{ steps.detect.outputs.context }}/Dockerfile
+          file: ${{ steps.detect.outputs.dockerfile }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.vars.outputs.image }},${{ steps.vars.outputs.image_latest }}
