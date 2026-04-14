@@ -146,7 +146,7 @@ const server = http.createServer((req, res) => {
 
   const apiPaths = [
     '/trigger', '/status', '/health', '/history', '/logs', '/stop', '/upload', '/events',
-    '/login', '/logout', '/check-auth'
+    '/login', '/logout', '/check-auth', '/oauth/callback', '/oauth/result'
   ];
   if (apiPaths.includes(pathname) || pathname.startsWith('/run/') || pathname.startsWith('/script/')) {
     if (!silentApiPaths.includes(pathname)) console.log(`[Proxy] API request: ${pathname}`);
