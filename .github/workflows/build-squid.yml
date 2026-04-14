@@ -1,0 +1,74 @@
+name: 构建proxy和squid镜像
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'proxy/**'
+      - 'docker/squid/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Detect build context
+        id: detect
+        run: |
+          if [ -d "proxy" ]; then
+            echo "context=proxy" >> $GITHUB_OUTPUT
+          elif [ -d "docker/squid" ]; then
+            echo "context=docker/squid" >> $GITHUB_OUTPUT
+          else
+            echo "context=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set image names
+        id: vars
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+            echo "image=${{ secrets.DOCKERHUB_USERNAME }}/xinya-squid:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+            echo "image_latest=${{ secrets.DOCKERHUB_USERNAME }}/xinya-squid:latest" >> $GITHUB_OUTPUT
+          else
+            echo "image=ghcr.io/${{ github.repository_owner }}/xinya-squid:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+            echo "image_latest=ghcr.io/${{ github.repository_owner }}/xinya-squid:latest" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Login to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        if: ${{ secrets.DOCKERHUB_USERNAME == '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ steps.detect.outputs.context }}
+          file: ${{ steps.detect.outputs.context }}/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.vars.outputs.image }},${{ steps.vars.outputs.image_latest }}
