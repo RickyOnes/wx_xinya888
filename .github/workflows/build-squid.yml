@@ -33,8 +33,11 @@ jobs:
       - name: Set image names
         id: vars
         run: |
-          echo "image=ghcr.io/${{ github.repository_owner }}/xinya-squid:${GITHUB_SHA}" >> $GITHUB_OUTPUT
-          echo "image_latest=ghcr.io/${{ github.repository_owner }}/xinya-squid:latest" >> $GITHUB_OUTPUT
+          # derive lowercase owner from GITHUB_REPOSITORY (owner/repo)
+          owner="${GITHUB_REPOSITORY%%/*}"
+          owner_lc="$(echo "$owner" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner_lc}/xinya-squid:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "image_latest=ghcr.io/${owner_lc}/xinya-squid:latest" >> $GITHUB_OUTPUT
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
