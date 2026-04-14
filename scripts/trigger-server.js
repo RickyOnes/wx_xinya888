@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const http = require('http');
+const https = require('https');
 const { spawn } = require('child_process');
 const { URL } = require('url');
 const fs = require('fs').promises;
@@ -190,6 +191,33 @@ let lastRunTime = null;
 let history = [];
 let sseClients = [];
 let isShuttingDown = false;
+
+// ---------- OAuth 回调缓存 ----------
+let lastOAuthCallback = null;
+const OAUTH_CALLBACK_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'oauth-callback.json');
+
+async function persistOAuthCallback(obj) {
+  lastOAuthCallback = obj;
+  try {
+    await fs.mkdir(USER_DATA_SCRIPTS_DIR, { recursive: true });
+    await fs.writeFile(OAUTH_CALLBACK_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    console.log(`[${beijingTime()}] 已保存 OAuth 回调，参数: ${Object.keys(obj.params || {}).join(',')}`);
+  } catch (err) {
+    console.error('保存 OAuth 回调失败:', err.message || err);
+  }
+}
+
+async function loadOAuthCallbackFromDisk() {
+  try {
+    const content = await fs.readFile(OAUTH_CALLBACK_FILE, 'utf8');
+    if (content && content.trim()) {
+      lastOAuthCallback = JSON.parse(content);
+      console.log(`[${beijingTime()}] 从磁盘加载到 OAuth 回调缓存`);
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('读取 OAuth 回调文件失败:', err.message || err);
+  }
+}
 
 function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -996,6 +1024,126 @@ const server = http.createServer(async (req, res) => {
     const isAuth = await authenticateFromCookie(req, res);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ authenticated: isAuth }));
+    return;
+  }
+
+  // ---------- OAuth 回调中继（公开接收） ----------
+  if (pathname === '/oauth/callback' && (method === 'GET' || method === 'POST')) {
+    try {
+      let params = {};
+      if (method === 'GET') {
+        for (const [k, v] of parsedUrl.searchParams) params[k] = v;
+      } else {
+        const ct = (req.headers['content-type'] || '').toLowerCase();
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        await new Promise(resolve => req.on('end', resolve));
+        if (ct.includes('application/json')) {
+          try { params = JSON.parse(body); } catch (e) { params.raw = body; }
+        } else if (ct.includes('application/x-www-form-urlencoded')) {
+          try { const sp = new URLSearchParams(body); for (const [k, v] of sp) params[k] = v; } catch (e) { params.raw = body; }
+        } else {
+          params.raw = body;
+        }
+      }
+
+      const record = {
+        timestamp: Date.now(),
+        params,
+        headers: { host: req.headers.host, referer: req.headers.referer || '', 'user-agent': req.headers['user-agent'] || '' }
+      };
+
+      // 如果配置了 Google client，尝试用 code 交换 token 并保存
+      const code = params.code || params.authorization_code || null;
+      const googleClientId = process.env.GOOGLE_CLIENT_ID;
+      const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      if (code && googleClientId && googleClientSecret) {
+        const redirectUri = `https://${req.headers.host}/oauth/callback`;
+        const postData = new URLSearchParams({
+          code,
+          client_id: googleClientId,
+          client_secret: googleClientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code'
+        }).toString();
+
+        try {
+          const tokenResp = await new Promise((resolve, reject) => {
+            const r = https.request({
+              method: 'POST',
+              hostname: 'oauth2.googleapis.com',
+              path: '/token',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Content-Length': Buffer.byteLength(postData)
+              }
+            }, (res2) => {
+              let body = '';
+              res2.setEncoding('utf8');
+              res2.on('data', c => body += c);
+              res2.on('end', () => resolve({ statusCode: res2.statusCode, body }));
+            });
+            r.on('error', reject);
+            r.write(postData);
+            r.end();
+          });
+
+          let tokenJson = null;
+          try { tokenJson = JSON.parse(tokenResp.body || '{}'); } catch (e) { tokenJson = { raw: tokenResp.body }; }
+          record.tokens = tokenJson;
+          record.token_exchange_status = tokenResp.statusCode || 0;
+        } catch (err) {
+          console.error('与 Google 交换 token 失败:', err && err.message ? err.message : err);
+          record.token_exchange_error = String(err && (err.message || err));
+        }
+      }
+
+      await persistOAuthCallback(record);
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      if (record.tokens && record.tokens.access_token) {
+        const masked = Object.assign({}, record.tokens, { access_token: '***', refresh_token: '***' });
+        res.end(`<html><body><h3>授权完成，已安全保存令牌。</h3><pre>${escapeHtml(JSON.stringify(masked, null, 2))}</pre><p>你可以关闭此窗口。</p></body></html>`);
+      } else {
+        res.end(`<html><body><h3>已收到授权回调（未完成 token 交换）。</h3><pre>${escapeHtml(JSON.stringify(params, null, 2))}</pre></body></html>`);
+      }
+      return;
+    } catch (err) {
+      console.error('处理 /oauth/callback 失败:', err && err.message ? err.message : err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '内部服务器错误' }));
+      return;
+    }
+  }
+
+  // ---------- 获取或消费最近一次 OAuth 回调（受保护） ----------
+  if (pathname === '/oauth/result' && method === 'GET') {
+    // 验证：优先 API_KEY -> Supabase Cookie -> 若两者皆未配置则允许（降级模式）
+    let authOk = false;
+    if (API_KEY) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader === `Bearer ${API_KEY}`) authOk = true;
+    }
+    if (!authOk && supabase) {
+      const isAuth = await authenticateFromCookie(req, res);
+      if (isAuth) authOk = true;
+    }
+    if (!authOk && !supabase && !API_KEY) authOk = true;
+
+    if (!authOk) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未授权' }));
+      return;
+    }
+
+    const consume = parsedUrl.searchParams.get('consume') === '1' || parsedUrl.searchParams.get('consume') === 'true';
+    const payload = lastOAuthCallback || null;
+    if (consume) {
+      lastOAuthCallback = null;
+      try { await fs.unlink(OAUTH_CALLBACK_FILE); } catch (e) {}
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ received: !!payload, payload }));
     return;
   }
 
@@ -2234,11 +2382,12 @@ cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行
 
 server.listen(PORT, '0.0.0.0', async () => {
   await loadHistoryFromFile();
+  await loadOAuthCallbackFromDisk();
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail, /oauth/callback (公开), /oauth/result (受保护)`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
