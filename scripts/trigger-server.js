@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const http = require('http');
-const https = require('https');
 const { spawn } = require('child_process');
 const { URL } = require('url');
 const fs = require('fs').promises;
@@ -49,6 +48,7 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 
 // 会话配置
 const COOKIE_MAX_AGE = 15 * 24 * 60 * 60; // 15 天（秒）
+const AUTH_CACHE_TTL_MS = 60 * 1000; // 认证用户缓存 TTL（60秒）
 
 // 辅助函数：解析 Cookie
 function parseCookies(cookieHeader) {
@@ -100,6 +100,32 @@ function clearAuthCookies(res) {
   clearCookie(res, AUTH_REFRESH_COOKIE);
 }
 
+const authUserCache = new Map();
+
+function getCachedAuthUser(accessToken) {
+  if (!accessToken) return null;
+  const cached = authUserCache.get(accessToken);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    authUserCache.delete(accessToken);
+    return null;
+  }
+  return cached.user;
+}
+
+function setCachedAuthUser(accessToken, user) {
+  if (!accessToken || !user) return;
+  authUserCache.set(accessToken, {
+    user,
+    expiresAt: Date.now() + AUTH_CACHE_TTL_MS
+  });
+}
+
+function clearCachedAuthUser(accessToken) {
+  if (!accessToken) return;
+  authUserCache.delete(accessToken);
+}
+
 async function refreshAuthSession(accessToken, refreshToken) {
   if (!refreshToken) return { session: null, user: null, error: new Error('缺少 refresh token') };
   const authClient = createSupabaseAuthClient();
@@ -125,12 +151,20 @@ async function authenticateFromCookie(req, res) {
 
   try {
     if (accessToken) {
+      const cachedUser = getCachedAuthUser(accessToken);
+      if (cachedUser) {
+        req.user = cachedUser;
+        return true;
+      }
+
       const authClient = createSupabaseAuthClient();
       const { data: { user }, error } = await authClient.auth.getUser(accessToken);
       if (!error && user) {
+        setCachedAuthUser(accessToken, user);
         req.user = user;
         return true;
       }
+      clearCachedAuthUser(accessToken);
       console.warn('Access Token 验证失败，尝试自动刷新会话:', error?.message || '未知错误');
     }
 
@@ -142,14 +176,20 @@ async function authenticateFromCookie(req, res) {
     const { session, user, error } = await refreshAuthSession(accessToken, refreshToken);
     if (error || !session?.access_token || !session?.refresh_token || !user) {
       console.error('刷新 Supabase 会话失败:', error?.message || '未知错误');
+      clearCachedAuthUser(accessToken);
       clearAuthCookies(res);
       return false;
     }
 
     setAuthCookies(res, session);
+    if (accessToken && accessToken !== session.access_token) {
+      clearCachedAuthUser(accessToken);
+    }
+    setCachedAuthUser(session.access_token, user);
     req.user = user;
     return true;
   } catch (err) {
+    clearCachedAuthUser(accessToken);
     console.error('Token 验证失败:', err.message);
     clearAuthCookies(res);
     return false;
@@ -191,33 +231,6 @@ let lastRunTime = null;
 let history = [];
 let sseClients = [];
 let isShuttingDown = false;
-
-// ---------- OAuth 回调缓存 ----------
-let lastOAuthCallback = null;
-const OAUTH_CALLBACK_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'oauth-callback.json');
-
-async function persistOAuthCallback(obj) {
-  lastOAuthCallback = obj;
-  try {
-    await fs.mkdir(USER_DATA_SCRIPTS_DIR, { recursive: true });
-    await fs.writeFile(OAUTH_CALLBACK_FILE, JSON.stringify(obj, null, 2), 'utf8');
-    console.log(`[${beijingTime()}] 已保存 OAuth 回调，参数: ${Object.keys(obj.params || {}).join(',')}`);
-  } catch (err) {
-    console.error('保存 OAuth 回调失败:', err.message || err);
-  }
-}
-
-async function loadOAuthCallbackFromDisk() {
-  try {
-    const content = await fs.readFile(OAUTH_CALLBACK_FILE, 'utf8');
-    if (content && content.trim()) {
-      lastOAuthCallback = JSON.parse(content);
-      console.log(`[${beijingTime()}] 从磁盘加载到 OAuth 回调缓存`);
-    }
-  } catch (err) {
-    if (err.code !== 'ENOENT') console.error('读取 OAuth 回调文件失败:', err.message || err);
-  }
-}
 
 function beijingTime(date = new Date()) {
   return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -392,14 +405,14 @@ function getStatePayload() {
   return {
     isRunning,
     currentScript,
-    queueLength: taskQueue.length,
     shuttingDown: isShuttingDown,
     lastRun: lastRunTime ? beijingTime(lastRunTime) : null,
     lastRunResult: lastRunResult ? {
       script: lastRunResult.script,
       success: lastRunResult.success,
       duration: lastRunResult.duration,
-      timestamp: lastRunResult.timestamp
+      timestamp: lastRunResult.timestamp,
+      exitCode: lastRunResult.exitCode
     } : null
   };
 }
@@ -701,6 +714,35 @@ function runScriptTask(scriptName, resolve, reject) {
     broadcastState();
     resolve(result);
     runNext();
+  });
+}
+
+function createBusyError() {
+  const waitingScript = taskQueue[0]?.scriptName;
+  const scriptName = currentScript || waitingScript || '未知脚本';
+  const err = new Error(`脚本 ${scriptName} 正在执行，请稍后再试`);
+  err.code = 'SCRIPT_BUSY';
+  err.currentScript = currentScript || waitingScript || null;
+  return err;
+}
+
+function startScript(scriptName) {
+  return new Promise((resolve, reject) => {
+    if (isShuttingDown) {
+      reject(new Error('trigger-server 正在关闭，暂不接受新的脚本任务'));
+      return;
+    }
+    if (isRunning || taskQueue.length > 0) {
+      reject(createBusyError());
+      return;
+    }
+
+    runScriptTask(scriptName, () => {}, () => {});
+    resolve({
+      accepted: true,
+      script: scriptName,
+      startedAt: beijingTime()
+    });
   });
 }
 
@@ -1027,126 +1069,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ---------- OAuth 回调中继（公开接收） ----------
-  if (pathname === '/oauth/callback' && (method === 'GET' || method === 'POST')) {
-    try {
-      let params = {};
-      if (method === 'GET') {
-        for (const [k, v] of parsedUrl.searchParams) params[k] = v;
-      } else {
-        const ct = (req.headers['content-type'] || '').toLowerCase();
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        await new Promise(resolve => req.on('end', resolve));
-        if (ct.includes('application/json')) {
-          try { params = JSON.parse(body); } catch (e) { params.raw = body; }
-        } else if (ct.includes('application/x-www-form-urlencoded')) {
-          try { const sp = new URLSearchParams(body); for (const [k, v] of sp) params[k] = v; } catch (e) { params.raw = body; }
-        } else {
-          params.raw = body;
-        }
-      }
-
-      const record = {
-        timestamp: Date.now(),
-        params,
-        headers: { host: req.headers.host, referer: req.headers.referer || '', 'user-agent': req.headers['user-agent'] || '' }
-      };
-
-      // 如果配置了 Google client，尝试用 code 交换 token 并保存
-      const code = params.code || params.authorization_code || null;
-      const googleClientId = process.env.GOOGLE_CLIENT_ID;
-      const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
-      if (code && googleClientId && googleClientSecret) {
-        const redirectUri = `https://${req.headers.host}/oauth/callback`;
-        const postData = new URLSearchParams({
-          code,
-          client_id: googleClientId,
-          client_secret: googleClientSecret,
-          redirect_uri: redirectUri,
-          grant_type: 'authorization_code'
-        }).toString();
-
-        try {
-          const tokenResp = await new Promise((resolve, reject) => {
-            const r = https.request({
-              method: 'POST',
-              hostname: 'oauth2.googleapis.com',
-              path: '/token',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Content-Length': Buffer.byteLength(postData)
-              }
-            }, (res2) => {
-              let body = '';
-              res2.setEncoding('utf8');
-              res2.on('data', c => body += c);
-              res2.on('end', () => resolve({ statusCode: res2.statusCode, body }));
-            });
-            r.on('error', reject);
-            r.write(postData);
-            r.end();
-          });
-
-          let tokenJson = null;
-          try { tokenJson = JSON.parse(tokenResp.body || '{}'); } catch (e) { tokenJson = { raw: tokenResp.body }; }
-          record.tokens = tokenJson;
-          record.token_exchange_status = tokenResp.statusCode || 0;
-        } catch (err) {
-          console.error('与 Google 交换 token 失败:', err && err.message ? err.message : err);
-          record.token_exchange_error = String(err && (err.message || err));
-        }
-      }
-
-      await persistOAuthCallback(record);
-
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      if (record.tokens && record.tokens.access_token) {
-        const masked = Object.assign({}, record.tokens, { access_token: '***', refresh_token: '***' });
-        res.end(`<html><body><h3>授权完成，已安全保存令牌。</h3><pre>${escapeHtml(JSON.stringify(masked, null, 2))}</pre><p>你可以关闭此窗口。</p></body></html>`);
-      } else {
-        res.end(`<html><body><h3>已收到授权回调（未完成 token 交换）。</h3><pre>${escapeHtml(JSON.stringify(params, null, 2))}</pre></body></html>`);
-      }
-      return;
-    } catch (err) {
-      console.error('处理 /oauth/callback 失败:', err && err.message ? err.message : err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '内部服务器错误' }));
-      return;
-    }
-  }
-
-  // ---------- 获取或消费最近一次 OAuth 回调（受保护） ----------
-  if (pathname === '/oauth/result' && method === 'GET') {
-    // 验证：优先 API_KEY -> Supabase Cookie -> 若两者皆未配置则允许（降级模式）
-    let authOk = false;
-    if (API_KEY) {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader === `Bearer ${API_KEY}`) authOk = true;
-    }
-    if (!authOk && supabase) {
-      const isAuth = await authenticateFromCookie(req, res);
-      if (isAuth) authOk = true;
-    }
-    if (!authOk && !supabase && !API_KEY) authOk = true;
-
-    if (!authOk) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '未授权' }));
-      return;
-    }
-
-    const consume = parsedUrl.searchParams.get('consume') === '1' || parsedUrl.searchParams.get('consume') === 'true';
-    const payload = lastOAuthCallback || null;
-    if (consume) {
-      lastOAuthCallback = null;
-      try { await fs.unlink(OAUTH_CALLBACK_FILE); } catch (e) {}
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ received: !!payload, payload }));
-    return;
-  }
-
   // ==================== 需要认证的路由 ====================
   const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
@@ -1225,12 +1147,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const diskHistory = await readHistoryRecordsFromDisk();
-    if (diskHistory) {
-      history = diskHistory;
-    }
-
-    const record = (diskHistory || history).find(item => item.id === historyId);
+    const record = history.find(item => item.id === historyId);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '未找到对应的失败记录' }));
@@ -1246,13 +1163,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/history' && method === 'GET') {
-    const diskHistory = await readHistoryRecordsFromDisk();
-    if (diskHistory) {
-      history = diskHistory;
-    }
-
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify((diskHistory || history).map(buildHistorySummary)));
+    res.end(JSON.stringify(history.map(buildHistorySummary)));
     return;
   }
 
@@ -1270,35 +1182,42 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: '脚本不存在' }));
       return;
     }
-    const result = await queueScript(scriptName);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      message: `脚本 ${scriptName} 已触发`,
-      result: {
-        success: result.success,
-        exitCode: result.exitCode,
-        script: result.script,
-        timestamp: result.timestamp,
-        duration: result.duration
-      }
-    }));
+
+    try {
+      const result = await startScript(scriptName);
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        message: `脚本 ${scriptName} 已开始执行，请查看实时日志`,
+        result
+      }));
+    } catch (err) {
+      const statusCode = err.code === 'SCRIPT_BUSY' ? 409 : 500;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: err.message || '启动脚本失败',
+        current_script: err.currentScript || currentScript || null
+      }));
+    }
     return;
   }
 
   // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
-    const result = await queueScript('update-pdd-cron.js');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      message: '爬虫任务已触发',
-      result: {
-        success: result.success,
-        exitCode: result.exitCode,
-        script: result.script,
-        timestamp: result.timestamp,
-        duration: result.duration
-      }
-    }));
+    try {
+      const result = await startScript('update-pdd-cron.js');
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        message: '爬虫任务已开始执行，请查看实时日志',
+        result
+      }));
+    } catch (err) {
+      const statusCode = err.code === 'SCRIPT_BUSY' ? 409 : 500;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: err.message || '启动爬虫任务失败',
+        current_script: err.currentScript || currentScript || null
+      }));
+    }
     return;
   }
 
@@ -1745,7 +1664,6 @@ const server = http.createServer(async (req, res) => {
                     <span id="statusIndicator" class="status-indicator"></span>
                     <span id="globalStatus">空闲</span>
                   </div>
-                  <div class="status-item">📋 队列: <span id="queueLen">0</span></div>
                   <div class="status-item">⚙️ 当前脚本: <span id="currentScript">无</span></div>
                   <div class="status-item">🕒 上次运行: <span id="lastRun">无</span></div>
                 </div>
@@ -1810,7 +1728,6 @@ const server = http.createServer(async (req, res) => {
             const logBox = document.getElementById('logBox');
             const logSection = document.getElementById('logSection');
             const globalStatusSpan = document.getElementById('globalStatus');
-            const queueLenSpan = document.getElementById('queueLen');
             const currentScriptSpan = document.getElementById('currentScript');
             const lastRunSpan = document.getElementById('lastRun');
             const statusIndicator = document.getElementById('statusIndicator');
@@ -1886,6 +1803,8 @@ const server = http.createServer(async (req, res) => {
             let loginRedirectTimer = null;
             let loginPromptShown = false;
             let latestIsRunning = false;
+            let latestCompletedRunKey = '';
+            let hasReceivedInitialState = false;
             let manualLogOverride = null;
             const SSE_BASE_RECONNECT_DELAY = 5000;
             const SSE_MAX_RECONNECT_DELAY = 30000;
@@ -2138,6 +2057,9 @@ const server = http.createServer(async (req, res) => {
                   const state = JSON.parse(e.data);
                   const isRunning = !!state.isRunning;
                   const shuttingDown = !!state.shuttingDown;
+                  const completedRunKey = state.lastRunResult
+                    ? \`\${state.lastRunResult.timestamp}|\${state.lastRunResult.script}|\${state.lastRunResult.duration}|\${state.lastRunResult.exitCode}|\${state.lastRunResult.success}\`
+                    : '';
                   globalStatusSpan.innerText = shuttingDown ? '关闭中' : (isRunning ? '运行中' : '空闲');
                   if (isRunning) {
                     statusIndicator.className = 'status-indicator running';
@@ -2145,14 +2067,19 @@ const server = http.createServer(async (req, res) => {
                     statusIndicator.className = 'status-indicator';
                   }
                   setLogSectionVisible(isRunning);
-                  queueLenSpan.innerText = state.queueLength;
                   currentScriptSpan.innerText = state.currentScript || '无';
                   lastRunSpan.innerText = state.lastRun || '无';
                   document.querySelectorAll('.script-btn').forEach(btn => {
                     btn.disabled = isRunning;
                   });
-                  fetchHistoryAndUpdate();
-                  fetchStatsAndUpdate();
+                  if (completedRunKey && completedRunKey !== latestCompletedRunKey) {
+                    latestCompletedRunKey = completedRunKey;
+                    refreshHistoryAndStats();
+                    if (hasReceivedInitialState && !isRunning) {
+                      showToast(\`脚本 \${state.lastRunResult.script} 执行完成，退出码: \${state.lastRunResult.exitCode}，耗时 \${state.lastRunResult.duration} 秒\`, state.lastRunResult.success ? 'success' : 'error');
+                    }
+                  }
+                  hasReceivedInitialState = true;
                 } catch(err) { console.error('解析状态错误', err); }
               });
 
@@ -2170,64 +2097,78 @@ const server = http.createServer(async (req, res) => {
               };
             }
 
-            async function fetchHistoryAndUpdate() {
-              try {
-                const res = await fetch('/history');
-                const history = await res.json();
-                if (history.length === 0) {
-                  historyBody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
-                  return;
-                }
-                let html = '';
-                history.forEach((h, idx) => {
-                  html += \`
-                    <tr>
-                      <td>\${idx + 1}</td>
-                      <td>\${escapeHtmlText(h.timestamp)}</td>
-                      <td>\${escapeHtmlText(h.script)}</td>
-                      <td>\${h.duration}秒</td>
-                      <td>\${buildHistoryStatusCell(h)}</td>
-                      <td>\${h.exitCode}</td>
-                    </tr>
-                  \`;
-                });
-                historyBody.innerHTML = html;
-              } catch(e) { console.error('获取历史失败', e); }
+            function renderHistoryAndStats(history) {
+              if (!Array.isArray(history) || history.length === 0) {
+                historyBody.innerHTML = '<tr><td colspan="6">暂无记录</td></tr>';
+                document.getElementById('totalExec').innerText = 0;
+                document.getElementById('successCount').innerText = 0;
+                document.getElementById('failCount').innerText = 0;
+                document.getElementById('avgDuration').innerText = 0;
+                return;
+              }
+
+              let html = '';
+              history.forEach((h, idx) => {
+                html += \`
+                  <tr>
+                    <td>\${idx + 1}</td>
+                    <td>\${escapeHtmlText(h.timestamp)}</td>
+                    <td>\${escapeHtmlText(h.script)}</td>
+                    <td>\${h.duration}秒</td>
+                    <td>\${buildHistoryStatusCell(h)}</td>
+                    <td>\${h.exitCode}</td>
+                  </tr>
+                \`;
+              });
+              historyBody.innerHTML = html;
+
+              const total = history.length;
+              const success = history.filter(h => h.success).length;
+              const fail = total - success;
+              const avg = total ? (history.reduce((sum, h) => sum + h.duration, 0) / total).toFixed(1) : 0;
+              document.getElementById('totalExec').innerText = total;
+              document.getElementById('successCount').innerText = success;
+              document.getElementById('failCount').innerText = fail;
+              document.getElementById('avgDuration').innerText = avg;
             }
 
-            async function fetchStatsAndUpdate() {
+            async function refreshHistoryAndStats() {
               try {
-                const res = await fetch('/history');
+                const res = await fetch('/history', { cache: 'no-store' });
                 const history = await res.json();
-                const total = history.length;
-                const success = history.filter(h => h.success).length;
-                const fail = total - success;
-                const avg = total ? (history.reduce((sum, h) => sum + h.duration, 0) / total).toFixed(1) : 0;
-                document.getElementById('totalExec').innerText = total;
-                document.getElementById('successCount').innerText = success;
-                document.getElementById('failCount').innerText = fail;
-                document.getElementById('avgDuration').innerText = avg;
-              } catch(e) {}
+                renderHistoryAndStats(history);
+              } catch(e) {
+                console.error('获取历史失败', e);
+              }
             }
 
             async function runScript(scriptName, btn) {
               if (btn.disabled) return;
+              if (latestIsRunning) {
+                showToast(\`脚本 \${currentScriptSpan.innerText || '任务'} 正在执行，请稍后再试\`, 'info');
+                return;
+              }
               const originalText = btn.innerText;
-              btn.innerText = '⏳ 排队中…';
+              btn.innerText = '⏳ 启动中…';
               btn.disabled = true;
               try {
                 const encoded = encodeURIComponent(scriptName);
                 const res = await fetch('/run/' + encoded, { method: 'POST' });
-                const data = await res.json();
-                if (data.result) {
-                  showToast(\`脚本 \${scriptName} 执行完成，退出码: \${data.result.exitCode}，耗时 \${data.result.duration} 秒\`, data.result.success ? 'success' : 'error');
-                } else {
-                  showToast(data.message || '执行完成', 'info');
+                const data = await res.json().catch(() => ({}));
+                if (res.status === 409) {
+                  showToast(data.error || '已有脚本正在执行，请稍后再试', 'info');
+                  return;
                 }
+                if (!res.ok) {
+                  throw new Error(data.error || '启动失败');
+                }
+                setLogSectionVisible(true);
+                showToast(data.message || \`脚本 \${scriptName} 已开始执行，请查看实时日志\`, 'success');
               } catch(err) {
                 showToast('请求失败: ' + err.message, 'error');
               } finally {
                 btn.innerText = originalText;
+                btn.disabled = latestIsRunning;
               }
             }
 
@@ -2352,8 +2293,7 @@ const server = http.createServer(async (req, res) => {
             connectSSE();
             updateHealthStatus();
             setInterval(updateHealthStatus, 30000);
-            fetchHistoryAndUpdate();
-            fetchStatsAndUpdate();
+            refreshHistoryAndStats();
           </script>
         </body>
       </html>
@@ -2382,12 +2322,11 @@ cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行
 
 server.listen(PORT, '0.0.0.0', async () => {
   await loadHistoryFromFile();
-  await loadOAuthCallbackFromDisk();
   console.log(`触发服务器运行在 http://0.0.0.0:${PORT}`);
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail, /oauth/callback (公开), /oauth/result (受保护)`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
