@@ -20,7 +20,7 @@ set -e
 # - VNC_PASSWORD: VNC连接密码（默认：zf123456）
 # - API_KEY: HTTP触发服务器授权密钥（可选，如设置则需Bearer Token验证）
 # - TRIGGER_PORT: HTTP触发服务器端口（默认：3000）
-# - RUN_CRAWLER: 容器启动时是否立即运行爬虫（默认：false）
+
 
 # 加载全局环境变量（确保 fcitx 生效）
 source /etc/profile.d/fcitx.sh
@@ -55,12 +55,14 @@ if [ ! -d /app/puppeteer_user_data/.config/fcitx ]; then
     mkdir -p /app/puppeteer_user_data/.config
     cp -r /etc/skel/.config/fcitx /app/puppeteer_user_data/.config/
 fi
-mkdir -p /app/puppeteer_user_data/.config/autostart
-cp /usr/share/applications/fcitx.desktop /app/puppeteer_user_data/.config/autostart/ 2>/dev/null || true
+
+# 避免 XFCE autostart 再次拉起 fcitx，导致重复启动告警
+rm -f /app/puppeteer_user_data/.config/autostart/fcitx.desktop 2>/dev/null || true
 
 # 启动 Fcitx（如果已运行则先杀掉）
 pkill fcitx 2>/dev/null || true
 fcitx -d 2>/dev/null || true
+
 sleep 3
 
 # 强制设置当前会话的输入法为五笔拼音
@@ -118,23 +120,6 @@ sleep 3
 echo "=== 启动反向代理（公网端口 3000） ==="
 node /app/scripts/proxy.js &
 
-# 如果设置了 RUN_CRAWLER=true，则运行爬虫
-if [ "$RUN_CRAWLER" = "true" ]; then
-    echo "=========================================="
-    echo "CronJob 开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    START_TIME=$(date +%s)
-
-    node /app/scripts/update-pdd.js
-    EXIT_CODE=$?
-
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    echo "CronJob 结束时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "总运行时长: ${DURATION} 秒"
-    echo "退出码: ${EXIT_CODE}"
-    echo "=========================================="
-    echo "爬虫运行完毕，容器将继续运行"
-fi
-
 echo "所有服务已启动，容器持续运行中"
+
 tail -f /dev/null

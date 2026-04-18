@@ -287,6 +287,8 @@ const SCRIPT_DISPLAY_NAMES = {
   'update-pdd-new.js': '【新版更新密钥】',
   'update-pdd-cron.js': '【ClawCloud专用更新】',
   'update-clawcloud-token.js': '【刷新ClawCloud口令】',
+  'clean-browser-profiles.js': '【清理浏览器数据】',
+  'quick-plan-update-new.js': '【并发快速更新密钥】',
   'quick-update-bill.js': '【更新账单密钥】'
 };
 
@@ -656,7 +658,7 @@ function runScriptTask(scriptName, resolve, reject) {
   broadcastState();
   const startTime = Date.now();
   const startTimeStr = beijingTime(new Date(startTime));
-  console.log("==========================================");
+  console.log('\n==========================================');
   console.log(`[${startTimeStr}] 开始执行脚本: ${scriptName}`);
   broadcastLog('info', `开始执行脚本: ${scriptName}`);
 
@@ -801,35 +803,6 @@ function runScriptTask(scriptName, resolve, reject) {
   });
 }
 
-function createBusyError() {
-  const waitingScript = taskQueue[0]?.scriptName;
-  const scriptName = currentScript || waitingScript || '未知脚本';
-  const err = new Error(`脚本 ${scriptName} 正在执行，请稍后再试`);
-  err.code = 'SCRIPT_BUSY';
-  err.currentScript = currentScript || waitingScript || null;
-  return err;
-}
-
-function startScript(scriptName) {
-  return new Promise((resolve, reject) => {
-    if (isShuttingDown) {
-      reject(new Error('trigger-server 正在关闭，暂不接受新的脚本任务'));
-      return;
-    }
-    if (isRunning || taskQueue.length > 0) {
-      reject(createBusyError());
-      return;
-    }
-
-    runScriptTask(scriptName, () => {}, () => {});
-    resolve({
-      accepted: true,
-      script: scriptName,
-      startedAt: beijingTime()
-    });
-  });
-}
-
 function queueScript(scriptName) {
   return new Promise((resolve, reject) => {
     if (isShuttingDown) {
@@ -837,9 +810,21 @@ function queueScript(scriptName) {
       return;
     }
 
-    taskQueue.push({ scriptName, resolve, reject });
+    const queuedBefore = taskQueue.length;
+    const queued = isRunning || queuedBefore > 0;
+    const queuePosition = queued ? queuedBefore + 1 : 0;
+
+    taskQueue.push({ scriptName, resolve: () => {}, reject: () => {} });
     broadcastState();
     if (!isRunning) runNext();
+
+    resolve({
+      accepted: true,
+      script: scriptName,
+      queued,
+      queuePosition,
+      startedAt: beijingTime()
+    });
   });
 }
 
@@ -1268,18 +1253,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const result = await startScript(scriptName);
+      const result = await queueScript(scriptName);
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        message: `脚本 ${scriptName} 已开始执行，请查看实时日志`,
+        message: result.queued
+          ? `脚本 ${scriptName} 已加入队列，前方还有 ${result.queuePosition - 1} 个任务`
+          : `脚本 ${scriptName} 已开始执行，请查看实时日志`,
         result
       }));
     } catch (err) {
-      const statusCode = err.code === 'SCRIPT_BUSY' ? 409 : 500;
-      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         error: err.message || '启动脚本失败',
-        current_script: err.currentScript || currentScript || null
+        current_script: currentScript || null
       }));
     }
     return;
@@ -1288,18 +1274,19 @@ const server = http.createServer(async (req, res) => {
   // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
     try {
-      const result = await startScript('update-pdd-cron.js');
+      const result = await queueScript('update-pdd-cron.js');
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        message: '爬虫任务已开始执行，请查看实时日志',
+        message: result.queued
+          ? `爬虫任务已加入队列，前方还有 ${result.queuePosition - 1} 个任务`
+          : '爬虫任务已开始执行，请查看实时日志',
         result
       }));
     } catch (err) {
-      const statusCode = err.code === 'SCRIPT_BUSY' ? 409 : 500;
-      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         error: err.message || '启动爬虫任务失败',
-        current_script: err.currentScript || currentScript || null
+        current_script: currentScript || null
       }));
     }
     return;
@@ -2241,10 +2228,6 @@ const server = http.createServer(async (req, res) => {
                 const encoded = encodeURIComponent(scriptName);
                 const res = await fetch('/run/' + encoded, { method: 'POST' });
                 const data = await res.json().catch(() => ({}));
-                if (res.status === 409) {
-                  showToast(data.error || '已有脚本正在执行，请稍后再试', 'info');
-                  return;
-                }
                 if (!res.ok) {
                   throw new Error(data.error || '启动失败');
                 }

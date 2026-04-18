@@ -17,18 +17,8 @@ proxy.on('error', (err, req, res) => {
 });
 
 const silentApiPaths = ['/history', '/health', '/events'];
-const silentVncPaths = ['/favicon.ico', '/ip'];
+const silentVncPaths = ['/favicon.ico'];
 
-function getClientIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
-  if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
-    return forwardedFor[0].split(',')[0].trim();
-  }
-  return req.socket?.remoteAddress || '';
-}
 
 const server = http.createServer((req, res) => {
 
@@ -51,25 +41,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (pathname === '/ip') {
-    const ip = getClientIp(req) || 'unknown';
-    const accept = String(req.headers.accept || '');
-    if (accept.includes('application/json')) {
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store'
-      });
-      res.end(JSON.stringify({ ip }));
-      return;
-    }
 
-    res.writeHead(200, {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store'
-    });
-    res.end(ip);
-    return;
-  }
 
   const apiPaths = [
 
