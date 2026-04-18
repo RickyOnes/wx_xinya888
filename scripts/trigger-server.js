@@ -49,6 +49,8 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
 // 会话配置
 const COOKIE_MAX_AGE = 15 * 24 * 60 * 60; // 15 天（秒）
 const AUTH_CACHE_TTL_MS = 60 * 1000; // 认证用户缓存 TTL（60秒）
+const AUTH_REFRESH_LEEWAY_MS = 60 * 1000; // access token 提前 60 秒视为即将过期
+const AUTH_INVALID_TOKEN_TTL_MS = 60 * 1000; // 无效 access token 短期缓存，避免重复远程校验
 
 // 辅助函数：解析 Cookie
 function parseCookies(cookieHeader) {
@@ -101,6 +103,8 @@ function clearAuthCookies(res) {
 }
 
 const authUserCache = new Map();
+const authInvalidTokenCache = new Map();
+const authRefreshPromises = new Map();
 
 function getCachedAuthUser(accessToken) {
   if (!accessToken) return null;
@@ -126,19 +130,83 @@ function clearCachedAuthUser(accessToken) {
   authUserCache.delete(accessToken);
 }
 
+function decodeBase64Url(value) {
+  if (!value) return '';
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function parseJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(decodeBase64Url(parts[1]));
+  } catch {
+    return null;
+  }
+}
+
+function isTokenExpiredOrNearExpiry(token, leewayMs = AUTH_REFRESH_LEEWAY_MS) {
+  const payload = parseJwtPayload(token);
+  if (!payload?.exp) return false;
+  const expiresAt = Number(payload.exp) * 1000;
+  if (!Number.isFinite(expiresAt)) return false;
+  return expiresAt <= (Date.now() + leewayMs);
+}
+
+function getInvalidAccessTokenReason(accessToken) {
+  if (!accessToken) return null;
+  const cached = authInvalidTokenCache.get(accessToken);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    authInvalidTokenCache.delete(accessToken);
+    return null;
+  }
+  return cached.reason;
+}
+
+function markInvalidAccessToken(accessToken, reason = 'access token 无效') {
+  if (!accessToken) return;
+  authInvalidTokenCache.set(accessToken, {
+    reason,
+    expiresAt: Date.now() + AUTH_INVALID_TOKEN_TTL_MS
+  });
+}
+
+function clearInvalidAccessToken(accessToken) {
+  if (!accessToken) return;
+  authInvalidTokenCache.delete(accessToken);
+}
+
 async function refreshAuthSession(accessToken, refreshToken) {
   if (!refreshToken) return { session: null, user: null, error: new Error('缺少 refresh token') };
-  const authClient = createSupabaseAuthClient();
-  if (!authClient) return { session: null, user: null, error: new Error('认证服务未配置') };
-  const { data, error } = await authClient.auth.setSession({
-    access_token: accessToken,
-    refresh_token: refreshToken
-  });
-  return {
-    session: data?.session || null,
-    user: data?.user || data?.session?.user || null,
-    error
-  };
+
+  const refreshKey = `${refreshToken}::${accessToken || ''}`;
+  const pendingRefresh = authRefreshPromises.get(refreshKey);
+  if (pendingRefresh) return pendingRefresh;
+
+  const refreshPromise = (async () => {
+    const authClient = createSupabaseAuthClient();
+    if (!authClient) return { session: null, user: null, error: new Error('认证服务未配置') };
+    const { data, error } = await authClient.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken
+    });
+    return {
+      session: data?.session || null,
+      user: data?.user || data?.session?.user || null,
+      error
+    };
+  })();
+
+  authRefreshPromises.set(refreshKey, refreshPromise);
+  try {
+    return await refreshPromise;
+  } finally {
+    authRefreshPromises.delete(refreshKey);
+  }
 }
 
 // 验证 Token（从 Cookie 中读取 access_token / refresh_token）
@@ -157,18 +225,30 @@ async function authenticateFromCookie(req, res) {
         return true;
       }
 
-      const authClient = createSupabaseAuthClient();
-      const { data: { user }, error } = await authClient.auth.getUser(accessToken);
-      if (!error && user) {
-        setCachedAuthUser(accessToken, user);
-        req.user = user;
-        return true;
+      const accessTokenExpired = isTokenExpiredOrNearExpiry(accessToken);
+      const invalidReason = getInvalidAccessTokenReason(accessToken);
+
+      if (!accessTokenExpired && !invalidReason) {
+        const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+        if (!error && user) {
+          clearInvalidAccessToken(accessToken);
+          setCachedAuthUser(accessToken, user);
+          req.user = user;
+          return true;
+        }
+
+        const reason = error?.message || '未知错误';
+        clearCachedAuthUser(accessToken);
+        markInvalidAccessToken(accessToken, reason);
+        if (!/token is expired/i.test(reason)) {
+          console.warn('Access Token 验证失败，尝试自动刷新会话:', reason);
+        }
       }
-      clearCachedAuthUser(accessToken);
-      console.warn('Access Token 验证失败，尝试自动刷新会话:', error?.message || '未知错误');
     }
 
     if (!accessToken || !refreshToken) {
+      clearCachedAuthUser(accessToken);
+      clearInvalidAccessToken(accessToken);
       clearAuthCookies(res);
       return false;
     }
@@ -177,6 +257,7 @@ async function authenticateFromCookie(req, res) {
     if (error || !session?.access_token || !session?.refresh_token || !user) {
       console.error('刷新 Supabase 会话失败:', error?.message || '未知错误');
       clearCachedAuthUser(accessToken);
+      clearInvalidAccessToken(accessToken);
       clearAuthCookies(res);
       return false;
     }
@@ -184,12 +265,15 @@ async function authenticateFromCookie(req, res) {
     setAuthCookies(res, session);
     if (accessToken && accessToken !== session.access_token) {
       clearCachedAuthUser(accessToken);
+      clearInvalidAccessToken(accessToken);
     }
+    clearInvalidAccessToken(session.access_token);
     setCachedAuthUser(session.access_token, user);
     req.user = user;
     return true;
   } catch (err) {
     clearCachedAuthUser(accessToken);
+    clearInvalidAccessToken(accessToken);
     console.error('Token 验证失败:', err.message);
     clearAuthCookies(res);
     return false;
@@ -1070,7 +1154,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/status', '/history', '/events', '/health', '/metrics'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/status', '/history', '/events', '/metrics'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1938,6 +2022,7 @@ const server = http.createServer(async (req, res) => {
             function markSSEAlive() {
               lastSSEActivityAt = Date.now();
               reconnectAttempts = 0;
+              serviceHealthy = true;
               clearReconnectTimer();
               resetLoginPrompt();
               setSSEStatus('connected');
@@ -2084,6 +2169,7 @@ const server = http.createServer(async (req, res) => {
               });
 
               evtSource.onerror = function(err) {
+                serviceHealthy = false;
                 const delay = reconnectSSE();
                 if (navigator.onLine) {
                   attemptSilentAuthRecovery('events').then(recovered => {
@@ -2292,8 +2378,11 @@ const server = http.createServer(async (req, res) => {
             updateLogToggleButton();
             connectSSE();
             updateHealthStatus();
-            setInterval(updateHealthStatus, 30000);
-            refreshHistoryAndStats();
+            setInterval(() => {
+              if (document.visibilityState === 'visible' && sseStatus !== 'connected') {
+                updateHealthStatus();
+              }
+            }, 30000);
           </script>
         </body>
       </html>
