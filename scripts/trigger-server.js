@@ -1576,6 +1576,59 @@ const server = http.createServer(async (req, res) => {
               white-space: pre-wrap;
               word-break: break-all;
             }
+            .desktop-section {
+              margin-top: 20px;
+            }
+            .desktop-toolbar {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              flex-wrap: wrap;
+              margin-bottom: 10px;
+            }
+            .desktop-actions {
+              display: flex;
+              gap: 8px;
+              flex-wrap: wrap;
+            }
+            .desktop-status {
+              font-size: 0.9rem;
+              color: #475569;
+            }
+            .desktop-frame-wrap {
+              background: #0f172a;
+              border-radius: 16px;
+              overflow: hidden;
+              border: 1px solid rgba(148, 163, 184, 0.3);
+            }
+            .desktop-placeholder {
+              min-height: 220px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 24px;
+              color: #cbd5e1;
+              background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+              text-align: center;
+              line-height: 1.7;
+            }
+            .desktop-frame {
+              width: 100%;
+              height: min(72vh, 780px);
+              border: 0;
+              display: none;
+              background: #0f172a;
+            }
+            .desktop-frame.visible {
+              display: block;
+            }
+            .desktop-note {
+              margin-top: 10px;
+              color: #64748b;
+              font-size: 0.85rem;
+              line-height: 1.6;
+            }
             .upload-area {
               margin-top: 20px;
               padding: 15px;
@@ -1761,6 +1814,23 @@ const server = http.createServer(async (req, res) => {
                 <div class="log-box" id="logBox"></div>
               </div>
 
+              <div class="desktop-section">
+                <div class="desktop-toolbar">
+                  <h2 style="margin:0;">🖥️ 内嵌远程桌面</h2>
+                  <div class="desktop-actions">
+                    <span class="desktop-status">状态: <strong id="desktopStatus">未加载</strong></span>
+                    <button id="loadDesktopBtn" class="btn-small" type="button">加载桌面</button>
+                    <button id="refreshDesktopBtn" class="btn-small" type="button">刷新桌面</button>
+                    <button id="openDesktopBtn" class="btn-small" type="button">新窗口打开</button>
+                  </div>
+                </div>
+                <div class="desktop-frame-wrap">
+                  <div id="desktopPlaceholder" class="desktop-placeholder">点击“加载桌面”后，会在当前控制台内嵌打开远程桌面，方便一边看日志一边操作。</div>
+                  <iframe id="desktopFrame" class="desktop-frame" title="远程桌面" loading="lazy"></iframe>
+                </div>
+                <div class="desktop-note">该区域本质仍是 noVNC 的内嵌页面，主要提升操作便利性；与直接打开 <code>/vnc.html</code> 相比，传输链路基本相同，通常不会更快。</div>
+              </div>
+
               <h2>📊 统计指标</h2>
               <div class="metrics">
                 <span>总执行次数: <strong id="totalExec">${totalExecutions}</strong></span>
@@ -1812,6 +1882,13 @@ const server = http.createServer(async (req, res) => {
             const failureModal = document.getElementById('failureModal');
             const failureModalContent = document.getElementById('failureModalContent');
             const closeFailureModalBtn = document.getElementById('closeFailureModalBtn');
+            const desktopFrame = document.getElementById('desktopFrame');
+            const desktopPlaceholder = document.getElementById('desktopPlaceholder');
+            const loadDesktopBtn = document.getElementById('loadDesktopBtn');
+            const refreshDesktopBtn = document.getElementById('refreshDesktopBtn');
+            const openDesktopBtn = document.getElementById('openDesktopBtn');
+            const desktopStatus = document.getElementById('desktopStatus');
+            const DESKTOP_FRAME_URL = '/vnc.html?autoconnect=true&resize=scale';
 
             function showToast(msg, type = 'info') {
               const toast = document.createElement('div');
@@ -1941,6 +2018,28 @@ const server = http.createServer(async (req, res) => {
                 return;
               }
               healthStatusSpan.innerText = serviceHealthy ? '正常' : '异常';
+            }
+
+            function setDesktopStatus(status) {
+              desktopStatus.innerText = status;
+            }
+
+            function buildDesktopFrameUrl() {
+              return DESKTOP_FRAME_URL + '&t=' + Date.now();
+            }
+
+            function loadDesktopFrame(forceReload = false) {
+              const hasLoaded = desktopFrame.dataset.loaded === 'true';
+              if (hasLoaded && !forceReload) {
+                setDesktopStatus('已加载');
+                return;
+              }
+
+              desktopFrame.dataset.loaded = 'true';
+              desktopPlaceholder.style.display = 'none';
+              desktopFrame.classList.add('visible');
+              setDesktopStatus(forceReload ? '重新连接中...' : '连接中...');
+              desktopFrame.src = buildDesktopFrameUrl();
             }
 
             function setSSEStatus(status) {
@@ -2294,6 +2393,24 @@ const server = http.createServer(async (req, res) => {
               }
             };
 
+            loadDesktopBtn.onclick = () => {
+              loadDesktopFrame(false);
+            };
+
+            refreshDesktopBtn.onclick = () => {
+              loadDesktopFrame(true);
+            };
+
+            openDesktopBtn.onclick = () => {
+              window.open(DESKTOP_FRAME_URL, '_blank', 'noopener,noreferrer');
+            };
+
+            desktopFrame.addEventListener('load', () => {
+              if (desktopFrame.dataset.loaded === 'true') {
+                setDesktopStatus('已加载');
+              }
+            });
+
             logoutBtn.onclick = async () => {
               const res = await fetch('/logout', { method: 'POST' });
               const data = await res.json();
@@ -2356,6 +2473,9 @@ const server = http.createServer(async (req, res) => {
               if (reconnectTimer) clearTimeout(reconnectTimer);
               if (heartbeatCheckTimer) clearInterval(heartbeatCheckTimer);
               closeSSE();
+              if (desktopFrame.dataset.loaded === 'true') {
+                desktopFrame.src = 'about:blank';
+              }
             });
 
             updateLogToggleButton();

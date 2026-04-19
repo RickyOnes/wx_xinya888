@@ -9,11 +9,10 @@ puppeteer.use(StealthPlugin());
 // 配置常量
 const CONFIG = {
     // 直接访问预估销量页面的URL
-    planDirectUrl: 'https://mc.pinduoduo.com/ddmc-mms/appointment-delivery',
+    planDirectUrl: 'https://mc.pinduoduo.com/ddmc-mms/order/management',
     // 登录后跳转到预估销量页面的URL
-    planLoginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Fappointment-delivery',
-    // 目标API端点
-    targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
+    planLoginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Forder%2Fmanagement',
+    targetApiEndpointPlan: 'cartman-mms/orderManagement/pageQueryDetail',
 
     // 浏览器配置（排查扩展/代理影响）
     browserOptions: {
@@ -167,14 +166,12 @@ class PDDPlanAntiContentFetcher {
             const url = request.url();
             if (!url.includes(CONFIG.targetApiEndpointPlan)) return;
 
-            this.log('🎯 捕获到预估销量查询请求:');
             this.log(`URL: ${url}`);
-            this.log(`方法: ${request.method()}`);
 
             const headers = request.headers();
             if (headers['anti-content']) {
                 this.capturedData.antiContentPlan = headers['anti-content'];
-                this.log(`✅ 捕获到 anti-content (预估销量)，长度: ${this.capturedData.antiContentPlan.length}`);
+                this.log(`✅ 捕获到 anti-content，长度: ${this.capturedData.antiContentPlan.length}`);
             }
         });
     }
@@ -187,11 +184,7 @@ class PDDPlanAntiContentFetcher {
                 timeout: 10000
             });
 
-            await this.page.waitForSelector('[data-testid="beast-core-table"]', {
-                timeout: 5000,
-                visible: true
-            });
-            this.log('✅ 会话有效，已进入预估销量页面');
+            this.log('✅ 会话有效，已进入目标页面');
             return true;
         } catch (error) {
             this.warn('现有会话无效或超时，开始登录流程');
@@ -393,8 +386,7 @@ class PDDPlanAntiContentFetcher {
                     this.warn(`关闭浏览器时出现错误: ${closeError.message}`);
                 }
             }
-            this.log(`⏱️ 浏览器流程总耗时: ${formatDuration(Date.now() - totalStart)}`);
-            this.log('🏁 程序执行完毕');
+            this.log(`🏁 程序执行完毕。⏱️ 浏览器流程总耗时: ${formatDuration(Date.now() - totalStart)}`);
         }
     }
 }

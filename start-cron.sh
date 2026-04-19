@@ -34,7 +34,7 @@ echo "等待 Xvfb 启动..."
 sleep 2
 if [ ! -e /tmp/.X11-unix/X99 ]; then
     echo "Xvfb 启动失败，重试..."
-    Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
+    Xvfb :99 -screen 0 1280x720x16 -ac +extension GLX +render -noreset &
     sleep 3
 fi
 
