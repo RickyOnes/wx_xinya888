@@ -8,16 +8,15 @@ puppeteer.use(StealthPlugin());
 
 // 配置常量
 const CONFIG = {
-    // 直接访问预估销量页面的URL
-    planDirectUrl: 'https://mc.pinduoduo.com/ddmc-mms/appointment-delivery',
-    // 登录后跳转到预估销量页面的URL
-    planLoginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Fappointment-delivery',
-    // 目标API端点
-    targetApiEndpointPlan: 'cartman-mms/appointment/queryAppointmentGoodsList',
+    // 直接访问订单查询页面的URL
+    planDirectUrl: 'https://mc.pinduoduo.com/ddmc-mms/order/management',
+    // 登录后跳转到订单查询页面的URL
+    planLoginUrl: 'https://mms.pinduoduo.com/login/?redirectUrl=https%3A%2F%2Fmc.pinduoduo.com%2Fddmc-mms%2Forder%2Fmanagement',
+    targetApiEndpointPlan: 'cartman-mms/orderManagement/pageQueryDetail',
 
-    // 浏览器配置（优化后）
+    // 浏览器配置（排查扩展/代理影响）
     browserOptions: {
-      headless: 'new',  // 新方法，字符串格式
+      headless: 'new',
       defaultViewport: {
           width: 1366,
           height: 768
@@ -33,7 +32,12 @@ const CONFIG = {
           '--disable-canvas-aa',
           '--disable-2d-canvas-clip-aa',
           '--use-gl=swiftshader',
-          '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests'
+          '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
+          '--disable-extensions',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-sync',
+          '--proxy-server=direct://',
+          '--proxy-bypass-list=*'
       ],
       ignoreDefaultArgs: ['--enable-automation']
     },
@@ -145,16 +149,12 @@ class PDDPlanAntiContentFetcher {
 
             // 捕获预估销量查询API的请求
             if (url.includes(CONFIG.targetApiEndpointPlan)) {
-                console.log('\n🎯 捕获到预估销量查询请求:');
-                console.log('   URL:', url);
-                console.log('   方法:', request.method());
 
                 // 获取请求头
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContentPlan = headers['anti-content'];
-                    
-                    console.log('   ✅ 捕获到 anti-content (预估销量):', this.capturedData.antiContentPlan);
+                    this.log(`✅ 捕获到 anti-content，长度: ${this.capturedData.antiContentPlan.length}`);
                 }
 
                 // 继续请求
@@ -181,7 +181,7 @@ class PDDPlanAntiContentFetcher {
                 timeout: 5000,
                 visible: true
             });
-            console.log('✅ 会话有效，已进入预估销量页面');
+            console.log('✅ 会话有效，已进入订单查询页面');
             return true;
         } catch (error) {
             console.log('⚠️ 现有会话无效或超时，开始登录流程');
@@ -287,7 +287,7 @@ class PDDPlanAntiContentFetcher {
                 }
 
                 if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                    console.log('✅ 登录成功，已进入预估销量页面');
+                    console.log('✅ 登录成功，已进入订单查询页面');
                     this.capturedData.needlogin = true; // 标记为需要登录，表示我们已经完成了登录流程
                     return true;
                 }
@@ -330,10 +330,10 @@ class PDDPlanAntiContentFetcher {
                 response => response.url().includes(CONFIG.targetApiEndpointPlan),
                 { timeout: 30000 }
             );
-            console.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
+            console.log(`✅ 已捕获到预订单查询查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
             return true;
         } catch (error) {
-            console.log('❌ 在30秒内未捕获到预估销量查询API请求');
+            console.log('❌ 在30秒内未捕获到预订单查询API请求');
             return false;
         }
     }
@@ -357,7 +357,7 @@ class PDDPlanAntiContentFetcher {
 
     async run() {
         try {
-            console.log('🎬 开始执行快速预估销量参数捕获脚本');
+            console.log('🎬 开始执行快速订单查询参数捕获脚本');
 
             // 1. 初始化浏览器
             await this.init();
@@ -378,7 +378,7 @@ class PDDPlanAntiContentFetcher {
             // 4. 等待API请求，捕获anti-content参数
             const apiCaptured = await this.waitForPlanAPIRequest();
             if (!apiCaptured) {
-                throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
+                throw new Error('未捕获到预订单查询API请求，无法获取anti-content参数');
             }
 
             // 只在重新登录时才抓取 Cookie
