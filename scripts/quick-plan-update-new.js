@@ -399,7 +399,6 @@ async function updatePlanAntiContent(username, password) {
         const browserFlowStart = Date.now();
         const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, null);
         await fetcher.run();
-        logger.log(`⏱️ 浏览器流程耗时: ${formatDuration(Date.now() - browserFlowStart)}`);
 
         if (!fetcher.capturedData.antiContentPlan) {
             logger.warn('⚠️ 未获取到anti-content，跳过上传');

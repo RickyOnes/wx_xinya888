@@ -154,7 +154,7 @@ class PDDPlanAntiContentFetcher {
                 const headers = request.headers();
                 if (headers['anti-content']) {
                     this.capturedData.antiContentPlan = headers['anti-content'];
-                    this.log(`✅ 捕获到 anti-content，长度: ${this.capturedData.antiContentPlan.length}`);
+                    console.log(`✅ 捕获到 anti-content，长度: ${this.capturedData.antiContentPlan.length}`);
                 }
 
                 // 继续请求

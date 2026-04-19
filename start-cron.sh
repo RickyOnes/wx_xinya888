@@ -26,7 +26,7 @@ set -e
 source /etc/profile.d/fcitx.sh
 
 echo "=== 启动 Xvfb ==="
-Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
+Xvfb :99 -screen 0 1280x720x16 -ac +extension GLX +render -noreset &
 export DISPLAY=:99
 
 # 等待 Xvfb 完全启动

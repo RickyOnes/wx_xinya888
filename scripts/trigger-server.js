@@ -1597,21 +1597,14 @@ const server = http.createServer(async (req, res) => {
               color: #475569;
             }
             .desktop-frame-wrap {
+              display: none;
               background: #0f172a;
               border-radius: 16px;
               overflow: hidden;
               border: 1px solid rgba(148, 163, 184, 0.3);
             }
-            .desktop-placeholder {
-              min-height: 220px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              padding: 24px;
-              color: #cbd5e1;
-              background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-              text-align: center;
-              line-height: 1.7;
+            .desktop-frame-wrap.visible {
+              display: block;
             }
             .desktop-frame {
               width: 100%;
@@ -1824,11 +1817,10 @@ const server = http.createServer(async (req, res) => {
                     <button id="openDesktopBtn" class="btn-small" type="button">新窗口打开</button>
                   </div>
                 </div>
-                <div class="desktop-frame-wrap">
-                  <div id="desktopPlaceholder" class="desktop-placeholder">点击“加载桌面”后，会在当前控制台内嵌打开远程桌面，方便一边看日志一边操作。</div>
+                <div id="desktopFrameWrap" class="desktop-frame-wrap">
                   <iframe id="desktopFrame" class="desktop-frame" title="远程桌面" loading="lazy"></iframe>
                 </div>
-                <div class="desktop-note">该区域本质仍是 noVNC 的内嵌页面，主要提升操作便利性；与直接打开 <code>/vnc.html</code> 相比，传输链路基本相同，通常不会更快。</div>
+                <div class="desktop-note">默认不加载桌面，避免占用带宽；点击“加载桌面”后才会显示。该区域本质仍是 noVNC 的内嵌页面，主要提升操作便利性；与直接打开 <code>/vnc.html</code> 相比，传输链路基本相同，通常不会更快。</div>
               </div>
 
               <h2>📊 统计指标</h2>
@@ -1882,8 +1874,8 @@ const server = http.createServer(async (req, res) => {
             const failureModal = document.getElementById('failureModal');
             const failureModalContent = document.getElementById('failureModalContent');
             const closeFailureModalBtn = document.getElementById('closeFailureModalBtn');
+            const desktopFrameWrap = document.getElementById('desktopFrameWrap');
             const desktopFrame = document.getElementById('desktopFrame');
-            const desktopPlaceholder = document.getElementById('desktopPlaceholder');
             const loadDesktopBtn = document.getElementById('loadDesktopBtn');
             const refreshDesktopBtn = document.getElementById('refreshDesktopBtn');
             const openDesktopBtn = document.getElementById('openDesktopBtn');
@@ -2035,8 +2027,8 @@ const server = http.createServer(async (req, res) => {
                 return;
               }
 
+              desktopFrameWrap.classList.add('visible');
               desktopFrame.dataset.loaded = 'true';
-              desktopPlaceholder.style.display = 'none';
               desktopFrame.classList.add('visible');
               setDesktopStatus(forceReload ? '重新连接中...' : '连接中...');
               desktopFrame.src = buildDesktopFrameUrl();
@@ -2475,6 +2467,8 @@ const server = http.createServer(async (req, res) => {
               closeSSE();
               if (desktopFrame.dataset.loaded === 'true') {
                 desktopFrame.src = 'about:blank';
+                desktopFrame.classList.remove('visible');
+                desktopFrameWrap.classList.remove('visible');
               }
             });
 
