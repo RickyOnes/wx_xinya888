@@ -16,7 +16,7 @@ const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
 const HISTORY_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'history.json');
 const MAX_HISTORY = 20;
-const MAX_LOG_DAYS = 30;
+const MAX_LOG_DAYS = 20;
 const SSE_HEARTBEAT_INTERVAL = 25000;
 const SSE_RETRY_INTERVAL = 5000;
 const STOP_FORCE_KILL_DELAY = 15000;
@@ -1475,7 +1475,7 @@ const server = http.createServer(async (req, res) => {
               font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
               background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
               min-height: 100vh;
-              padding: 20px;
+              padding: 10px;
             }
             .container {
               max-width: 1400px;
@@ -1488,7 +1488,7 @@ const server = http.createServer(async (req, res) => {
               background: rgba(255,255,255,0.95);
               backdrop-filter: blur(10px);
               border-radius: 20px;
-              padding: 20px 25px;
+              padding: 10px 10px;
               box-shadow: 0 20px 40px rgba(0,0,0,0.3);
             }
             h1 { font-size: 1.8rem; color: #333; margin-bottom: 10px; border-left: 6px solid #667eea; padding-left: 20px; }
@@ -1526,25 +1526,35 @@ const server = http.createServer(async (req, res) => {
             @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } }
             .script-grid {
               display: grid;
-              grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-              gap: 12px;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 10px;
               margin: 15px 0;
+            }
+            @media (min-width: 768px) {
+              .script-grid {
+                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+              }
             }
             .script-item {
               display: flex;
-              gap: 8px;
+              gap: 6px;
               align-items: center;
+              min-width: 0;
             }
             .script-btn {
               flex: 1;
+              min-width: 0;
               background: white;
               border: 2px solid #e2e8f0;
-              border-radius: 40px;
-              padding: 10px 16px;
-              font-size: 0.9rem;
+              border-radius: 14px;
+              padding: 9px 10px;
+              font-size: 0.86rem;
               font-weight: 600;
               cursor: pointer;
               transition: all 0.2s;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .script-btn:hover { border-color: #667eea; background: #f5f3ff; transform: translateY(-1px); }
             .script-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1552,7 +1562,7 @@ const server = http.createServer(async (req, res) => {
               background: #fee2e2;
               border: none;
               border-radius: 30px;
-              padding: 8px 12px;
+              padding: 4px 6px;
               cursor: pointer;
               font-size: 1rem;
               transition: 0.2s;
@@ -1595,6 +1605,8 @@ const server = http.createServer(async (req, res) => {
             .desktop-status {
               font-size: 0.9rem;
               color: #475569;
+              align-content: center;
+              margin-top: 8px;              
             }
             .desktop-frame-wrap {
               display: none;
@@ -1633,7 +1645,7 @@ const server = http.createServer(async (req, res) => {
               color: white;
               border: none;
               border-radius: 30px;
-              padding: 8px 16px;
+              padding: 5px 10px;
               cursor: pointer;
               margin-top: 8px;
             }
@@ -1813,14 +1825,13 @@ const server = http.createServer(async (req, res) => {
                   <div class="desktop-actions">
                     <span class="desktop-status">状态: <strong id="desktopStatus">未加载</strong></span>
                     <button id="loadDesktopBtn" class="btn-small" type="button">加载桌面</button>
-                    <button id="refreshDesktopBtn" class="btn-small" type="button">刷新桌面</button>
-                    <button id="openDesktopBtn" class="btn-small" type="button">新窗口打开</button>
+                    <button id="hideDesktopBtn" class="btn-small" type="button" style="display:none;">隐藏桌面</button>
+                    <button id="openDesktopBtn" class="btn-small" type="button" style="display:none;">新窗口打开</button>
                   </div>
                 </div>
                 <div id="desktopFrameWrap" class="desktop-frame-wrap">
                   <iframe id="desktopFrame" class="desktop-frame" title="远程桌面" loading="lazy"></iframe>
                 </div>
-                <div class="desktop-note">默认不加载桌面，避免占用带宽；点击“加载桌面”后才会显示。该区域本质仍是 noVNC 的内嵌页面，主要提升操作便利性；与直接打开 <code>/vnc.html</code> 相比，传输链路基本相同，通常不会更快。</div>
               </div>
 
               <h2>📊 统计指标</h2>
@@ -1877,7 +1888,7 @@ const server = http.createServer(async (req, res) => {
             const desktopFrameWrap = document.getElementById('desktopFrameWrap');
             const desktopFrame = document.getElementById('desktopFrame');
             const loadDesktopBtn = document.getElementById('loadDesktopBtn');
-            const refreshDesktopBtn = document.getElementById('refreshDesktopBtn');
+            const hideDesktopBtn = document.getElementById('hideDesktopBtn');
             const openDesktopBtn = document.getElementById('openDesktopBtn');
             const desktopStatus = document.getElementById('desktopStatus');
             const DESKTOP_FRAME_URL = '/vnc.html?autoconnect=true&resize=scale';
@@ -2020,9 +2031,9 @@ const server = http.createServer(async (req, res) => {
               return DESKTOP_FRAME_URL + '&t=' + Date.now();
             }
 
-            function loadDesktopFrame(forceReload = false) {
+            function loadDesktopFrame() {
               const hasLoaded = desktopFrame.dataset.loaded === 'true';
-              if (hasLoaded && !forceReload) {
+              if (hasLoaded) {
                 setDesktopStatus('已加载');
                 return;
               }
@@ -2030,8 +2041,22 @@ const server = http.createServer(async (req, res) => {
               desktopFrameWrap.classList.add('visible');
               desktopFrame.dataset.loaded = 'true';
               desktopFrame.classList.add('visible');
-              setDesktopStatus(forceReload ? '重新连接中...' : '连接中...');
+              loadDesktopBtn.style.display = 'none';
+              hideDesktopBtn.style.display = '';
+              openDesktopBtn.style.display = '';
+              setDesktopStatus('连接中...');
               desktopFrame.src = buildDesktopFrameUrl();
+            }
+
+            function hideDesktopFrame() {
+              desktopFrame.dataset.loaded = 'false';
+              desktopFrame.src = 'about:blank';
+              desktopFrame.classList.remove('visible');
+              desktopFrameWrap.classList.remove('visible');
+              loadDesktopBtn.style.display = '';
+              hideDesktopBtn.style.display = 'none';
+              openDesktopBtn.style.display = 'none';
+              setDesktopStatus('未加载');
             }
 
             function setSSEStatus(status) {
@@ -2386,11 +2411,11 @@ const server = http.createServer(async (req, res) => {
             };
 
             loadDesktopBtn.onclick = () => {
-              loadDesktopFrame(false);
+              loadDesktopFrame();
             };
 
-            refreshDesktopBtn.onclick = () => {
-              loadDesktopFrame(true);
+            hideDesktopBtn.onclick = () => {
+              hideDesktopFrame();
             };
 
             openDesktopBtn.onclick = () => {
@@ -2466,9 +2491,7 @@ const server = http.createServer(async (req, res) => {
               if (heartbeatCheckTimer) clearInterval(heartbeatCheckTimer);
               closeSSE();
               if (desktopFrame.dataset.loaded === 'true') {
-                desktopFrame.src = 'about:blank';
-                desktopFrame.classList.remove('visible');
-                desktopFrameWrap.classList.remove('visible');
+                hideDesktopFrame();
               }
             });
 

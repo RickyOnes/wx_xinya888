@@ -1,7 +1,6 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
-const { execSync } = require('child_process'); // 用于检测系统 Chrome
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -33,6 +32,7 @@ const CONFIG = {
           '--disable-2d-canvas-clip-aa',
           '--use-gl=swiftshader',
           '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
+          '--disable-blink-features=AutomationControlled',// 进一步隐藏自动化特征
           '--disable-extensions',
           '--disable-component-extensions-with-background-pages',
           '--disable-sync',
@@ -66,20 +66,137 @@ function createPrefixedLogger(prefix) {
     };
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function toPositiveInt(value, fallback) {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? Math.floor(num) : fallback;
+}
+
+function randomInt(min, max) {
+    if (max <= min) return min;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function hashString(input = '') {
+    let hash = 0;
+    for (let i = 0; i < input.length; i += 1) {
+        hash = ((hash << 3) - hash) + input.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
+function buildAccountFingerprint(username) {
+    const hash = hashString(username || 'unknown');
+    const uaPool = [
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+    ];
+    const languagePool = [
+        { header: 'zh-CN,zh;q=0.9,en;q=0.8', navigator: ['zh-CN', 'zh', 'en-US'] },
+        { header: 'zh-CN,zh;q=0.9', navigator: ['zh-CN', 'zh'] },
+        { header: 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7', navigator: ['zh-CN', 'zh', 'en-US', 'en'] }
+    ];
+
+    return {
+        userAgent: uaPool[hash % uaPool.length],
+        language: languagePool[hash % languagePool.length],
+        viewport: {
+            width: 1280 + (hash % 4) * 40,
+            height: 720 + (hash % 3) * 40
+        },
+        typeDelay: 35 + (hash % 40)
+    };
+}
+
+class AsyncSemaphore {
+    constructor(maxConcurrency = 1) {
+        this.maxConcurrency = Math.max(1, maxConcurrency);
+        this.current = 0;
+        this.queue = [];
+    }
+
+    async acquire() {
+        if (this.current < this.maxConcurrency) {
+            this.current += 1;
+            return this.createReleaser();
+        }
+
+        await new Promise(resolve => this.queue.push(resolve));
+        this.current += 1;
+        return this.createReleaser();
+    }
+
+    createReleaser() {
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            this.current = Math.max(0, this.current - 1);
+            const next = this.queue.shift();
+            if (next) next();
+        };
+    }
+}
+
+class RiskController {
+    constructor(cooldownMs = 45000) {
+        this.cooldownMs = Math.max(5000, cooldownMs);
+        this.cooldownUntil = 0;
+    }
+
+    async waitIfCoolingDown(logger) {
+        const remainMs = this.cooldownUntil - Date.now();
+        if (remainMs > 0) {
+            logger.warn(`🛡️ 风控冷却中，等待 ${formatDuration(remainMs)} 后再进入登录阶段`);
+            await sleep(remainMs);
+        }
+    }
+
+    trigger(reason, logger) {
+        const jitterMs = randomInt(3000, 12000);
+        const nextUntil = Date.now() + this.cooldownMs + jitterMs;
+        if (nextUntil > this.cooldownUntil) {
+            this.cooldownUntil = nextUntil;
+        }
+        logger.warn(`🛡️ 检测到风控信号（${reason || '未知原因'}），已进入冷却窗口`);
+    }
+}
+
 class PDDPlanAntiContentFetcher {
-    constructor(loginCredentials, userDataDir, supabaseClient) {
+    constructor(loginCredentials, userDataDir, supabaseClient, runtimeContext = {}) {
         this.browser = null;
         this.page = null;
         this.capturedData = {
             antiContentPlan: null,
             cookieString: '',
-            needlogin: false
+            needlogin: false,
+            riskTriggered: false,
+            riskReason: ''
         };
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
         this.supabaseClient = supabaseClient || null;
         this.username = this.loginCredentials?.username || 'unknown';
         this.logger = createPrefixedLogger(getAccountPrefix(this.username));
+        this.loginGate = runtimeContext.loginGate || null;
+        this.riskController = runtimeContext.riskController || null;
+        this.fingerprint = buildAccountFingerprint(this.username);
+        this.antiContentDeferred = createDeferred();
     }
 
     log(...args) {
@@ -106,7 +223,8 @@ class PDDPlanAntiContentFetcher {
 
         const baseOptions = {
             ...CONFIG.browserOptions,
-            userDataDir: this.userDataDir
+            userDataDir: this.userDataDir,
+            defaultViewport: this.fingerprint.viewport
         };
 
         let launchOptions = { ...baseOptions };
@@ -143,35 +261,41 @@ class PDDPlanAntiContentFetcher {
 
         this.page = await this.browser.newPage();
 
-        await this.page.setUserAgent(
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
-        );
+        await this.page.setUserAgent(this.fingerprint.userAgent);
 
         await this.page.setExtraHTTPHeaders({
-            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Accept-Language': this.fingerprint.language.header,
             'Accept-Encoding': 'gzip, deflate, br, zstd'
         });
 
-        await this.page.evaluateOnNewDocument(() => {
+        const navigatorLanguages = this.fingerprint.language.navigator;
+        await this.page.evaluateOnNewDocument((langs) => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+            Object.defineProperty(navigator, 'languages', { get: () => langs });
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Linux x86_64'  // 与 UA 中的 (X11; Linux x86_64) 呼应
+                }, navigatorLanguages);
         });
-
+        this.log(`🧬 指纹: viewport=${this.fingerprint.viewport.width}x${this.fingerprint.viewport.height}, UA片段=${this.fingerprint.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
         this.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
+    // 监听 request 事件，捕获请求头中的 anti-content
     async setupRequestListener() {
         this.page.on('request', (request) => {
             const url = request.url();
             if (!url.includes(CONFIG.targetApiEndpointPlan)) return;
 
-            this.log(`URL: ${url}`);
-
             const headers = request.headers();
-            if (headers['anti-content']) {
-                this.capturedData.antiContentPlan = headers['anti-content'];
-                this.log(`✅ 捕获到 anti-content，长度: ${this.capturedData.antiContentPlan.length}`);
+            const antiContent = headers['anti-content'];
+            if (!antiContent) return;
+
+            if (!this.capturedData.antiContentPlan) {
+                this.log(`URL: ${url}`);
+                this.log(`✅ 捕获到 anti-content，长度: ${antiContent.length}`);
+                this.capturedData.antiContentPlan = antiContent;
+                this.antiContentDeferred.resolve(antiContent);
             }
         });
     }
@@ -209,7 +333,7 @@ class PDDPlanAntiContentFetcher {
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
                             this.log('✅ 已切换到账号登录标签');
-                            await new Promise(r => setTimeout(r, 500));
+                            await sleep(500);
                         }
                     }
                 }
@@ -222,7 +346,7 @@ class PDDPlanAntiContentFetcher {
                 try {
                     const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
                     if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
-                        await usernameEl.type(this.loginCredentials.username, { delay: 50 });
+                        await usernameEl.type(this.loginCredentials.username, { delay: this.fingerprint.typeDelay });
                         this.log('✅ 已输入用户名');
                     }
                 } catch {}
@@ -230,7 +354,7 @@ class PDDPlanAntiContentFetcher {
                 try {
                     const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
                     if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
-                        await passwordEl.type(this.loginCredentials.password, { delay: 50 });
+                        await passwordEl.type(this.loginCredentials.password, { delay: this.fingerprint.typeDelay + randomInt(5, 25) });
                         this.log('✅ 已输入密码');
                     }
                 } catch {}
@@ -259,7 +383,7 @@ class PDDPlanAntiContentFetcher {
             }
 
             this.log('⏳ 等待登录处理...');
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await sleep(1000 + randomInt(100, 600));
 
             const startTime = Date.now();
             const maxWaitTime = 300000;
@@ -273,12 +397,14 @@ class PDDPlanAntiContentFetcher {
                     currentUrl = this.page.url();
                 } catch {
                     this.warn('获取URL失败，页面可能正在导航，等待后重试...');
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await sleep(1000);
                     continue;
                 }
 
-                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
-                    this.log('✅ 登录成功，已进入预估销量页面');
+                if (
+                    currentUrl.includes('/ddmc-mms/order/management') 
+                ) {
+                    this.log(`✅ 登录成功，已进入业务页面: ${currentUrl}`);
                     this.capturedData.needlogin = true;
                     return true;
                 }
@@ -292,16 +418,22 @@ class PDDPlanAntiContentFetcher {
                 if (verificationCodeInput) {
                     this.warn('检测到验证码输入框，可能需要短信验证码');
                     this.warn('需要验证码，跳过验证码处理（快速模式）');
+                    this.capturedData.riskTriggered = true;
+                    this.capturedData.riskReason = '触发短信验证码';
                     return false;
                 }
 
-                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                await sleep(pollInterval);
             }
 
             this.error('❌ 登录超时（5分钟），退出');
+            this.capturedData.riskTriggered = true;
+            this.capturedData.riskReason = '登录超时';
             return false;
         } catch (error) {
             this.error('❌ 登录过程出现错误:', error.message);
+            this.capturedData.riskTriggered = true;
+            this.capturedData.riskReason = `登录异常: ${error.message}`;
             return false;
         }
     }
@@ -312,17 +444,30 @@ class PDDPlanAntiContentFetcher {
             return true;
         }
 
+        const timeoutMs = toPositiveInt(process.env.QUICK_PLAN_API_WAIT_MS, 30000);
+        let timeoutId = null;
+        const timeoutPromise = new Promise(resolve => {
+            timeoutId = setTimeout(() => resolve(null), timeoutMs);
+            if (typeof timeoutId.unref === 'function') timeoutId.unref();
+        });
+
+        let antiContent = null;
         try {
-            await this.page.waitForResponse(
-                response => response.url().includes(CONFIG.targetApiEndpointPlan),
-                { timeout: 30000 }
-            );
-            this.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
-            return true;
-        } catch {
-            this.error('❌ 在30秒内未捕获到预估销量查询API请求');
-            return false;
+            antiContent = await Promise.race([
+                this.antiContentDeferred.promise,
+                timeoutPromise
+            ]);
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
         }
+
+        if (antiContent) {
+            this.log(`✅ 已捕获到预估销量查询API请求，获取到anti-content（长度: ${String(antiContent).length}）`);
+            return true;
+        }
+
+        this.error(`❌ 在${Math.floor(timeoutMs / 1000)}秒内未捕获到 anti-content`);
+        return false;
     }
 
     async captureCookies() {
@@ -351,14 +496,36 @@ class PDDPlanAntiContentFetcher {
             this.log(`⏱️ 初始化浏览器耗时: ${formatDuration(Date.now() - initStart)}`);
 
             await this.setupRequestListener();
-            this.log('🪝 已改为 request 监听，不再启用 setRequestInterception');
             this.log(`📝 登录信息: 用户 ${this.loginCredentials.username}`);
 
             const loginStart = Date.now();
-            const loginSuccess = await this.autoLogin();
+            if (this.riskController) {
+                await this.riskController.waitIfCoolingDown(this.logger);
+            }
+
+            let releaseLoginSlot = null;
+            if (this.loginGate) {
+                this.log('🚦 等待登录阶段并发令牌...');
+                releaseLoginSlot = await this.loginGate.acquire();
+                this.log('✅ 已获取登录阶段并发令牌');
+            }
+
+            let loginSuccess = false;
+            try {
+                loginSuccess = await this.autoLogin();
+            } finally {
+                if (releaseLoginSlot) {
+                    releaseLoginSlot();
+                    this.log('🔓 已释放登录阶段并发令牌');
+                }
+            }
+
             this.log(`⏱️ 会话/登录阶段耗时: ${formatDuration(Date.now() - loginStart)}`);
 
             if (!loginSuccess) {
+                if (this.capturedData.riskTriggered && this.riskController) {
+                    this.riskController.trigger(this.capturedData.riskReason, this.logger);
+                }
                 this.error('❌ 登录失败，程序退出');
                 return;
             }
@@ -391,18 +558,29 @@ class PDDPlanAntiContentFetcher {
     }
 }
 
-async function updatePlanAntiContent(username, password) {
+async function updatePlanAntiContent(username, password, runtimeContext = {}) {
     const logger = createPrefixedLogger(getAccountPrefix(username));
 
     try {
         logger.log('🔍 开始浏览器流程...');
-        const browserFlowStart = Date.now();
-        const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, null);
+        const fetcher = new PDDPlanAntiContentFetcher(
+            { username, password },
+            `./puppeteer_user_data/${username}`,
+            null,
+            runtimeContext
+        );
         await fetcher.run();
 
         if (!fetcher.capturedData.antiContentPlan) {
             logger.warn('⚠️ 未获取到anti-content，跳过上传');
-            return { username, success: false, skipped: true, reason: '未获取到anti-content' };
+            return {
+                username,
+                success: false,
+                skipped: true,
+                reason: '未获取到anti-content',
+                riskTriggered: Boolean(fetcher.capturedData.riskTriggered),
+                riskReason: fetcher.capturedData.riskReason || ''
+            };
         }
 
         const uploadData = {
@@ -494,9 +672,12 @@ async function batchUploadAccountData(supabase, results) {
     };
 }
 
-async function runAccountsWithConcurrency(accounts, concurrency) {
+async function runAccountsWithConcurrency(accounts, concurrency, runtimeContext = {}) {
     const results = new Array(accounts.length);
     let currentIndex = 0;
+
+    const staggerMs = Math.max(0, runtimeContext.staggerMs || 0);
+    const staggerJitterMs = Math.max(0, runtimeContext.staggerJitterMs || 0);
 
     async function worker(workerId) {
         while (true) {
@@ -505,8 +686,17 @@ async function runAccountsWithConcurrency(accounts, concurrency) {
 
             const account = accounts[index];
             const logger = createPrefixedLogger(getAccountPrefix(account.username));
+
+            if (index < concurrency && staggerMs > 0) {
+                const delayMs = (index * staggerMs) + randomInt(0, staggerJitterMs);
+                if (delayMs > 0) {
+                    logger.log(`⏳ 错峰启动，等待 ${formatDuration(delayMs)} 后开始（Worker-${workerId}）`);
+                    await sleep(delayMs);
+                }
+            }
+
             logger.log(`🧵 Worker-${workerId} 开始处理`);
-            results[index] = await updatePlanAntiContent(account.username, account.password);
+            results[index] = await updatePlanAntiContent(account.username, account.password, runtimeContext);
             logger.log(`🧵 Worker-${workerId} 处理完成`);
         }
     }
@@ -556,13 +746,25 @@ async function main() {
             return;
         }
 
-        const configuredConcurrency = Number(process.env.QUICK_PLAN_CONCURRENCY || 2);
-        const concurrency = Number.isFinite(configuredConcurrency) && configuredConcurrency > 0
-            ? Math.floor(configuredConcurrency)
-            : 2;
+        const concurrency = toPositiveInt(process.env.QUICK_PLAN_CONCURRENCY, 3);
+        const loginConcurrency = toPositiveInt(process.env.QUICK_LOGIN_CONCURRENCY, 1);
+        const staggerMs = Math.max(0, Number(process.env.QUICK_PLAN_STAGGER_MS || 2000));
+        const staggerJitterMs = Math.max(0, Number(process.env.QUICK_PLAN_STAGGER_JITTER_MS || 1000));
+        const riskCooldownMs = toPositiveInt(process.env.QUICK_PLAN_RISK_COOLDOWN_MS, 45000);
 
-        console.log(`⚙️ 并发账号数: ${Math.min(concurrency, runnableAccounts.length)}/${runnableAccounts.length}`);
-        const results = await runAccountsWithConcurrency(runnableAccounts, concurrency);
+        const runtimeContext = {
+            loginGate: new AsyncSemaphore(Math.min(loginConcurrency, Math.max(1, runnableAccounts.length))),
+            riskController: new RiskController(riskCooldownMs),
+            staggerMs,
+            staggerJitterMs
+        };
+
+        console.log(`⚙️ 账号并发数: ${Math.min(concurrency, runnableAccounts.length)}/${runnableAccounts.length}`);
+        console.log(`⚙️ 登录阶段并发数: ${Math.min(loginConcurrency, runnableAccounts.length)}`);
+        console.log(`⚙️ 错峰启动: 基础 ${staggerMs}ms, 抖动 ${staggerJitterMs}ms`);
+        console.log(`⚙️ 风控冷却窗口: ${riskCooldownMs}ms`);
+
+        const results = await runAccountsWithConcurrency(runnableAccounts, concurrency, runtimeContext);
 
         const skippedCount = results.filter(result => result?.skipped).length;
         const browserFailedResults = results.filter(result => result && !result.success && !result.skipped);
