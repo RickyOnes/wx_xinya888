@@ -160,10 +160,9 @@ class PDDPlanAntiContentFetcher {
             if (!antiContent) return;
 
             if (!this.capturedData.antiContentPlan) {
-                this.log(`URL: ${url}`);
-                this.log(`✅ 捕获到 anti-content，长度: ${antiContent.length}`);
+                console.log(`URL: ${url}`);
+                console.log(`✅ 捕获到 anti-content，长度: ${antiContent.length}`);
                 this.capturedData.antiContentPlan = antiContent;
-                this.antiContentDeferred.resolve(antiContent);
             }
         });
     }

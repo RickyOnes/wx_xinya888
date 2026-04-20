@@ -331,7 +331,7 @@ class PDDOrderCrawler {
     }
 
     await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
     );
 
     await this.page.setExtraHTTPHeaders({
@@ -343,6 +343,9 @@ class PDDOrderCrawler {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
       Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+      Object.defineProperty(navigator, 'platform', {
+          get: () => 'Linux x86_64'  // 与 UA 中的 (X11; Linux x86_64) 呼应
+          }, navigatorLanguages);         
     });
 
     this.cursor = new GhostCursor(this.page);
