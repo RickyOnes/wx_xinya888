@@ -375,16 +375,14 @@ class PDDPlanAntiContentFetcher {
                 return;
             }
 
-            // 4. 等待API请求，捕获anti-content参数
+            // 4. 先等待API请求，捕获anti-content参数
             const apiCaptured = await this.waitForPlanAPIRequest();
             if (!apiCaptured) {
-                throw new Error('未捕获到预订单查询API请求，无法获取anti-content参数');
+                console.log('⚠️ 未捕获到anti-content，将继续抓取并上传 cookie_string');
             }
 
-            // 只在重新登录时才抓取 Cookie
-            if (this.capturedData.needlogin) {
-                await this.captureCookies();
-            }
+            // 5. 每次执行都抓取 Cookie（不区分是否重新登录）
+            await this.captureCookies();
 
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -424,42 +422,29 @@ async function updatePlanAntiContent(username, password) {
         const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase);
         await fetcher.run();
 
-        // 如果成功获取到anti-content,且未重新登录，更新到Supabase
-        if (fetcher.capturedData.antiContentPlan && !fetcher.capturedData.needlogin) {
-            // 只更新anti_content字段
-            const { error } = await supabase
-                .from('pdd_accounts')
-                .update({
-                  anti_content: fetcher.capturedData.antiContentPlan,
-                  updated_at: new Date().toISOString()
-                })
-                .eq('username', username);
+        // 每次执行都上传到 Supabase：始终更新 cookie_string；如已捕获 anti-content 则一并更新
+        const updatePayload = {
+            cookie_string: fetcher.capturedData.cookieString || '',
+            updated_at: new Date().toISOString()
+        };
 
-            if (error) {
-                console.log(`❌ 更新失败: ${error.message}`);
-            } else {
-                console.log(`✅ 账号 ${username} 的anti_content已更新到Supabase`);
-                console.log('\n' + '='.repeat(50));
-            }
-        } else if (fetcher.capturedData.antiContentPlan && fetcher.capturedData.needlogin){
-            // 如果已重新登录，则更新anti_content字段和cookie_string字段
-            const { error } = await supabase
-                .from('pdd_accounts')
-                .update({
-                  anti_content: fetcher.capturedData.antiContentPlan,
-                  cookie_string: fetcher.capturedData.cookieString,
-                  updated_at: new Date().toISOString()
-                })
-                .eq('username', username);
+        if (fetcher.capturedData.antiContentPlan) {
+            updatePayload.anti_content = fetcher.capturedData.antiContentPlan;
+        }
 
-            if (error) {
-                console.log(`❌ 更新失败: ${error.message}`);
-            } else {
-                console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
-                console.log('\n' + '='.repeat(50));
-            }
-        } else {    
-            console.log(`⚠️ 未获取到anti-content，跳过更新`);
+        const { error } = await supabase
+            .from('pdd_accounts')
+            .update(updatePayload)
+            .eq('username', username);
+
+        if (error) {
+            console.log(`❌ 更新失败: ${error.message}`);
+        } else if (fetcher.capturedData.antiContentPlan) {
+            console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
+            console.log('\n' + '='.repeat(50));
+        } else {
+            console.log(`✅ 账号 ${username} 的cookie_string已更新到Supabase（未捕获到anti-content）`);
+            console.log('\n' + '='.repeat(50));
         }
 
     } catch (error) {

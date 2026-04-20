@@ -536,14 +536,12 @@ class PDDPlanAntiContentFetcher {
             const apiCaptured = await this.waitForPlanAPIRequest();
             this.log(`⏱️ 等待目标API阶段耗时: ${formatDuration(Date.now() - apiStart)}`);
             if (!apiCaptured) {
-                throw new Error('未捕获到预估销量查询API请求，无法获取anti-content参数');
+                this.warn('⚠️ 未捕获到anti-content，将继续抓取并上传 cookie_string');
             }
 
-            if (this.capturedData.needlogin) {
-                const cookieStart = Date.now();
-                await this.captureCookies();
-                this.log(`⏱️ Cookie 捕获耗时: ${formatDuration(Date.now() - cookieStart)}`);
-            }
+            const cookieStart = Date.now();
+            await this.captureCookies();
+            this.log(`⏱️ Cookie 捕获耗时: ${formatDuration(Date.now() - cookieStart)}`);
         } catch (error) {
             this.error('❌ 脚本执行出错:', error.message);
         } finally {
@@ -573,27 +571,34 @@ async function updatePlanAntiContent(username, password, runtimeContext = {}) {
         );
         await fetcher.run();
 
-        if (!fetcher.capturedData.antiContentPlan) {
-            logger.warn('⚠️ 未获取到anti-content，跳过上传');
+        const uploadData = {
+            username,
+            updated_at: new Date().toISOString()
+        };
+
+        if (fetcher.capturedData.antiContentPlan) {
+            uploadData.anti_content = fetcher.capturedData.antiContentPlan;
+        }
+        if (fetcher.capturedData.cookieString) {
+            uploadData.cookie_string = fetcher.capturedData.cookieString;
+        }
+
+        if (!uploadData.anti_content && !uploadData.cookie_string) {
+            logger.warn('⚠️ 未获取到anti-content和cookie_string，跳过上传');
             return {
                 username,
                 success: false,
                 skipped: true,
-                reason: '未获取到anti-content',
+                reason: '未获取到anti-content和cookie_string',
                 riskTriggered: Boolean(fetcher.capturedData.riskTriggered),
                 riskReason: fetcher.capturedData.riskReason || ''
             };
         }
 
-        const uploadData = {
-            username,
-            anti_content: fetcher.capturedData.antiContentPlan,
-            updated_at: new Date().toISOString()
-        };
-
-        if (fetcher.capturedData.needlogin) {
-            uploadData.cookie_string = fetcher.capturedData.cookieString;
-            logger.log('🧾 已准备批量上传数据（含 cookie_string）');
+        if (uploadData.anti_content && uploadData.cookie_string) {
+            logger.log('🧾 已准备批量上传数据（anti_content + cookie_string）');
+        } else if (uploadData.cookie_string) {
+            logger.log('🧾 已准备批量上传数据（仅 cookie_string）');
         } else {
             logger.log('🧾 已准备批量上传数据（仅 anti_content）');
         }
@@ -652,25 +657,30 @@ async function batchUploadAccountData(supabase, results) {
         return { successCount: 0, failedResults: [] };
     }
 
+    const antiWithCookieRows = [];
+    const cookieOnlyRows = [];
     const antiOnlyRows = [];
-    const withCookieRows = [];
 
     for (const result of uploadableResults) {
-        if (Object.prototype.hasOwnProperty.call(result.uploadData, 'cookie_string')) {
-            withCookieRows.push(result.uploadData);
+        const row = result.uploadData;
+        if (Object.prototype.hasOwnProperty.call(row, 'anti_content') && Object.prototype.hasOwnProperty.call(row, 'cookie_string')) {
+            antiWithCookieRows.push(row);
+        } else if (Object.prototype.hasOwnProperty.call(row, 'cookie_string')) {
+            cookieOnlyRows.push(row);
         } else {
-            antiOnlyRows.push(result.uploadData);
+            antiOnlyRows.push(row);
         }
     }
 
-    const [antiOnlyResult, withCookieResult] = await Promise.all([
-        batchUpsertRows(supabase, antiOnlyRows, '仅 anti_content'),
-        batchUpsertRows(supabase, withCookieRows, 'anti_content + cookie_string')
+    const [antiWithCookieResult, cookieOnlyResult, antiOnlyResult] = await Promise.all([
+        batchUpsertRows(supabase, antiWithCookieRows, 'anti_content + cookie_string'),
+        batchUpsertRows(supabase, cookieOnlyRows, '仅 cookie_string'),
+        batchUpsertRows(supabase, antiOnlyRows, '仅 anti_content')
     ]);
 
     return {
-        successCount: antiOnlyResult.successCount + withCookieResult.successCount,
-        failedResults: antiOnlyResult.failedResults.concat(withCookieResult.failedResults)
+        successCount: antiWithCookieResult.successCount + cookieOnlyResult.successCount + antiOnlyResult.successCount,
+        failedResults: antiWithCookieResult.failedResults.concat(cookieOnlyResult.failedResults, antiOnlyResult.failedResults)
     };
 }
 
