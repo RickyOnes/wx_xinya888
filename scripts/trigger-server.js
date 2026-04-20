@@ -282,13 +282,13 @@ async function authenticateFromCookie(req, res) {
 
 // ---------- 脚本显示名称映射 ----------
 const SCRIPT_DISPLAY_NAMES = {
-  'quick-plan-update.js': '【快速更新密钥】',
-  'update-pdd.js': '【旧版更新密钥】',
-  'update-pdd-new.js': '【新版更新密钥】',
+  'quick-plan-update.js': '【并发快速更新密钥】',
+  'update-pdd.js': '【旧版正常更新密钥】',
+  'update-pdd-new.js': '【新版正常更新密钥】',
   'update-pdd-cron.js': '【ClawCloud专用更新】',
   'update-clawcloud-token.js': '【刷新ClawCloud口令】',
   'clean-browser-profiles.js': '【清理浏览器数据】',
-  'quick-plan-update-new.js': '【并发快速更新密钥】',
+  'quick-plan-update-old.js': '【旧版快速更新密钥】',
   'quick-update-bill.js': '【更新账单密钥】'
 };
 
@@ -1532,8 +1532,12 @@ const server = http.createServer(async (req, res) => {
             }
             @media (min-width: 768px) {
               .script-grid {
-                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+                grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
               }
+               
+              .card {
+                padding: 30px 40px;
+              }              
             }
             .script-item {
               display: flex;
@@ -1547,14 +1551,12 @@ const server = http.createServer(async (req, res) => {
               background: white;
               border: 2px solid #e2e8f0;
               border-radius: 14px;
-              padding: 9px 10px;
+              padding: 8px 0px;
               font-size: 0.86rem;
               font-weight: 600;
               cursor: pointer;
               transition: all 0.2s;
               white-space: nowrap;
-              overflow: hidden;
-              text-overflow: ellipsis;
             }
             .script-btn:hover { border-color: #667eea; background: #f5f3ff; transform: translateY(-1px); }
             .script-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1636,7 +1638,7 @@ const server = http.createServer(async (req, res) => {
             }
             .upload-area {
               margin-top: 20px;
-              padding: 15px;
+              padding: 10px 1px 15px 10px;
               background: #f8fafc;
               border-radius: 12px;
             }
