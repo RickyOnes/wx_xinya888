@@ -151,7 +151,7 @@ jobs:
       # 第五步：当脚本失败且不是重试运行时，触发一次重试
       - name: 触发重试运行（仅当验证码导致的失败且不是重试）
         if: failure() && steps.run-script.outputs.verification_needed == 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch') && steps.check-retry.outputs.retry != 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
