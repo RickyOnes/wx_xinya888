@@ -111,12 +111,12 @@ jobs:
             echo "⏹️ 不需要上传视频：运行时间不超过110秒且脚本成功"
           fi
 
-          if [ $SCRIPT_EXIT_CODE -eq 0 ] && [ $DURATION -le 110 ]; then
+          if [ $SCRIPT_EXIT_CODE -eq 0 ]; then
             echo "should_cache=true" >> $GITHUB_OUTPUT
-            echo "💾 需要缓存用户数据：脚本成功且运行时间不超过110秒"
+            echo "💾 需要缓存用户数据：脚本成功"
           else
             echo "should_cache=false" >> $GITHUB_OUTPUT
-            echo "🚫 不需要缓存用户数据：脚本失败或运行时间超过110秒"
+            echo "🚫 不需要缓存用户数据：脚本失败"
           fi
 
           exit $SCRIPT_EXIT_CODE
@@ -142,7 +142,7 @@ jobs:
       # 第四步：上传录制视频
       - name: 上传浏览器录制视频
         if: steps.run-script.outputs.should_upload_video == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-recording-${{ github.run_id }}
           path: recording.mp4
