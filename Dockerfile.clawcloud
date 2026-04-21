@@ -62,7 +62,7 @@ COPY package-clawcloud.json package.json
 RUN npm install --only=production
 
 # 复制源代码
-COPY update-clawcloud-token.js ./
+COPY /scripts/update-clawcloud-token.js ./
 
 # 设置文件权限
 RUN chown -R nodejs:nodejs /app
