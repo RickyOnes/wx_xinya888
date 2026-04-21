@@ -3,10 +3,6 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const {
   createClient
 } = require('@supabase/supabase-js');
-const {
-  execSync
-} = require('child_process'); // 用于检测系统 Chrome
-
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
 
@@ -52,8 +48,31 @@ const CONFIG = {
   }
 };
 
+const UA_POOL = [
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+];
+
+const VIEWPORT_POOL = [
+  { width: 1280, height: 720 },
+  { width: 1320, height: 760 },
+  { width: 1360, height: 800 }
+];
+
+const FIXED_ACCEPT_LANGUAGE = 'zh,en-US;q=0.9,en;q=0.8,zh-CN;q=0.7';
+const FIXED_NAVIGATOR_LANGUAGES = ['zh', 'en-US', 'en', 'zh-CN'];
+
+function getAccountProfile(accountIndex = 0) {
+  const idx = ((Number(accountIndex) || 0) % UA_POOL.length + UA_POOL.length) % UA_POOL.length;
+  return {
+    userAgent: UA_POOL[idx],
+    viewport: VIEWPORT_POOL[idx]
+  };
+}
+
 class PDDOrderCrawler {
-  constructor(loginCredentials, userDataDir, verificationCode, supabaseClient) {
+  constructor(loginCredentials, userDataDir, verificationCode, supabaseClient, accountIndex = 0) {
     this.browser = null;
     this.page = null;
     this.capturedData = {
@@ -78,6 +97,7 @@ class PDDOrderCrawler {
     this.userDataDir = userDataDir || './puppeteer_user_data/default';
     this.verificationCode = verificationCode || null;
     this.supabaseClient = supabaseClient || null;
+    this.accountProfile = getAccountProfile(accountIndex);
   }
 
   // 新增：模拟用户随机滚动
@@ -130,7 +150,8 @@ class PDDOrderCrawler {
     // 基础启动选项
     const baseOptions = {
       ...CONFIG.browserOptions,
-      userDataDir: this.userDataDir
+      userDataDir: this.userDataDir,
+      defaultViewport: this.accountProfile.viewport
     };
 
     // 尝试使用系统 Chrome
@@ -177,16 +198,14 @@ class PDDOrderCrawler {
     this.page = await this.browser.newPage();
 
     // 设置用户代理
-    await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
-    );
+    await this.page.setUserAgent(this.accountProfile.userAgent);
 
     await this.page.setExtraHTTPHeaders({
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br, zstd',
+      'Accept-Language': FIXED_ACCEPT_LANGUAGE,
+      'Accept-Encoding': 'gzip, deflate, br, zstd'
     });
 
-    await this.page.evaluateOnNewDocument(() => {
+    await this.page.evaluateOnNewDocument((langs) => {
       Object.defineProperty(navigator, 'webdriver', {
         get: () => false
       });
@@ -194,62 +213,51 @@ class PDDOrderCrawler {
         get: () => [1, 2, 3, 4, 5]
       });
       Object.defineProperty(navigator, 'languages', {
-        get: () => ['zh-CN', 'zh']
+        get: () => langs
       });
-    });
+      Object.defineProperty(navigator, 'platform', {
+        get: () => 'Linux x86_64'
+      });
+    }, FIXED_NAVIGATOR_LANGUAGES);
 
     console.log('✅ 浏览器启动成功');
     console.log(`📊 浏览器版本: ${await this.browser.version()}`);
   }
 
   async setupRequestInterception() {
-    await this.page.setRequestInterception(true);
-
-    this.page.on('request', async (request) => {
+    this.page.on('request', (request) => {
       const url = request.url();
+      const headers = request.headers();
+      const antiContent = headers['anti-content'];
+      if (!antiContent) return;
 
       if (url.includes(CONFIG.targetApiEndpoint)) {
-        console.log('\n🎯 捕获到订单查询请求:');
-        console.log('   URL:', url);
-        console.log('   方法:', request.method());
-
-        const headers = request.headers();
-        if (headers['anti-content']) {
-          this.capturedData.antiContent = headers['anti-content'];
-          this.capturedData.apiRequestCaptured = true;
-          console.log('   ✅ 捕获到 anti-content:', this.capturedData.antiContent);
-        }
-
+        this.capturedData.antiContent = antiContent;
+        this.capturedData.apiRequestCaptured = true;
+        this.capturedData.orderRequestHeaders = headers;
         if (request.method() === 'POST') {
           const postData = request.postData();
           if (postData) {
             this.capturedData.orderRequestBody = postData;
           }
         }
-
-        this.capturedData.orderRequestHeaders = headers;
+        console.log('\n🎯 捕获到订单查询请求:');
+        console.log('   URL:', url);
+        console.log('   方法:', request.method());
+        console.log('   ✅ 捕获到 anti-content:', antiContent);
       } else if (url.includes(CONFIG.targetApiEndpointPlan)) {
+        this.capturedData.antiContentPlan = antiContent;
         console.log('\n🎯 捕获到预估销量查询请求:');
         console.log('   URL:', url);
         console.log('   方法:', request.method());
-
-        const headers = request.headers();
-        if (headers['anti-content']) {
-          this.capturedData.antiContentPlan = headers['anti-content'];
-          console.log('   ✅ 捕获到 anti-content (预估销量):', this.capturedData.antiContentPlan);
-        }
+        console.log('   ✅ 捕获到 anti-content (预估销量):', antiContent);
       } else if (url.includes(CONFIG.targetApiEndpointDate)) {
+        this.capturedData.antiContentDate = antiContent;
         console.log('\n🎯 捕获到生产日期查询请求:');
         console.log('   URL:', url);
         console.log('   方法:', request.method());
-
-        const headers = request.headers();
-        if (headers['anti-content']) {
-          this.capturedData.antiContentDate = headers['anti-content'];
-          console.log('   ✅ 捕获到 anti-content (生产日期):', this.capturedData.antiContentDate);
-        }
+        console.log('   ✅ 捕获到 anti-content (生产日期):', antiContent);
       }
-      request.continue();
     });
   }
 
@@ -1029,7 +1037,7 @@ class PDDOrderCrawler {
 }
 
 // 主函数（以下部分完全不变）
-async function updateAccount(username, password, verificationCode) {
+async function updateAccount(username, password, verificationCode, accountIndex = 0) {
   console.log(`\n🔄 开始更新账号: ${username}`);
   if (verificationCode) {
     console.log(`   🔑 使用验证码: ${verificationCode}`);
@@ -1050,7 +1058,7 @@ async function updateAccount(username, password, verificationCode) {
     const crawler = new PDDOrderCrawler({
       username,
       password
-    }, `./puppeteer_user_data/${username}`, verificationCode, supabase);
+    }, `./puppeteer_user_data/${username}`, verificationCode, supabase, accountIndex);
     await crawler.run();
 
     const accountData = {
@@ -1095,7 +1103,7 @@ async function main() {
   try {
     const accounts = JSON.parse(accountsJson).accounts;
 
-    for (const account of accounts) {
+    for (const [accountIndex, account] of accounts.entries()) {
       const username = account.username;
       const password = process.env[`PASSWORD_${username.toUpperCase()}`];
       if (!password) {
@@ -1103,7 +1111,7 @@ async function main() {
         continue;
       }
 
-      await updateAccount(username, password, null);
+      await updateAccount(username, password, null, accountIndex);
     }
 
     console.log('\n🎉 所有账号更新完成');

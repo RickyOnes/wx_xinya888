@@ -283,9 +283,9 @@ async function authenticateFromCookie(req, res) {
 // ---------- 脚本显示名称映射 ----------
 const SCRIPT_DISPLAY_NAMES = {
   'quick-plan-update-new.js': '【并发快速更新密钥】',
-  'update-pdd.js': '【旧版正常更新密钥】',
-  'update-pdd-new.js': '【新版正常更新密钥】',
-  'update-pdd-cron.js': '【ClawCloud专用更新】',
+  'update-pdd.js': '【带验证码登录更新】',
+  'update-pdd-new.js': '【无验证码登录更新】',
+  'update-pdd-cron.js': '【带重试无验证更新】',
   'update-clawcloud-token.js': '【刷新ClawCloud口令】',
   'clean-browser-profiles.js': '【清理浏览器数据】',
   'quick-plan-update.js': '【快速更新密钥】',

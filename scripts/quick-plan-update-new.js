@@ -82,15 +82,6 @@ function randomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function hashString(input = '') {
-    let hash = 0;
-    for (let i = 0; i < input.length; i += 1) {
-        hash = ((hash << 3) - hash) + input.charCodeAt(i);
-        hash |= 0;
-    }
-    return Math.abs(hash);
-}
-
 function createDeferred() {
     let resolve;
     let reject;
@@ -101,27 +92,30 @@ function createDeferred() {
     return { promise, resolve, reject };
 }
 
-function buildAccountFingerprint(username) {
-    const hash = hashString(username || 'unknown');
-    const uaPool = [
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-    ];
-    const languagePool = [
-        { header: 'zh-CN,zh;q=0.9,en;q=0.8', navigator: ['zh-CN', 'zh', 'en-US'] },
-        { header: 'zh-CN,zh;q=0.9', navigator: ['zh-CN', 'zh'] },
-        { header: 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7', navigator: ['zh-CN', 'zh', 'en-US', 'en'] }
-    ];
+const UA_POOL = [
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+];
 
+const VIEWPORT_POOL = [
+    { width: 1280, height: 720 },
+    { width: 1320, height: 760 },
+    { width: 1360, height: 800 }
+];
+
+const FIXED_LANGUAGE = {
+    header: 'zh,en-US;q=0.9,en;q=0.8,zh-CN;q=0.7',
+    navigator: ['zh', 'en-US', 'en', 'zh-CN']
+};
+
+function buildAccountFingerprint(accountIndex = 0) {
+    const idx = ((Number(accountIndex) || 0) % UA_POOL.length + UA_POOL.length) % UA_POOL.length;
     return {
-        userAgent: uaPool[hash % uaPool.length],
-        language: languagePool[hash % languagePool.length],
-        viewport: {
-            width: 1280 + (hash % 4) * 40,
-            height: 720 + (hash % 3) * 40
-        },
-        typeDelay: 35 + (hash % 40)
+        userAgent: UA_POOL[idx],
+        language: FIXED_LANGUAGE,
+        viewport: VIEWPORT_POOL[idx],
+        typeDelay: 55
     };
 }
 
@@ -197,7 +191,8 @@ class PDDPlanAntiContentFetcher {
         this.logger = createPrefixedLogger(getAccountPrefix(this.username));
         this.loginGate = runtimeContext.loginGate || null;
         this.riskController = runtimeContext.riskController || null;
-        this.fingerprint = buildAccountFingerprint(this.username);
+        this.accountIndex = Number(runtimeContext.accountIndex || 0);
+        this.fingerprint = buildAccountFingerprint(this.accountIndex);
         this.antiContentDeferred = createDeferred();
     }
 
@@ -276,9 +271,9 @@ class PDDPlanAntiContentFetcher {
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             Object.defineProperty(navigator, 'languages', { get: () => langs });
             Object.defineProperty(navigator, 'platform', {
-                get: () => 'Linux x86_64'  // 与 UA 中的 (X11; Linux x86_64) 呼应
-                }, navigatorLanguages);
-        });
+                get: () => 'Linux x86_64'
+            });
+        }, navigatorLanguages);
         this.log(`🧬 指纹: viewport=${this.fingerprint.viewport.width}x${this.fingerprint.viewport.height}, UA片段=${this.fingerprint.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
         this.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
@@ -708,7 +703,11 @@ async function runAccountsWithConcurrency(accounts, concurrency, runtimeContext 
             }
 
             logger.log(`🧵 Worker-${workerId} 开始处理`);
-            results[index] = await updatePlanAntiContent(account.username, account.password, runtimeContext);
+            results[index] = await updatePlanAntiContent(
+                account.username,
+                account.password,
+                { ...runtimeContext, accountIndex: account.accountIndex }
+            );
             logger.log(`🧵 Worker-${workerId} 处理完成`);
         }
     }
@@ -750,7 +749,7 @@ async function main() {
                 continue;
             }
 
-            runnableAccounts.push({ username, password });
+            runnableAccounts.push({ username, password, accountIndex: runnableAccounts.length });
         }
 
         if (runnableAccounts.length === 0) {
