@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
@@ -24,11 +25,26 @@ const VERIFICATION_CODE_FRESHNESS_THRESHOLD = 5 * 60 * 1000; // 5分钟新鲜度
 
 // 浏览器无头模式配置（默认 true，生产环境建议 true）
 const HEADLESS = process.env.HEADLESS !== 'false';
+const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH;
 // ==================================================
 
 // 延迟函数
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function resolveBrowserExecutablePath() {
+    const candidates = [
+        PUPPETEER_EXECUTABLE_PATH,
+        process.env.CHROME_BIN,
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser'
+    ].filter(Boolean);
+
+    const found = candidates.find(path => fs.existsSync(path));
+    return found || candidates[0];
 }
 
 // 轮询 Supabase 获取 GitHub 2FA 验证码
@@ -292,11 +308,13 @@ async function main() {
     }
 
     // ========== 生产环境浏览器配置 ==========
+    const executablePath = resolveBrowserExecutablePath();
+    console.log(`✅ 使用浏览器可执行文件: ${executablePath}`);
+
     const browserOptions = {
         headless: HEADLESS, // 由环境变量 HEADLESS 控制，默认 true
         defaultViewport: null,
-        // 可执行路径，可由环境变量 PUPPETEER_EXECUTABLE_PATH 覆盖
-        executablePath: '/usr/bin/google-chrome',
+        executablePath,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',

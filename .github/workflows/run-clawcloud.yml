@@ -56,6 +56,7 @@ jobs:
             -e ACCESS_TOKEN_SUPABASE="${{ secrets.ACCESS_TOKEN_SUPABASE }}" \
             -e SUPABASE_PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF || 'iglmqwpagzjadwauvchh' }}" \
             -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -e PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium" \
             -e HEADLESS="${{ github.event.inputs.headless || 'true' }}" \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
