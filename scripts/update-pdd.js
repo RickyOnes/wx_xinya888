@@ -220,7 +220,7 @@ class PDDOrderCrawler {
       });
     }, FIXED_NAVIGATOR_LANGUAGES);
 
-    console.log('✅ 浏览器启动成功');
+    console.log(`🧬 指纹: viewport=${this.accountProfile.viewport.width}x${this.accountProfile.viewport.height}, UA片段=${this.accountProfile.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
     console.log(`📊 浏览器版本: ${await this.browser.version()}`);
   }
 

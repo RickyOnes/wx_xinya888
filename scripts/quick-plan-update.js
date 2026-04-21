@@ -6,7 +6,6 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
-const { execSync } = require('child_process'); // 用于检测系统 Chrome
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -57,8 +56,31 @@ const CONFIG = {
     }
 };
 
+const UA_POOL = [
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+];
+
+const VIEWPORT_POOL = [
+    { width: 1280, height: 720 },
+    { width: 1320, height: 760 },
+    { width: 1360, height: 800 }
+];
+
+const FIXED_ACCEPT_LANGUAGE = 'zh,en-US;q=0.9,en;q=0.8,zh-CN;q=0.7';
+const FIXED_NAVIGATOR_LANGUAGES = ['zh', 'en-US', 'en', 'zh-CN'];
+
+function getAccountProfile(accountIndex = 0) {
+    const idx = ((Number(accountIndex) || 0) % UA_POOL.length + UA_POOL.length) % UA_POOL.length;
+    return {
+        userAgent: UA_POOL[idx],
+        viewport: VIEWPORT_POOL[idx]
+    };
+}
+
 class PDDPlanAntiContentFetcher {
-    constructor(loginCredentials, userDataDir, supabaseClient) {
+    constructor(loginCredentials, userDataDir, supabaseClient, accountIndex = 0) {
         this.browser = null;
         this.page = null;
         this.capturedData = {
@@ -69,6 +91,7 @@ class PDDPlanAntiContentFetcher {
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
         this.supabaseClient = supabaseClient || null;
+        this.accountProfile = getAccountProfile(accountIndex);
     }
 
     async init() {
@@ -86,7 +109,8 @@ class PDDPlanAntiContentFetcher {
         // 基础启动选项
         const baseOptions = {
             ...CONFIG.browserOptions,
-            userDataDir: this.userDataDir
+            userDataDir: this.userDataDir,
+            defaultViewport: this.accountProfile.viewport
         };
     
         // 尝试使用系统 Chrome
@@ -127,25 +151,23 @@ class PDDPlanAntiContentFetcher {
         this.page = await this.browser.newPage();
     
         // 设置用户代理
-        await this.page.setUserAgent(
-          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-      );
-    
+        await this.page.setUserAgent(this.accountProfile.userAgent);
+
         await this.page.setExtraHTTPHeaders({
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Accept-Language': FIXED_ACCEPT_LANGUAGE,
+            'Accept-Encoding': 'gzip, deflate, br, zstd'
         });
-    
-        await this.page.evaluateOnNewDocument(() => {
+
+        await this.page.evaluateOnNewDocument((langs) => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+            Object.defineProperty(navigator, 'languages', { get: () => langs });
             Object.defineProperty(navigator, 'platform', {
-                get: () => 'Linux x86_64'  // 与 UA 中的 (X11; Linux x86_64) 呼应
-                }, navigatorLanguages);            
-        });
-    
-        console.log('✅ 浏览器启动成功');
+                get: () => 'Linux x86_64'
+            });
+        }, FIXED_NAVIGATOR_LANGUAGES);
+
+        console.log(`🧬 指纹: viewport=${this.accountProfile.viewport.width}x${this.accountProfile.viewport.height}, UA片段=${this.accountProfile.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
         console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
@@ -402,7 +424,7 @@ class PDDPlanAntiContentFetcher {
 }
 
 // 主函数
-async function updatePlanAntiContent(username, password) {
+async function updatePlanAntiContent(username, password, accountIndex = 0) {
     console.log(`\n🔄 开始更新账号的预估销量参数: ${username}`);
 
     // 获取Supabase客户端
@@ -419,7 +441,7 @@ async function updatePlanAntiContent(username, password) {
     try {
         // 开始浏览器流程
         console.log(`🔍 开始浏览器流程...`);
-        const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase);
+        const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase, accountIndex);
         await fetcher.run();
 
         // 每次执行都上传到 Supabase：始终更新 cookie_string；如已捕获 anti-content 则一并更新
@@ -469,7 +491,7 @@ async function main() {
     try {
         const accounts = JSON.parse(accountsJson).accounts;
 
-        for (const account of accounts) {
+        for (const [accountIndex, account] of accounts.entries()) {
             const username = account.username;
             const password = process.env[`PASSWORD_${username.toUpperCase()}`]; // 全大写
             if (!password) {
@@ -477,7 +499,7 @@ async function main() {
                 continue;
             }
 
-            await updatePlanAntiContent(username, password);
+            await updatePlanAntiContent(username, password, accountIndex);
         }
 
         console.log('\n🎉 所有账号的预估销量参数更新完成');
