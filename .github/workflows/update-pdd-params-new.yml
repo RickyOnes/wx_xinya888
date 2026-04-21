@@ -82,7 +82,7 @@ jobs:
           echo "📹 ffmpeg 已启动，PID: $FFMPEG_PID"
 
           START_TIME=$(date +%s)
-          timeout 900 node scripts/update-pdd-new.js
+          timeout 900 node scripts/update-pdd-action.js
           SCRIPT_EXIT_CODE=$?
           END_TIME=$(date +%s)
           DURATION=$((END_TIME - START_TIME))
