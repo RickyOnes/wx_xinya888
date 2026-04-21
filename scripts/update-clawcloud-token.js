@@ -471,4 +471,4 @@ async function main() {
     }
 }
 
-main();
+main().then(() => process.exit(0)); //完成后立即退出

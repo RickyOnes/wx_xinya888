@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 恢复 Puppeteer 用户数据缓存
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: puppeteer-user-data
           key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
@@ -81,7 +81,7 @@ jobs:
 
       - name: 保存 Puppeteer 用户数据缓存
         if: always()
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: puppeteer-user-data
           key: clawcloud-puppeteer-data-${{ github.run_id }}-${{ github.run_attempt }}
