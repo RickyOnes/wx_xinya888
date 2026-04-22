@@ -31,8 +31,8 @@ const CONFIG = {
       '--disable-canvas-aa',
       '--disable-2d-canvas-clip-aa',
       '--use-gl=swiftshader',
-      '--disk-cache-size=52428800',
-      '--aggressive-cache-discard',
+      '--disk-cache-size=104857600', // 缓存大小100MB
+      '--aggressive-cache-discard', // 缓存清理策略,激进地丢弃缓存，减少内存占用
       '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
       // 更多反检测参数
       '--disable-blink-features=AutomationControlled', // 禁用自动化控制特性
@@ -59,9 +59,9 @@ const CONFIG = {
 };
 
 const UA_POOL = [
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0'
 ];
 
 const VIEWPORT_POOL = [
@@ -403,7 +403,7 @@ class PDDOrderCrawler {
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
       Object.defineProperty(navigator, 'languages', { get: () => langs });
       Object.defineProperty(navigator, 'platform', {
-        get: () => 'Linux x86_64'
+        get: () => 'Win32'
       });
     }, FIXED_NAVIGATOR_LANGUAGES);
 
