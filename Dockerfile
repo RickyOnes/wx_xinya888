@@ -1,7 +1,7 @@
-# 1. 固定 Node 版本
+# 1. 使用 Node.js 24.7.0 slim 版本（轻量级基础镜像）
 FROM node:24.7.0-slim
 
-# 2. 安装 Chrome 所需的系统依赖（必须保留）
+# 2. 安装 Chrome 最新稳定版及必要依赖
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -41,28 +41,33 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     --no-install-recommends && \
-    # 添加 Chrome 稳定版仓库并安装指定版本的 Chrome
+    # 添加 Google Chrome 官方仓库
     wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
-    # 安装指定版本的 Chrome（此处以 145.0.7632.26 为例，实际可用版本号需查询仓库）
-    apt-get install -y google-chrome-stable=145.0.7632.109-1 --no-install-recommends && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    # 安装最新版本的 Chrome（不指定版本号，自动安装最新稳定版）
+    apt-get install -y google-chrome-stable --no-install-recommends && \
+    # 清理缓存，减小镜像体积
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 3. 设置时区
+# 3. 设置时区为中国上海
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 4. 安装中文字体（可选，防止页面乱码）
+# 4. 安装中文字体（防止页面乱码）
 RUN apt-get update && apt-get install -y fonts-wqy-zenhei --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# 5. 设置工作目录
 WORKDIR /app
 
-# 5. 复制 package.json 并安装依赖（puppeteer 版本已在 package.json 中锁定）
+# 6. 复制 package.json 并安装依赖（利用 Docker 缓存层）
 COPY package*.json ./
-RUN npm install
+RUN npm install --production && \
+    npm cache clean --force
 
+# 7. 复制项目文件
 COPY . .
 
-CMD ["node", "scripts/update-pdd.js"]
+# 8. 默认运行 quick-plan-update.js 脚本
+CMD ["node", "scripts/quick-plan-update.js"]
