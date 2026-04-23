@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-22.04
     # 指定使用自定义 Docker 镜像（GHCR模式）
     container:
-      image: ghcr.io/rickyones/pdd-crawler:latest  # 注意小写
+      image: ghcr.io/rickyones/pdd-crawler-ghost:latest  # 使用带视频录制功能的镜像
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}  # 使用内置 token 拉取镜像（如果镜像公开可省略）
