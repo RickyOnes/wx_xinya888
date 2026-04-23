@@ -385,7 +385,7 @@ class PDDPlanAntiContentFetcher {
             await sleep(1000 + randomInt(100, 600));
 
             const startTime = Date.now();
-            const maxWaitTime = 300000;
+            const maxWaitTime = 90000;// 1.5分钟
             const pollInterval = 2000;
 
             while (Date.now() - startTime < maxWaitTime) {
@@ -415,8 +415,7 @@ class PDDPlanAntiContentFetcher {
                 }
 
                 if (verificationCodeInput) {
-                    this.warn('检测到验证码输入框，可能需要短信验证码');
-                    this.warn('需要验证码，跳过验证码处理（快速模式）');
+                    this.warn('检测到需要验证码，跳过验证码处理（快速模式）');
                     this.capturedData.riskTriggered = true;
                     this.capturedData.riskReason = '触发短信验证码';
                     return false;

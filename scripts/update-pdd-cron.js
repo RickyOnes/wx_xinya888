@@ -904,7 +904,7 @@ async function updateAccount(username, password, verificationCode, accountIndex 
 // 主函数（带重试）
 async function main() {
   const fs = require('fs');
-  const accountsJson = process.env.PDD_ACCOUNTS;
+  const accountsJson = process.env.PDD_ACCOUNTS_JSON;
   if (!accountsJson) {
     console.log('❌ PDD_ACCOUNTS_JSON环境变量未设置');
     return;

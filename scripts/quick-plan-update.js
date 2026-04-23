@@ -179,9 +179,9 @@ class PDDPlanAntiContentFetcher {
             const url = request.url();
             if (!url.includes(CONFIG.targetApiEndpointPlan)) return;
 
-            const headers = request.headers();
-            const antiContent = headers['anti-content'];
-            if (!antiContent) return;
+            const headers = request.headers();// 获取请求头
+            const antiContent = headers['anti-content'];// 获取anti-content参数
+            if (!antiContent) return;// 如果没有anti-content参数，直接返回
 
             if (!this.capturedData.antiContentPlan) {
                 console.log(`URL: ${url}`);
@@ -200,11 +200,6 @@ class PDDPlanAntiContentFetcher {
                 timeout: 10000
             });
             
-            // 等待页面核心元素出现，确认已在目标页面
-            await this.page.waitForSelector('[data-testid="beast-core-table"]', {
-                timeout: 5000,
-                visible: true
-            });
             console.log('✅ 会话有效，已进入订单查询页面');
             return true;
         } catch (error) {
@@ -295,7 +290,7 @@ class PDDPlanAntiContentFetcher {
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const startTime = Date.now();
-            const maxWaitTime = 300000; // 5分钟
+            const maxWaitTime = 90000; // 1.5分钟
             const pollInterval = 2000;
 
             while (Date.now() - startTime < maxWaitTime) {
@@ -310,7 +305,7 @@ class PDDPlanAntiContentFetcher {
                     continue;
                 }
 
-                if (currentUrl.includes('mc.pinduoduo.com/ddmc-mms/appointment-delivery')) {
+                if (currentUrl.includes('/order/management')) {
                     console.log('✅ 登录成功，已进入订单查询页面');
                     this.capturedData.needlogin = true; // 标记为需要登录，表示我们已经完成了登录流程
                     return true;

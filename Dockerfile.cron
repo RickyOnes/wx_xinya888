@@ -82,7 +82,15 @@ WORKDIR /app
 COPY package-cron.json ./package.json
 RUN npm install
 
-COPY scripts/ ./scripts/
+COPY scripts/quick-plan-update-new.js \
+     scripts/update-pdd.js \
+     scripts/update-pdd-new.js \
+     scripts/update-pdd-cron.js \
+     scripts/update-clawcloud-token.js \
+     scripts/clean-browser-profiles.js \
+     scripts/quick-plan-update.js \
+     scripts/quick-update-bill.js \
+     ./scripts/
 RUN chmod +x /app/scripts/trigger-server.js /app/scripts/proxy.js
 
 # 复制启动脚本
