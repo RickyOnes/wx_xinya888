@@ -90,6 +90,8 @@ COPY scripts/quick-plan-update-new.js \
      scripts/clean-browser-profiles.js \
      scripts/quick-plan-update.js \
      scripts/quick-update-bill.js \
+     scripts/trigger-server.js \
+     scripts/proxy.js \
      ./scripts/
 RUN chmod +x /app/scripts/trigger-server.js /app/scripts/proxy.js
 
