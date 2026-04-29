@@ -1,40 +1,47 @@
 name: 快速更新预估销量参数
 on:
-  workflow_dispatch: {}  # 支持手动触发
-  repository_dispatch:   # 支持外部API触发
+  workflow_dispatch: {}
+  repository_dispatch:
     types: [external_cron_trigger]
 
 jobs:
   update:
     runs-on: ubuntu-22.04
-    # 指定使用自定义 Docker 镜像（GHCR模式）
     container:
       image: ghcr.io/rickyones/pdd-crawler:latest
       credentials:
         username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}  # 使用内置 token 拉取镜像（如果镜像公开可省略）
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
     - uses: actions/checkout@v6
-    
-    # 只恢复最近的用户数据缓存，不保存新缓存（节约存储空间）
-    - name: 恢复 puppeteer 用户数据缓存（只读）
-      uses: actions/cache/restore@v5  # ✅ 使用 restore 专用 action
+
+    - name: 获取今天日期（上海时区）
+      id: date
+      run: echo "date=$(TZ=Asia/Shanghai date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+    - name: 恢复当天的用户数据缓存
+      id: restore-cache
+      uses: actions/cache/restore@v5
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-user-data-readonly  # 永不命中
-        restore-keys: |
-          ${{ runner.os }}-拼多多-
-        # 没有 post 步骤，不会保存
-                    
+        key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}
+
     - name: 运行快速预估销量参数捕获脚本
       env:
-        NODE_PATH: /app/node_modules  # 新增，让 Node 能找到镜像中的依赖
+        NODE_PATH: /app/node_modules
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         PDD_ACCOUNTS_JSON: ${{ secrets.PDD_ACCOUNTS_JSON }}
         PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
-        TZ: Asia/Shanghai  # 固定时区为中国上海
+        TZ: Asia/Shanghai
       run: node scripts/quick-plan-update.js
+
+    - name: 保存当天用户数据缓存（仅第一次运行）
+      if: steps.restore-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ./puppeteer_user_data
+        key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}
