@@ -212,59 +212,55 @@ class PDDPlanAntiContentFetcher {
         });
     }
 
-    async autoLogin() {
-        console.log('\n🔍 尝试使用现有会话...');
-        let navigated = false;
+    async run() {
         try {
-            await this.page.goto(CONFIG.planDirectUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: 10000
-            });
-            navigated = true;
-        } catch (e) {
-            console.log('   ⚠️ 导航到订单页失败，进入登录流程');
-            return this._doLogin();
-        }
+            console.log('🎬 开始执行快速订单查询参数捕获脚本');
+            await this.init();
+            await this.setupRequestInterception();
 
-        // 等待第一个订单 API 请求（最多 2 秒）
-        let apiSeen = false;
-        try {
-            await Promise.race([
-                this._sessionCheckPromise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-            ]);
-            apiSeen = true;
-        } catch (e) {
-            // 超时，未出现 API
-        }
+            console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
+            let loginSuccess = await this.autoLogin();
 
-        if (apiSeen) {
-            console.log('   ✅ 订单API请求已发生，会话有效');
-            return true;
-        }
-
-        const currentUrl = this.page.url();
-        if (!currentUrl.includes('/order/management')) {
-            console.log('   ⚠️ 页面已跳转到登录页');
-            return this._doLogin();
-        }
-
-        // 表格兜底检查
-        try {
-            await this.page.waitForSelector('[data-testid="beast-core-table"]', {
-                timeout: 3000,
-                visible: true
-            });
-            console.log('   ✅ 表格加载完成，会话有效');
-            return true;
-        } catch (e) {
-            const finalUrl = this.page.url();
-            if (finalUrl.includes('/order/management')) {
-                console.log('   ⚠️ 表格未加载但URL未变，视为有效');
-                return true;
+            // 自动登录失败（如遇到验证码），尝试注入本地Cookie
+            if (!loginSuccess) {
+                console.log('⚠️ 自动登录失败，尝试从本地Cookie文件恢复...');
+                loginSuccess = await this._fallbackLogin();
+                
+                // ✅ 注入也失败：再次尝试自动登录（利用现有指纹，大概率无需验证码）
+                if (!loginSuccess) {
+                    console.log('⚠️ 注入恢复失败，再次尝试自动登录（指纹一致可能无需验证码）...');
+                    loginSuccess = await this.autoLogin();  // 第二次自动登录
+                    if (!loginSuccess) {
+                        console.log('❌ 所有登录方式均失败，程序退出');
+                        return;
+                    }
+                }
             }
-            console.log('   ⚠️ 页面已跳转，开始登录');
-            return this._doLogin();
+
+            // 如果还未捕获 anti-content，等待它
+            if (!this.capturedData.antiContentPlan) {
+                console.log('⏳ 等待 anti-content 出现...');
+                try {
+                    await this.antiContentPromise;
+                    console.log('✅ anti-content 已捕获');
+                } catch (e) {
+                    console.log('⚠️ anti-content 超时，继续抓取 Cookie');
+                }
+            }
+
+            await this.captureCookies();
+        } catch (error) {
+            console.error('❌ 脚本执行出错:', error.message);
+        } finally {
+            if (this.browser) {
+                try {
+                    await this.browser.close();
+                    console.log('👋 浏览器已关闭');
+                } catch (closeError) {
+                    console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
+                }
+            }
+            console.log('🏁 程序执行完毕');
         }
     }
 
