@@ -387,18 +387,22 @@ class PDDPlanAntiContentFetcher {
 
         // 注入 Cookie，对关键 Cookie 自动延长过期时间
         const nowSec = Math.floor(Date.now() / 1000);
+        // 先检查 windows_app_shop_token_23 是否需要延长
+        const tokenCookie = cookies.find(c => c.name === 'windows_app_shop_token_23');
+        const needExtend = tokenCookie && tokenCookie.expires > 0 && 
+            (tokenCookie.expires < nowSec || tokenCookie.expires - nowSec < 3600);
+
         for (const c of cookies) {
             try {
                 let expires = (c.expires && c.expires > 0) ? c.expires : undefined;
-                if ((c.name === 'PASS_ID' || c.name === 'windows_app_shop_token_23') && expires) {
-                    // 已过期，或距离过期不足 1 小时（3600 秒）则刷新
-                    if (expires < nowSec) {
-                        console.log(`   ⚠️ ${c.name} 已过期，延长至当前UTC+12小时`);
-                        expires = nowSec + 43200; // 12小时
-                    } else if (expires - nowSec < 3600) {
-                        console.log(`   ⚠️ ${c.name} 即将过期（剩余${expires - nowSec}秒），延长至当前UTC+12小时`);
-                        expires = nowSec + 43200;
+                // 只有 token 需要延长时，才同步更新 PASS_ID 和 token 本身
+                if (needExtend && (c.name === 'PASS_ID' || c.name === 'windows_app_shop_token_23') && expires) {
+                    if (tokenCookie.expires < nowSec) {
+                        console.log('   ⚠️ windows_app_shop_token_23 已过期，同步延长 PASS_ID 和 token 至当前UTC+12小时');
+                    } else {
+                        console.log('   ⚠️ windows_app_shop_token_23 即将过期，同步延长 PASS_ID 和 token 至当前UTC+12小时');
                     }
+                    expires = nowSec + 43200;
                 }
                 await this.page.setCookie({
                     name: c.name,
@@ -422,12 +426,12 @@ class PDDPlanAntiContentFetcher {
                 timeout: 15000
             });
 
-            // 快速验证：等待目标 API 请求（最多 4 秒）确认会话真实有效
+            // 快速验证：等待目标 API 请求（最多 6 秒）确认会话真实有效
             let apiSeen = false;
             try {
                 await Promise.race([
                     this._sessionCheckPromise,
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 6000))
                 ]);
                 apiSeen = true;
             } catch (e) {}
