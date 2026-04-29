@@ -1,4 +1,4 @@
-name: Build and Push Simplified Docker Image to GHCR
+name: 创建【专用】快速更新PDD参数镜像到GHCR
 
 on:
   push:
@@ -37,6 +37,5 @@ jobs:
           push: true
           tags: |
             ghcr.io/rickyones/pdd-crawler:latest
-            ghcr.io/rickyones/pdd-crawler:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

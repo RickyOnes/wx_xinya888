@@ -67,7 +67,14 @@ RUN npm install --production && \
     npm cache clean --force
 
 # 7. 复制项目文件
-COPY . .
+COPY scripts/cookie_wangxh03.json \
+     scripts/cookie_wangxh04.json \
+     scripts/cookie_17752768679.json \
+     ./puppeteer_user_data/
+
+COPY scripts/quick-plan-update-new.js \
+     scripts/quick-plan-update.js \
+     ./scripts/
 
 # 8. 默认运行 quick-plan-update.js 脚本
 CMD ["node", "scripts/quick-plan-update.js"]
