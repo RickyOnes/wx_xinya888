@@ -1,6 +1,15 @@
 name: 快速更新预估销量参数
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      script:
+        description: '选择要运行的脚本'
+        required: true
+        type: choice
+        options:
+          - quick-plan-update.js          # 非并发日常版
+          - quick-plan-update-ds.js      # 增加了保存cookie.json的功能
+        default: quick-plan-update.js
   repository_dispatch:
     types: [external_cron_trigger]
 
@@ -41,7 +50,6 @@ jobs:
         path: ./puppeteer_user_data
         key: ${{ runner.os }}-拼多多-user-data-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
 
-    # 修复点：先创建目标目录，再从镜像备份复制，确保文件一定存在
     - name: 从镜像备份恢复 Cookie 文件
       run: |
         mkdir -p ./puppeteer_user_data
@@ -52,7 +60,7 @@ jobs:
           echo "⚠️ 镜像备份目录不存在，跳过"
         fi
 
-    - name: 运行快速预估销量参数捕获脚本
+    - name: 运行所选脚本
       env:
         NODE_PATH: /app/node_modules
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -62,7 +70,7 @@ jobs:
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
         TZ: Asia/Shanghai
-      run: node scripts/quick-plan-update.js
+      run: node scripts/${{ inputs.script || 'quick-plan-update.js' }}
 
     - name: 保存当天时段用户数据缓存（各时段每天仅第一次）
       if: steps.restore-cache.outputs.cache-hit != 'true'
