@@ -45,7 +45,7 @@ RUN apt-get update && apt-get install -y \
     wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
     echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
-    # 安装最新版本的 Chrome（不指定版本号，自动安装最新稳定版）
+    # 安装最新版本的 Chrome
     apt-get install -y google-chrome-stable --no-install-recommends && \
     # 清理缓存，减小镜像体积
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -71,6 +71,10 @@ COPY scripts/cookie_wangxh03.json \
      scripts/cookie_wangxh04.json \
      scripts/cookie_17752768679.json \
      ./puppeteer_user_data/
+
+# 新增：创建供工作流兜底的备份目录，防止缓存覆盖或丢失
+RUN mkdir -p /app/cookie_defaults && \
+    cp /app/puppeteer_user_data/cookie_*.json /app/cookie_defaults/
 
 COPY scripts/quick-plan-update-new.js \
      scripts/quick-plan-update.js \

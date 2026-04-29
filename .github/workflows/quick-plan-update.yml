@@ -41,7 +41,17 @@ jobs:
       uses: actions/cache/restore@v5
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-拼多多-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
+        key: ${{ runner.os }}-拼多多-user-data-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
+
+    # 新增步骤：确保兜底 Cookie 文件存在（防止首次或缓存覆盖后缺失）
+    - name: 从镜像备份恢复 Cookie 文件
+      run: |
+        if [ -d /app/cookie_defaults ]; then
+          cp /app/cookie_defaults/cookie_*.json ./puppeteer_user_data/ 2>/dev/null || true
+          echo "✅ 已从镜像备份恢复 Cookie 文件"
+        else
+          echo "⚠️ 镜像备份目录不存在，跳过"
+        fi
 
     - name: 运行快速预估销量参数捕获脚本
       env:
@@ -60,4 +70,4 @@ jobs:
       uses: actions/cache/save@v5
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-拼多多-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
+        key: ${{ runner.os }}-拼多多-user-data-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
