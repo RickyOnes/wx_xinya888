@@ -1,3 +1,5 @@
+# 每天6-16点、17-23点期间执行分别只保存一次缓存。一天只保存2次缓存
+
 name: 快速更新预估销量参数
 on:
   workflow_dispatch: {}
@@ -16,16 +18,30 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - name: 获取今天日期（上海时区）
-      id: date
-      run: echo "date=$(TZ=Asia/Shanghai date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+    - name: 获取上海日期和小时
+      id: datetime
+      run: |
+        DATE=$(TZ=Asia/Shanghai date +'%Y-%m-%d')
+        HOUR=$(TZ=Asia/Shanghai date +'%H')
+        echo "date=$DATE" >> $GITHUB_OUTPUT
+        echo "hour=$HOUR" >> $GITHUB_OUTPUT
 
-    - name: 恢复当天的用户数据缓存
+    - name: 确定缓存时段（早间 0-16，晚间 17-23）
+      id: slot
+      run: |
+        HOUR=${{ steps.datetime.outputs.hour }}
+        if [ "$HOUR" -lt 17 ]; then
+          echo "slot=early" >> $GITHUB_OUTPUT
+        else
+          echo "slot=late" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 恢复当天时段用户数据缓存
       id: restore-cache
       uses: actions/cache/restore@v5
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}
+        key: ${{ runner.os }}-拼多多-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
 
     - name: 运行快速预估销量参数捕获脚本
       env:
@@ -39,9 +55,9 @@ jobs:
         TZ: Asia/Shanghai
       run: node scripts/quick-plan-update.js
 
-    - name: 保存当天用户数据缓存（仅第一次运行）
+    - name: 保存当天时段用户数据缓存（各时段每天仅第一次）
       if: steps.restore-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       with:
         path: ./puppeteer_user_data
-        key: ${{ runner.os }}-拼多多-${{ steps.date.outputs.date }}
+        key: ${{ runner.os }}-拼多多-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
