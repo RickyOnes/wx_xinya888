@@ -14,34 +14,61 @@ const baseDir = path.resolve(targetArg || DEFAULT_BASE_DIR);
 const SKIP_TOP_LEVEL_DIRS = new Set(['.config', 'Desktop', 'Downloads', 'lost+found']);
 const BROWSER_ROOT_MARKERS = ['Default', 'Local State', 'First Run', 'Last Version', 'SingletonLock', 'Crashpad'];
 
-const SAFE_DIRS_TO_DELETE = [
+// 需要清空内容（但保留文件夹名）的目录列表（相对于浏览器根目录）,已优化！！
+const SAFE_DIRS_TO_EMPTY = [
   'Default/Cache',
   'Default/Code Cache',
   'Default/GPUCache',
   'Default/Media Cache',
   'Default/Offline Cache',
   'Default/Crashpad',
+  'Default/DawnWebGPU Cache',
+  'Default/DawnGraphiteCache',
+  'Default/GPU Cache',
+  'Default/Sessions',
+  'Default/Web Applications',
+  'Default/shared_proto_db',
+  'Default/Local Storage',
+  'Default/Session Storage',
+  'Default/Shared Dictionary',
+  'Default/WebStorage',
+  'Default/Extension State',
+  'Default/Extension Scripts',
+  'Default/Extension Rules',
+  'Default/Sync Data',
   'GrShaderCache',
   'ShaderCache',
   'DawnCache',
   'Crashpad',
+  'component_crx_cache',
+  'WasmTtsEngine',
+  'hyphen-data',
+  'ZxcvbnData',
+  'CertificateRevocation',
+  'ActorSafetyLists',
+  'GraphiteDawnCache',
+  'Subresource Filter',
+  'PKIMetadata',
+  'Crowd Deny',
+  'SafetyTips',
+  'segmentation_platform',
+  'FirstPartySetsPreloaded',
+  'TrustTokenKeyCommitments',
+  'MEIPreload',
+  'FileTypePolicies',
+  'SSLErrorAssistant',
+  'AmountExtractionHeuristicRegexes',
+  'CaptchaProviders',
   'Crash Reports'
 ];
 
-const AGGRESSIVE_DIRS_TO_DELETE = [
-  'blob_storage',
-  'File System'
+const AGGRESSIVE_DIRS_TO_EMPTY = [
+  'Default/blob_storage',
+  'Default/File System'
 ];
 
-const EXACT_FILES_TO_DELETE = new Set([
-  'SingletonLock',
-  'SingletonCookie',
-  'SingletonSocket',
-  'DevToolsActivePort',
-  'last_cache_clean.txt'
-]);
+// 注意：IndexedDB 不在此列表中，完全保留
 
-const FILE_SUFFIXES_TO_DELETE = ['.sock', '.socket', '.dmp'];
 const MAX_SCAN_DEPTH = 3;
 
 if (showHelp) {
@@ -49,10 +76,11 @@ if (showHelp) {
   node scripts/clean-browser-profiles.js [目录] [--dry-run] [--aggressive]
 
 说明:
-  - 默认清理 /app/puppeteer_user_data 下的浏览器缓存、锁文件、崩溃文件
-  - 默认保留 Cookies、Network、Local Storage、Session Storage、IndexedDB 等登录态数据
-  - --dry-run 只显示将删除的内容，不实际删除
-  - --aggressive 额外删除 blob_storage 和 File System（更彻底，但站点本地缓存会丢失）
+  - 默认清理 /app/puppeteer_user_data 下的浏览器缓存目录（清空内部所有内容，但保留文件夹名）
+  - 完全保留 Cookies、IndexedDB、Local State 等登录态数据和配置文件
+  - 保留 User Data 根目录下的所有文件（如 Local State, Variations 等）
+  - --dry-run 只显示将清空的目录，不实际删除内容
+  - --aggressive 额外清空 blob_storage 和 File System（站点本地缓存会丢失，不影响登录）
 `);
   process.exit(0);
 }
@@ -69,9 +97,7 @@ if (path.parse(baseDir).root === baseDir) {
 
 const summary = {
   rootsFound: 0,
-  dirsDeleted: 0,
-  filesDeleted: 0,
-  skipped: 0,
+  dirsEmptied: 0,
   failed: 0
 };
 
@@ -124,60 +150,56 @@ function collectBrowserRoots(startDir, depth, roots) {
   }
 }
 
-function removeEntry(targetPath, type) {
-  if (!exists(targetPath)) {
-    summary.skipped += 1;
-    return;
-  }
+// 递归删除目录内的所有内容，但保留目录本身
+function emptyDirectory(targetPath) {
+  if (!exists(targetPath)) return false;
 
+  let entries;
   try {
-    if (!dryRun) {
-      if (type === 'dir') {
-        fs.rmSync(targetPath, { recursive: true, force: true });
-      } else {
-        fs.unlinkSync(targetPath);
-      }
-    }
-
-    if (type === 'dir') {
-      summary.dirsDeleted += 1;
-      console.log(`${dryRun ? '📝 将删除目录' : '✅ 已删除目录'}: ${rel(targetPath)}`);
-    } else {
-      summary.filesDeleted += 1;
-      console.log(`${dryRun ? '📝 将删除文件' : '✅ 已删除文件'}: ${rel(targetPath)}`);
-    }
-  } catch (error) {
+    entries = fs.readdirSync(targetPath);
+  } catch (err) {
+    console.warn(`⚠️ 无法读取目录内容: ${rel(targetPath)} -> ${err.message}`);
     summary.failed += 1;
-    console.warn(`⚠️ 删除失败: ${rel(targetPath)} -> ${error.message}`);
+    return false;
   }
+
+  for (const entry of entries) {
+    const fullPath = path.join(targetPath, entry);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.isDirectory()) {
+        // 递归删除子目录及其内容
+        fs.rmSync(fullPath, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(fullPath);
+      }
+    } catch (err) {
+      console.warn(`⚠️ 删除失败: ${rel(fullPath)} -> ${err.message}`);
+      summary.failed += 1;
+    }
+  }
+  return true;
 }
 
 function cleanBrowserRoot(rootDir) {
   console.log(`\n🔍 清理浏览器目录: ${rel(rootDir)}`);
 
-  const dirsToDelete = aggressive
-    ? SAFE_DIRS_TO_DELETE.concat(AGGRESSIVE_DIRS_TO_DELETE)
-    : SAFE_DIRS_TO_DELETE;
+  const dirsToEmpty = aggressive
+    ? SAFE_DIRS_TO_EMPTY.concat(AGGRESSIVE_DIRS_TO_EMPTY)
+    : SAFE_DIRS_TO_EMPTY;
 
-  for (const relativePath of dirsToDelete) {
-    removeEntry(path.join(rootDir, relativePath), 'dir');
-  }
+  for (const relativePath of dirsToEmpty) {
+    const targetPath = path.join(rootDir, relativePath);
+    if (!exists(targetPath)) continue;
 
-  const scanDirs = [rootDir, path.join(rootDir, 'Default')];
-  for (const scanDir of scanDirs) {
-    if (!exists(scanDir)) continue;
-    const entries = safeReadDir(scanDir);
-    for (const entry of entries) {
-      const entryPath = path.join(scanDir, entry.name);
-      const shouldDeleteFile =
-        entry.isFile() && (
-          EXACT_FILES_TO_DELETE.has(entry.name) ||
-          entry.name.includes('DevToolsActivePort') ||
-          FILE_SUFFIXES_TO_DELETE.some(suffix => entry.name.endsWith(suffix))
-        );
-
-      if (shouldDeleteFile) {
-        removeEntry(entryPath, 'file');
+    if (dryRun) {
+      console.log(`📝 将清空目录: ${rel(targetPath)} (保留文件夹)`);
+      summary.dirsEmptied += 1;
+    } else {
+      const success = emptyDirectory(targetPath);
+      if (success) {
+        console.log(`✅ 已清空目录: ${rel(targetPath)}`);
+        summary.dirsEmptied += 1;
       }
     }
   }
@@ -185,7 +207,7 @@ function cleanBrowserRoot(rootDir) {
 
 console.log(`开始清理浏览器缓存目录: ${baseDir}`);
 console.log(`模式: ${dryRun ? '预览' : '执行'}${aggressive ? ' + 深度清理' : ' + 安全清理'}`);
-console.log('保留项: Cookies / Network / Local Storage / Session Storage / IndexedDB / Preferences');
+console.log('保留项: Cookies / IndexedDB / Local State / 根目录文件 / 所有文件夹结构\n');
 
 const topLevelEntries = safeReadDir(baseDir);
 const browserRoots = new Set();
@@ -209,9 +231,7 @@ for (const rootDir of Array.from(browserRoots).sort()) {
 
 console.log('\n=== 清理完成 ===');
 console.log(`浏览器目录: ${summary.rootsFound}`);
-console.log(`删除目录: ${summary.dirsDeleted}`);
-console.log(`删除文件: ${summary.filesDeleted}`);
-console.log(`跳过不存在: ${summary.skipped}`);
+console.log(`清空目录数: ${summary.dirsEmptied}`);
 console.log(`失败次数: ${summary.failed}`);
 
 if (!dryRun) {

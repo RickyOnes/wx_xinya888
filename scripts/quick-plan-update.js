@@ -1,11 +1,13 @@
-// 旧版快速更新密钥脚本（非并发版本，适用于微信小程序和应用程序环境），
-// 优化setupRequestInterception方法，改为监听request事件捕获请求头中的anti-content参数，
-// 而非之前的强行中断拦截逻辑，提升了稳定性和成功率。并修改了浏览器UA和platform以更好地模拟Linux环境，
-// 进一步降低被检测风险。
+/* 【deepseek优化终极版本】————非并发版本、日常使用脚本：
+   1、不保存cookie为文件，能更智能判断登录状态及决定是否需要并完成自动登录！
+   2、自动登录失败时注入本地cookie兜底，关键过期||临期 cookie 自动延长12小时
+   3、优化setupRequestInterception方法，改为监听request事件，性能最优！
+*/
 
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
+const fs = require('fs');
 
 // 使用反检测插件
 puppeteer.use(StealthPlugin());
@@ -20,33 +22,33 @@ const CONFIG = {
 
     // 浏览器配置（排查扩展/代理影响）
     browserOptions: {
-      headless: 'new',
-      defaultViewport: {
-          width: 1366,
-          height: 768
-      },
-      args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          '--window-size=1366,768',
-          '--disable-webgl',
-          '--disable-canvas-aa',
-          '--disable-2d-canvas-clip-aa',
-          '--use-gl=swiftshader',
-          '--disk-cache-size=104857600', // 缓存大小100MB
-          '--aggressive-cache-discard', // 缓存清理策略,激进地丢弃缓存，减少内存占用
-          '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
-          '--disable-blink-features=AutomationControlled',// 进一步隐藏自动化特征
-          '--disable-extensions',
-          '--disable-component-extensions-with-background-pages',
-          '--disable-sync',
-          '--proxy-server=direct://',
-          '--proxy-bypass-list=*'
-      ],
-      ignoreDefaultArgs: ['--enable-automation']
+        headless: 'new',
+        defaultViewport: {
+            width: 1366,
+            height: 768
+        },
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--window-size=1366,768',
+            '--disable-webgl',
+            '--disable-canvas-aa',
+            '--disable-2d-canvas-clip-aa',
+            '--use-gl=swiftshader',
+            '--disk-cache-size=104857600', // 缓存大小100MB
+            '--aggressive-cache-discard', // 缓存清理策略,激进地丢弃缓存，减少内存占用
+            '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
+            '--disable-blink-features=AutomationControlled',// 进一步隐藏自动化特征
+            '--disable-extensions',
+            '--disable-component-extensions-with-background-pages',
+            '--disable-sync',
+            '--proxy-server=direct://',
+            '--proxy-bypass-list=*'
+        ],
+        ignoreDefaultArgs: ['--enable-automation']
     },
     // 等待超时配置（毫秒）
     timeouts: {
@@ -87,7 +89,7 @@ class PDDPlanAntiContentFetcher {
         this.page = null;
         this.capturedData = {
             antiContentPlan: null,
-            cookieString: '', // 存储Cookie
+            cookieString: '',
             needlogin: false
         };
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
@@ -99,23 +101,20 @@ class PDDPlanAntiContentFetcher {
     async init() {
         console.log('🚀 启动浏览器...');
         console.log(`   📁 用户数据目录: ${this.userDataDir}`);
-    
-        // 确保用户数据目录存在并可写
-        const fs = require('fs').promises;
+
+        // 直接使用顶部的 fs 模块
         try {
-            await fs.mkdir(this.userDataDir, { recursive: true });
+            await fs.promises.mkdir(this.userDataDir, { recursive: true });
         } catch (e) {
             console.log(`   ⚠️ 无法创建目录: ${e.message}`);
         }
-    
-        // 基础启动选项
+
         const baseOptions = {
             ...CONFIG.browserOptions,
             userDataDir: this.userDataDir,
             defaultViewport: this.accountProfile.viewport
         };
-    
-        // 尝试使用系统 Chrome
+
         let launchOptions = { ...baseOptions };
         let useSystemChrome = false;
         try {
@@ -127,8 +126,7 @@ class PDDPlanAntiContentFetcher {
         } catch {
             console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
         }
-    
-        // 启动浏览器，失败时回退到内置 Chromium
+
         try {
             this.browser = await puppeteer.launch(launchOptions);
             if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
@@ -136,7 +134,7 @@ class PDDPlanAntiContentFetcher {
             if (useSystemChrome) {
                 console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
                 console.log('   🔄 尝试回退到 Puppeteer 内置 Chromium...');
-                delete launchOptions.executablePath; // 移除系统 Chrome 路径
+                delete launchOptions.executablePath;
                 try {
                     this.browser = await puppeteer.launch(launchOptions);
                     console.log('   ✅ 内置 Chromium 启动成功');
@@ -149,12 +147,10 @@ class PDDPlanAntiContentFetcher {
                 throw error;
             }
         }
-    
-        this.page = await this.browser.newPage();
-    
-        // 设置用户代理
-        await this.page.setUserAgent(this.accountProfile.userAgent);
 
+        this.page = await this.browser.newPage();
+
+        await this.page.setUserAgent(this.accountProfile.userAgent);
         await this.page.setExtraHTTPHeaders({
             'Accept-Language': FIXED_ACCEPT_LANGUAGE,
             'Accept-Encoding': 'gzip, deflate, br, zstd'
@@ -164,9 +160,7 @@ class PDDPlanAntiContentFetcher {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
             Object.defineProperty(navigator, 'languages', { get: () => langs });
-            Object.defineProperty(navigator, 'platform', {
-                get: () => 'Win32'
-            });
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
         }, FIXED_NAVIGATOR_LANGUAGES);
 
         console.log(`🧬 指纹: viewport=${this.accountProfile.viewport.width}x${this.accountProfile.viewport.height}, UA片段=${this.accountProfile.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
@@ -174,55 +168,122 @@ class PDDPlanAntiContentFetcher {
     }
 
     async setupRequestInterception() {
-        // 启用监听 request 事件，捕获请求头中的 anti-content参数
+        // 用于 autoLogin 快速判断会话有效性的 Promise
+        this._sessionCheckPromise = new Promise((resolve) => {
+            this._sessionCheckResolve = resolve;
+        });
+
+        // 创建 anti-content 捕获 Promise
+        this._createAntiContentPromise();
+
         this.page.on('request', (request) => {
             const url = request.url();
             if (!url.includes(CONFIG.targetApiEndpointPlan)) return;
 
-            const headers = request.headers();// 获取请求头
-            const antiContent = headers['anti-content'];// 获取anti-content参数
-            if (!antiContent) return;// 如果没有anti-content参数，直接返回
+            // 一旦命中目标 API，立即通知会话检查
+            if (this._sessionCheckResolve) {
+                this._sessionCheckResolve();
+                this._sessionCheckResolve = null;
+            }
 
-            if (!this.capturedData.antiContentPlan) {
-                console.log(`URL: ${url}`);
-                console.log(`✅ 捕获到 anti-content，长度: ${antiContent.length}`);
+            // 捕获 anti-content
+            const headers = request.headers();
+            const antiContent = headers['anti-content'];
+            if (antiContent && !this.capturedData.antiContentPlan) {
                 this.capturedData.antiContentPlan = antiContent;
+                console.log(`   ✅ 捕获到 anti-content，长度: ${antiContent.length}`);
+                if (this._antiContentResolve) {
+                    clearTimeout(this._antiContentTimeout);
+                    this._antiContentResolve();
+                    this._antiContentResolve = null;
+                }
             }
         });
     }
 
+    // 重新创建 anti-content Promise（用于注入后重置）
+    _createAntiContentPromise() {
+        if (this._antiContentTimeout) clearTimeout(this._antiContentTimeout);
+        this.antiContentPromise = new Promise((resolve, reject) => {
+            this._antiContentResolve = resolve;
+            this._antiContentTimeout = setTimeout(() => {
+                reject(new Error('anti-content 等待超时'));
+            }, 60000);
+        });
+    }
+
     async autoLogin() {
-        // 先尝试使用现有会话
         console.log('\n🔍 尝试使用现有会话...');
+        let navigated = false;
         try {
             await this.page.goto(CONFIG.planDirectUrl, {
-                waitUntil: 'domcontentloaded', 
+                waitUntil: 'domcontentloaded',
                 timeout: 10000
             });
-            
-            console.log('✅ 会话有效，已进入订单查询页面');
-            return true;
-        } catch (error) {
-            console.log('⚠️ 现有会话无效或超时，开始登录流程');
+            navigated = true;
+        } catch (e) {
+            console.log('   ⚠️ 导航到订单页失败，进入登录流程');
+            return this._doLogin();
         }
-        
-        console.log('\n🌐 开始登录流程，从登录URL直接登录...');
-        
+
+        // 等待第一个订单 API 请求（最多 2 秒）
+        let apiSeen = false;
         try {
-            console.log(`📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
+            await Promise.race([
+                this._sessionCheckPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+            ]);
+            apiSeen = true;
+        } catch (e) {
+            // 超时，未出现 API
+        }
+
+        if (apiSeen) {
+            console.log('   ✅ 订单API请求已发生，会话有效');
+            return true;
+        }
+
+        const currentUrl = this.page.url();
+        if (!currentUrl.includes('/order/management')) {
+            console.log('   ⚠️ 页面已跳转到登录页');
+            return this._doLogin();
+        }
+
+        // 表格兜底检查
+        try {
+            await this.page.waitForSelector('[data-testid="beast-core-table"]', {
+                timeout: 3000,
+                visible: true
+            });
+            console.log('   ✅ 表格加载完成，会话有效');
+            return true;
+        } catch (e) {
+            const finalUrl = this.page.url();
+            if (finalUrl.includes('/order/management')) {
+                console.log('   ⚠️ 表格未加载但URL未变，视为有效');
+                return true;
+            }
+            console.log('   ⚠️ 页面已跳转，开始登录');
+            return this._doLogin();
+        }
+    }
+
+    async _doLogin() {
+        console.log('\n🌐 开始登录流程，从登录URL直接登录...');
+        try {
+            console.log(`   📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
             await this.page.goto(CONFIG.planLoginUrl, {
                 waitUntil: 'domcontentloaded',
                 timeout: 10000
             });
-            console.log('✅ 登录页面加载成功');
+            console.log('   ✅ 登录页面加载成功');
 
-            // 切换到"账号登录"标签（并在切换前/后模拟滚动）
+            // 切换到"账号登录"标签
             try {
                 const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
                 if (tabContainer) {
                     const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
                     if (items && items.length >= 2) {
-
                         const secondClass = await this.page.evaluate(el => el.className, items[1]);
                         if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
                             await items[1].click().catch(() => {});
@@ -231,16 +292,11 @@ class PDDPlanAntiContentFetcher {
                         }
                     }
                 }
-            } catch (e) {
-                // 忽略切换标签时的错误
-            }
+            } catch (e) {}
 
-            // 填写用户名和密码
             const usernameEl = await this.page.$('#usernameId');
             const passwordEl = await this.page.$('#passwordId');
-
             if (usernameEl && passwordEl) {
-                // 填充用户名
                 try {
                     const existingUser = await this.page.evaluate(el => el.value, usernameEl).catch(() => '');
                     if (!existingUser && this.loginCredentials && this.loginCredentials.username) {
@@ -248,8 +304,6 @@ class PDDPlanAntiContentFetcher {
                         console.log('   ✅ 已输入用户名');
                     }
                 } catch (e) {}
-
-                // 填充密码
                 try {
                     const existingPass = await this.page.evaluate(el => el.value, passwordEl).catch(() => '');
                     if (!existingPass && this.loginCredentials && this.loginCredentials.password) {
@@ -258,154 +312,194 @@ class PDDPlanAntiContentFetcher {
                     }
                 } catch (e) {}
 
-                // 尝试点击登录按钮或按回车
                 try {
                     let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
                     if (!loginButton) {
                         const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
                         if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
                     }
-
                     if (loginButton) {
                         const navigationPromise = this.page.waitForNavigation({
                             waitUntil: 'domcontentloaded',
                             timeout: 5000
                         }).catch(() => null);
-
                         await loginButton.click().catch(() => {});
-                        console.log('   ✅ 尝试点击登录按钮进行自动登录');
-
+                        console.log('   ✅ 尝试点击登录按钮');
                         await navigationPromise;
                     } else {
                         await this.page.keyboard.press('Enter').catch(() => {});
                         console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
                     }
-                } catch (e) {
-                    // 忽略点击失败
-                }
+                } catch (e) {}
             }
 
-            // 等待登录结果，检查是否跳转到预估销量页面
-            console.log('⏳ 等待登录处理...');
+            console.log('   ⏳ 等待登录处理...');
             await new Promise(resolve => setTimeout(resolve, 1000));
-
             const startTime = Date.now();
-            const maxWaitTime = 90000; // 1.5分钟
+            const maxWaitTime = 90000;
             const pollInterval = 2000;
-
             while (Date.now() - startTime < maxWaitTime) {
                 let currentUrl = '';
-                let verificationCodeInput = null;
-
                 try {
                     currentUrl = this.page.url();
-                } catch (urlError) {
-                    console.log('   ⚠️ 获取URL失败，页面可能正在导航，等待后重试...');
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } catch (e) {
+                    await new Promise(r => setTimeout(r, 1000));
                     continue;
                 }
-
                 if (currentUrl.includes('/order/management')) {
-                    console.log('✅ 登录成功，已进入订单查询页面');
-                    this.capturedData.needlogin = true; // 标记为需要登录，表示我们已经完成了登录流程
+                    console.log('   ✅ 登录成功，已进入订单查询页面');
+                    this.capturedData.needlogin = true;
                     return true;
                 }
-
                 try {
-                    verificationCodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
-                } catch (elementError) {
-                    verificationCodeInput = null;
-                }
-
-                if (verificationCodeInput) {
-                    console.log('📱 检测到验证码输入框，可能需要短信验证码');
-                    // 由于我们只快速获取anti-content，如果遇到验证码，直接返回false
-                    console.log('   ⚠️ 需要验证码，跳过验证码处理（快速模式）');
-                    return false;
-                }
-
-                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    const vcodeInput = await this.page.$('input[placeholder="请输入短信验证码"]');
+                    if (vcodeInput) {
+                        console.log('   📱 需要短信验证码，将尝试使用本地Cookie注入');
+                        return false; // 返回 false 触发兜底注入
+                    }
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, pollInterval));
             }
-
-            console.log('❌ 登录超时（5分钟），退出');
+            console.log('   ❌ 登录超时');
             return false;
-
         } catch (error) {
-            console.log('❌ 登录过程出现错误:', error.message);
+            console.log('   ❌ 登录过程出错:', error.message);
             return false;
         }
     }
 
-    async waitForPlanAPIRequest() {
-        // 检查是否已经捕获到anti-content，如果是则立即返回
-        if (this.capturedData.antiContentPlan) {
-            console.log(`✅ 已捕获到anti-content，直接返回（长度: ${this.capturedData.antiContentPlan.length}）`);
-            return true;
+    // 兜底注入Cookie并尝试恢复会话
+    async _fallbackLogin() {
+        // 1. 重置 anti-content 数据，避免注入后仍使用旧值
+        this.capturedData.antiContentPlan = null;
+        this._createAntiContentPromise();
+
+        // Cookie 文件路径使用用户数据目录（可配置）
+        const cookieFile = `${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`;
+        if (!fs.existsSync(cookieFile)) {
+            console.log('   ℹ️ 无本地 cookie 文件，无法进行注入登录');
+            return false;
         }
-        
+        console.log('   📂 检测到本地Cookie文件，尝试注入恢复会话...');
+        let cookies;
         try {
-            // 精确等待目标API响应
-            await this.page.waitForResponse(
-                response => response.url().includes(CONFIG.targetApiEndpointPlan),
-                { timeout: 30000 }
-            );
-            console.log(`✅ 已捕获到预订单查询查询API请求，获取到anti-content（长度: ${this.capturedData.antiContentPlan.length}）`);
-            return true;
-        } catch (error) {
-            console.log('❌ 在30秒内未捕获到预订单查询API请求');
+            cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
+        } catch (e) {
+            console.log('   ❌ 读取 cookie 文件失败:', e.message);
+            return false;
+        }
+
+        // 注入 Cookie，对关键 Cookie 自动延长过期时间
+        const nowSec = Math.floor(Date.now() / 1000);
+        for (const c of cookies) {
+            try {
+                let expires = (c.expires && c.expires > 0) ? c.expires : undefined;
+                if ((c.name === 'PASS_ID' || c.name === 'windows_app_shop_token_23') && expires) {
+                    // 已过期，或距离过期不足 1 小时（3600 秒）则刷新
+                    if (expires < nowSec) {
+                        console.log(`   ⚠️ ${c.name} 已过期，延长至当前UTC+12小时`);
+                        expires = nowSec + 43200; // 12小时
+                    } else if (expires - nowSec < 3600) {
+                        console.log(`   ⚠️ ${c.name} 即将过期（剩余${expires - nowSec}秒），延长至当前UTC+12小时`);
+                        expires = nowSec + 43200;
+                    }
+                }
+                await this.page.setCookie({
+                    name: c.name,
+                    value: c.value,
+                    domain: c.domain,
+                    path: c.path,
+                    secure: c.secure,
+                    httpOnly: c.httpOnly,
+                    sameSite: c.sameSite || 'Strict',
+                    expires: expires
+                });
+            } catch (e) {
+                console.log(`   跳过无法设置的 Cookie: ${c.name}`);
+            }
+        }
+
+        console.log('   ✅ Cookie 注入完成，尝试访问订单页...');
+        try {
+            await this.page.goto(CONFIG.planDirectUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            });
+
+            // 快速验证：等待目标 API 请求（最多 4 秒）确认会话真实有效
+            let apiSeen = false;
+            try {
+                await Promise.race([
+                    this._sessionCheckPromise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+                ]);
+                apiSeen = true;
+            } catch (e) {}
+
+            const url = this.page.url();
+            if (apiSeen || url.includes('/order/management')) {
+                console.log('   ✅ 注入后成功进入订单页');
+                // 等待页面完全稳定
+                await new Promise(r => setTimeout(r, 3000));
+                return true;
+            } else {
+                console.log('   ❌ 注入后仍被重定向到登录页');
+                return false;
+            }
+        } catch (e) {
+            console.log('   ❌ 注入后导航失败:', e.message);
             return false;
         }
     }
 
-    // 获取Cookies
     async captureCookies() {
         console.log('\n🍪 捕获Cookies...');
-
         const cookies = await this.page.cookies();
         this.capturedData.allCookies = cookies;
 
         let cookieStr = '';
         cookies.forEach((cookie, index) => {
-        if (index > 0) cookieStr += '; ';
-        cookieStr += `${cookie.name}=${cookie.value}`;
+            if (index > 0) cookieStr += '; ';
+            cookieStr += `${cookie.name}=${cookie.value}`;
         });
         this.capturedData.cookieString = cookieStr;
-        console.log('   ✅  已构造 Cookie字符串');
+        console.log(`   ✅ 已构造 Cookie字符串，共 ${cookies.length} 个 Cookie`);
         return cookies;
-    }    
+    }
 
     async run() {
         try {
             console.log('🎬 开始执行快速订单查询参数捕获脚本');
-
-            // 1. 初始化浏览器
             await this.init();
-
-            // 2. 设置请求拦截
             await this.setupRequestInterception();
 
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
+            let loginSuccess = await this.autoLogin();
 
-            // 3. 自动登录（先尝试现有会话，如果失败则执行登录流程）
-            const loginSuccess = await this.autoLogin();
-                
+            // 自动登录失败（如遇到验证码），尝试注入本地Cookie
             if (!loginSuccess) {
-                console.log('❌ 登录失败，程序退出');
-                return;
+                console.log('⚠️ 自动登录失败，尝试从本地Cookie文件恢复...');
+                loginSuccess = await this._fallbackLogin();
+                if (!loginSuccess) {
+                    console.log('❌ 所有登录方式均失败，程序退出');
+                    return;
+                }
             }
 
-            // 4. 先等待API请求，捕获anti-content参数
-            const apiCaptured = await this.waitForPlanAPIRequest();
-            if (!apiCaptured) {
-                console.log('⚠️ 未捕获到anti-content，将继续抓取并上传 cookie_string');
+            // 如果还未捕获 anti-content，等待它
+            if (!this.capturedData.antiContentPlan) {
+                console.log('⏳ 等待 anti-content 出现...');
+                try {
+                    await this.antiContentPromise;
+                    console.log('✅ anti-content 已捕获');
+                } catch (e) {
+                    console.log('⚠️ anti-content 超时，继续抓取 Cookie');
+                }
             }
 
-            // 5. 每次执行都抓取 Cookie（不区分是否重新登录）
             await this.captureCookies();
-
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
-
         } finally {
             if (this.browser) {
                 try {
@@ -424,7 +518,6 @@ class PDDPlanAntiContentFetcher {
 async function updatePlanAntiContent(username, password, accountIndex = 0) {
     console.log(`\n🔄 开始更新账号的预估销量参数: ${username}`);
 
-    // 获取Supabase客户端
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -436,12 +529,10 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     try {
-        // 开始浏览器流程
         console.log(`🔍 开始浏览器流程...`);
         const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase, accountIndex);
         await fetcher.run();
 
-        // 每次执行都上传到 Supabase：始终更新 cookie_string；如已捕获 anti-content 则一并更新
         const updatePayload = {
             cookie_string: fetcher.capturedData.cookieString || '',
             updated_at: new Date().toISOString()
@@ -474,10 +565,9 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
 
 // 从环境变量获取账号信息
 async function main() {
-    // 添加开始时间记录
     console.log(`==========================================`);
     console.log(`脚本开始时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-    const startTime = Date.now();    
+    const startTime = Date.now();
 
     const accountsJson = process.env.PDD_ACCOUNTS_JSON;
     if (!accountsJson) {
@@ -490,7 +580,7 @@ async function main() {
 
         for (const [accountIndex, account] of accounts.entries()) {
             const username = account.username;
-            const password = process.env[`PASSWORD_${username.toUpperCase()}`]; // 全大写
+            const password = process.env[`PASSWORD_${username.toUpperCase()}`];
             if (!password) {
                 console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
                 continue;
@@ -500,17 +590,15 @@ async function main() {
         }
 
         console.log('\n🎉 所有账号的预估销量参数更新完成');
-        // 添加结束时间统计
         const endTime = Date.now();
         const duration = Math.floor((endTime - startTime) / 1000);
         console.log(`脚本结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
         console.log(`总运行时长: ${duration} 秒`);
-        console.log(`==========================================`);        
+        console.log(`==========================================`);
 
     } catch (error) {
         console.log('❌ 解析账号信息失败:', error.message);
     }
 }
 
-// 执行主函数
 main().catch(console.error);

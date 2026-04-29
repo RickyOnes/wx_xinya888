@@ -282,13 +282,11 @@ async function authenticateFromCookie(req, res) {
 
 // ---------- 脚本显示名称映射 ----------
 const SCRIPT_DISPLAY_NAMES = {
+  'quick-plan-update.js': '【快速更新密钥】',  
   'quick-plan-update-new.js': '【并发快速更新密钥】',
   'update-pdd.js': '【带验证码登录更新】',
-  'update-pdd-new.js': '【无验证码登录更新】',
-  'update-pdd-cron.js': '【带重试无验证更新】',
-  'update-clawcloud-token.js': '【刷新ClawCloud口令】',
+  'inject.js': '【注入本地Cookie】',
   'clean-browser-profiles.js': '【清理浏览器数据】',
-  'quick-plan-update.js': '【快速更新密钥】',
   'quick-update-bill.js': '【更新账单密钥】'
 };
 
@@ -2517,17 +2515,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ---------- 定时任务 ----------
-cron.schedule('15 6,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
+cron.schedule('15 6,7,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
   console.log(`[${beijingTime()}] 定时任务触发，执行 quick-plan-update.js`);
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
 }, { timezone: "Asia/Shanghai" });
 
-cron.schedule('8 0 */3 * *', () => { //每3天北京时间8：08运行
-  console.log(`[${beijingTime()}] 定时任务触发，执行 update-clawcloud-token.js`);
-  queueScript('update-clawcloud-token.js').catch(err => console.error('定时任务执行失败:', err));
-}, { timezone: "Asia/Shanghai" });
-
-cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行
+cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行清理日志的任务
   cleanOldLogs();
 }, { timezone: "Asia/Shanghai" });
 

@@ -1,3 +1,5 @@
+// 带重试一次的验证码输入、正常登录脚本
+
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const {
