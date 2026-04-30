@@ -63,9 +63,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-拼多多-Vedio-${{ steps.date.outputs.date }}
+          key: key: ${{ runner.os }}-拼多多-Video-${{ steps.date.outputs.date }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-拼多多-Vedio-
+            ${{ runner.os }}-拼多多-Video-
 
       # 第二步：启动虚拟显示器、运行脚本并录制视频
       - name: 启动虚拟显示器、运行脚本并录制视频
@@ -137,7 +137,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ./puppeteer_user_data
-          key: ${{ runner.os }}-拼多多-Vedio-${{ steps.date.outputs.date }}
+          key: ${{ runner.os }}-拼多多-Video-${{ steps.date.outputs.date }}-${{ github.run_id }}
 
       # 第四步：上传录制视频
       - name: 上传浏览器录制视频
