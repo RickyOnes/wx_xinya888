@@ -65,7 +65,7 @@ jobs:
           path: ./puppeteer_user_data
           key: ${{ runner.os }}-拼多多-Vedio-${{ steps.date.outputs.date }}
           restore-keys: |
-            ${{ runner.os }}-拼多多-video-
+            ${{ runner.os }}-拼多多-Vedio-
 
       # 第二步：启动虚拟显示器、运行脚本并录制视频
       - name: 启动虚拟显示器、运行脚本并录制视频
