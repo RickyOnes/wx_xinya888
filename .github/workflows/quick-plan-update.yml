@@ -75,6 +75,7 @@ jobs:
         PASSWORD_WANGXH03: ${{ secrets.PASSWORD_WANGXH03 }}
         PASSWORD_WANGXH04: ${{ secrets.PASSWORD_WANGXH04 }}
         PASSWORD_17752768679: ${{ secrets.PASSWORD_17752768679 }}
+        PDD_FIRST_RUN: ${{ secrets.PDD_FIRST_RUN }}
         TZ: Asia/Shanghai
       run: node scripts/${{ inputs.script || 'quick-plan-update.js' }}
 

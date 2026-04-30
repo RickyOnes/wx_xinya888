@@ -79,8 +79,7 @@ class PDDPlanAntiContentFetcher {
         this.page = null;
         this.capturedData = {
             antiContentPlan: null,
-            cookieString: '',
-            needlogin: false
+            cookieString: ''
         };
         this.loginCredentials = loginCredentials || { username: 'wangxh03', password: '' };
         this.userDataDir = userDataDir || './puppeteer_user_data/default';
@@ -292,7 +291,7 @@ class PDDPlanAntiContentFetcher {
                 } catch (e) { continue; }
                 if (currentUrl.includes('/order/management')) {
                     console.log('   ✅ 登录成功，已进入订单查询页面');
-                    this.capturedData.needlogin = true;
+                    this._credentialRefreshed = true;   // 新增：标记凭证已刷新
                     return true;
                 }
                 const vcodeInput = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
@@ -406,8 +405,10 @@ class PDDPlanAntiContentFetcher {
         if (!token || token.expires <= 0) return false;
         const remaining = token.expires - Math.floor(Date.now() / 1000);
         if (remaining > 0 && remaining < thresholdSeconds) {
-            console.log(`   ⚠️ windows_app_shop_token_23 将在 ${Math.floor(remaining / 60)} 分钟后过期，准备续期`);
+            console.log(`   ⚠️ windows_app_shop_token_23 将在 ${Math.floor(remaining / 3600).toFixed(1)} 小时后过期，准备续期`);
             return true;
+        }else {
+            console.log(`   ✅ windows_app_shop_token_23 有效期还有 ${Math.floor(remaining / 3600).toFixed(1)} 小时，无需续期`);
         }
         return false;
     }
