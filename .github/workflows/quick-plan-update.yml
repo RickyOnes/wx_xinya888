@@ -8,7 +8,7 @@ on:
         type: choice
         options:
           - quick-plan-update.js          # 非并发日常版
-          - quick-plan-update-ds.js      # 增加了保存cookie.json的功能
+          - quick-plan-update-con.js      # 并发版
         default: quick-plan-update.js
   repository_dispatch:
     types: [external_cron_trigger]
@@ -43,21 +43,27 @@ jobs:
           echo "slot=late" >> $GITHUB_OUTPUT
         fi
 
-    - name: 恢复当天时段用户数据缓存
+    - name: 恢复用户数据缓存（跨时段前缀匹配）
       id: restore-cache
       uses: actions/cache/restore@v5
       with:
         path: ./puppeteer_user_data
         key: ${{ runner.os }}-拼多多-user-data-${{ steps.datetime.outputs.date }}-${{ steps.slot.outputs.slot }}
+        restore-keys: |
+          ${{ runner.os }}-拼多多-user-data-
 
-    - name: 从镜像备份恢复 Cookie 文件
+    - name: 从镜像备份恢复 Cookie 文件（仅在无本地 Cookie 时）
       run: |
         mkdir -p ./puppeteer_user_data
-        if [ -d /app/cookie_defaults ]; then
-          cp /app/cookie_defaults/cookie_*.json ./puppeteer_user_data/
-          echo "✅ 已从镜像备份恢复 Cookie 文件"
+        if [ ! -f ./puppeteer_user_data/cookie_*.json ]; then
+          if [ -d /app/cookie_defaults ]; then
+            cp /app/cookie_defaults/cookie_*.json ./puppeteer_user_data/ 2>/dev/null || true
+            echo "✅ 已从镜像备份恢复 Cookie 文件（首次运行）"
+          else
+            echo "⚠️ 无镜像备份，脚本将尝试自动登录"
+          fi
         else
-          echo "⚠️ 镜像备份目录不存在，跳过"
+          echo "ℹ️ 用户数据中已存在 Cookie 文件，跳过镜像备份恢复"
         fi
 
     - name: 运行所选脚本

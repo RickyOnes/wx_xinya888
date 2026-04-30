@@ -1,6 +1,6 @@
 /* 【deepseek优化终极版本】————非并发版本、日常使用脚本：
    1、不保存cookie为文件，能更智能判断登录状态及决定是否需要并完成自动登录！
-   2、自动登录失败时注入本地cookie兜底，关键过期||临期 cookie 自动延长12小时
+   2、自动登录失败时注入本地cookie兜底，并在失败时再增加一次登录尝试！
    3、优化setupRequestInterception方法，改为监听request事件，性能最优！
 */
 
@@ -370,11 +370,9 @@ class PDDPlanAntiContentFetcher {
 
     // 兜底注入Cookie并尝试恢复会话
     async _fallbackLogin() {
-        // 1. 重置 anti-content 数据，避免注入后仍使用旧值
         this.capturedData.antiContentPlan = null;
         this._createAntiContentPromise();
 
-        // Cookie 文件路径使用用户数据目录（可配置）
         const cookieFile = `${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`;
         if (!fs.existsSync(cookieFile)) {
             console.log('   ℹ️ 无本地 cookie 文件，无法进行注入登录');
@@ -389,34 +387,14 @@ class PDDPlanAntiContentFetcher {
             return false;
         }
 
-        // 注入 Cookie，对关键 Cookie 自动延长过期时间
-        const nowSec = Math.floor(Date.now() / 1000);
-        // 先检查 windows_app_shop_token_23 是否需要延长
-        const tokenCookie = cookies.find(c => c.name === 'windows_app_shop_token_23');
-        const needExtend = tokenCookie && tokenCookie.expires > 0 && 
-            (tokenCookie.expires < nowSec || tokenCookie.expires - nowSec < 3600);
-
+        // 不再延长有效期，直接原样注入
         for (const c of cookies) {
             try {
-                let expires = (c.expires && c.expires > 0) ? c.expires : undefined;
-                // 只有 token 需要延长时，才同步更新 PASS_ID 和 token 本身
-                if (needExtend && (c.name === 'PASS_ID' || c.name === 'windows_app_shop_token_23') && expires) {
-                    if (tokenCookie.expires < nowSec) {
-                        console.log('   ⚠️ windows_app_shop_token_23 已过期，同步延长 PASS_ID 和 token 至当前UTC+12小时');
-                    } else {
-                        console.log('   ⚠️ windows_app_shop_token_23 即将过期，同步延长 PASS_ID 和 token 至当前UTC+12小时');
-                    }
-                    expires = nowSec + 43200;
-                }
                 await this.page.setCookie({
-                    name: c.name,
-                    value: c.value,
-                    domain: c.domain,
-                    path: c.path,
-                    secure: c.secure,
-                    httpOnly: c.httpOnly,
+                    name: c.name, value: c.value, domain: c.domain, path: c.path,
+                    secure: c.secure, httpOnly: c.httpOnly,
                     sameSite: c.sameSite || 'Strict',
-                    expires: expires
+                    expires: (c.expires && c.expires > 0) ? c.expires : undefined
                 });
             } catch (e) {
                 console.log(`   跳过无法设置的 Cookie: ${c.name}`);
@@ -430,7 +408,6 @@ class PDDPlanAntiContentFetcher {
                 timeout: 15000
             });
 
-            // 快速验证：等待目标 API 请求（最多 6 秒）确认会话真实有效
             let apiSeen = false;
             try {
                 await Promise.race([
@@ -443,7 +420,6 @@ class PDDPlanAntiContentFetcher {
             const url = this.page.url();
             if (apiSeen || url.includes('/order/management')) {
                 console.log('   ✅ 注入后成功进入订单页');
-                // 等待页面完全稳定
                 await new Promise(r => setTimeout(r, 3000));
                 return true;
             } else {
@@ -471,6 +447,16 @@ class PDDPlanAntiContentFetcher {
         return cookies;
     }
 
+    // 新增方法：用 CDP 导出完整 Cookie 到文件
+    async exportCookies() {
+        console.log('\n💾 导出最新 Cookie 文件...');
+        const cdpSession = await this.page.target().createCDPSession();
+        const { cookies } = await cdpSession.send('Network.getCookies');
+        const fileName = `./puppeteer_user_data/cookie_${this.loginCredentials.username}.json`;
+        fs.writeFileSync(fileName, JSON.stringify(cookies, null, 2));
+        console.log(`   ✅ 已保存 ${cookies.length} 个 Cookie → ${fileName}`);
+    }
+
     async run() {
         try {
             console.log('🎬 开始执行快速订单查询参数捕获脚本');
@@ -480,15 +466,13 @@ class PDDPlanAntiContentFetcher {
             console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
             let loginSuccess = await this.autoLogin();
 
-            // 自动登录失败（如遇到验证码），尝试注入本地Cookie
             if (!loginSuccess) {
                 console.log('⚠️ 自动登录失败，尝试从本地Cookie文件恢复...');
                 loginSuccess = await this._fallbackLogin();
                 
-                // 注入也失败：再次尝试自动登录（利用现有指纹，大概率无需验证码）
                 if (!loginSuccess) {
                     console.log('⚠️ 注入恢复失败，再次尝试自动登录（指纹一致可能无需验证码）...');
-                    loginSuccess = await this.autoLogin();  // 第二次自动登录
+                    loginSuccess = await this.autoLogin();
                     if (!loginSuccess) {
                         console.log('❌ 所有登录方式均失败，程序退出');
                         return;
@@ -496,18 +480,23 @@ class PDDPlanAntiContentFetcher {
                 }
             }
 
-            // 如果还未捕获 anti-content，等待它
             if (!this.capturedData.antiContentPlan) {
                 console.log('⏳ 等待 anti-content 出现...');
                 try {
                     await this.antiContentPromise;
                     console.log('✅ anti-content 已捕获');
                 } catch (e) {
-                    console.log('⚠️ anti-content 超时，继续抓取 Cookie');
+                    console.log('⚠️ anti-content 超时');
                 }
             }
 
-            await this.captureCookies();
+            // 只有成功获取 anti-content 才进行后续操作
+            if (this.capturedData.antiContentPlan) {
+                await this.captureCookies();
+                await this.exportCookies();
+            } else {
+                console.log('⚠️ 未捕获 anti-content，跳过 Cookie 抓取、文件导出');
+            }
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
         } finally {
@@ -543,30 +532,28 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
         const fetcher = new PDDPlanAntiContentFetcher({ username, password }, `./puppeteer_user_data/${username}`, supabase, accountIndex);
         await fetcher.run();
 
-        const updatePayload = {
-            cookie_string: fetcher.capturedData.cookieString || '',
-            updated_at: new Date().toISOString()
-        };
-
+        // 仅当 anti-content 存在时才上传
         if (fetcher.capturedData.antiContentPlan) {
-            updatePayload.anti_content = fetcher.capturedData.antiContentPlan;
-        }
+            const updatePayload = {
+                anti_content: fetcher.capturedData.antiContentPlan,
+                cookie_string: fetcher.capturedData.cookieString || '',
+                updated_at: new Date().toISOString()
+            };
 
-        const { error } = await supabase
-            .from('pdd_accounts')
-            .update(updatePayload)
-            .eq('username', username);
+            const { error } = await supabase
+                .from('pdd_accounts')
+                .update(updatePayload)
+                .eq('username', username);
 
-        if (error) {
-            console.log(`❌ 更新失败: ${error.message}`);
-        } else if (fetcher.capturedData.antiContentPlan) {
-            console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
-            console.log('\n' + '='.repeat(50));
+            if (error) {
+                console.log(`❌ 更新失败: ${error.message}`);
+            } else {
+                console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
+                console.log('\n' + '='.repeat(50));
+            }
         } else {
-            console.log(`✅ 账号 ${username} 的cookie_string已更新到Supabase（未捕获到anti-content）`);
-            console.log('\n' + '='.repeat(50));
+            console.log(`⚠️ 未捕获 anti-content，跳过上传`);
         }
-
     } catch (error) {
         console.log(`❌ 更新账号 ${username} 失败:`, error.message);
         console.error(error.stack);

@@ -1,6 +1,6 @@
 /* 【deepseek优化终极版本】————[并发]版本：
    1、不保存cookie为文件，能更智能判断登录状态及决定是否需要并完成自动登录！
-   2、自动登录失败时注入本地cookie兜底，关键过期||临期 cookie 自动延长12小时
+   2、自动登录失败时注入有效的本地cookie兜底。
    3、优化setupRequestInterception方法，改为监听request事件，性能最优！
 */
 
