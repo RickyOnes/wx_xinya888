@@ -78,8 +78,7 @@ jobs:
         TZ: Asia/Shanghai
       run: node scripts/${{ inputs.script || 'quick-plan-update.js' }}
 
-    - name: 保存当天时段用户数据缓存（各时段每天仅第一次）
-      if: steps.restore-cache.outputs.cache-hit != 'true'
+    - name: 保存用户数据缓存（覆盖当天时段最新）
       uses: actions/cache/save@v5
       with:
         path: ./puppeteer_user_data
