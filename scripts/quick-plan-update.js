@@ -391,18 +391,22 @@ class PDDPlanAntiContentFetcher {
 
     async exportCookies() {
         console.log('\n💾 导出最新 Cookie 文件...');
-        const cdpSession = await this.page.target().createCDPSession();
-        const { cookies } = await cdpSession.send('Network.getCookies');
-        const fileName = `./puppeteer_user_data/cookie_${this.loginCredentials.username}.json`;
-        fs.writeFileSync(fileName, JSON.stringify(cookies, null, 2));
-        console.log(`   ✅ 已保存 ${cookies.length} 个 Cookie → ${fileName}`);
+        try {
+            const cdpSession = await this.page.target().createCDPSession();
+            const { cookies } = await cdpSession.send('Network.getCookies');
+            const fileName = `./puppeteer_user_data/cookie_${this.loginCredentials.username}.json`;
+            fs.writeFileSync(fileName, JSON.stringify(cookies, null, 2));
+            console.log(`   ✅ 已保存 ${cookies.length} 个 Cookie → ${fileName}`);
 
-        // 输出 windows_app_shop_token_23 有效期（北京时间）
-        const token = cookies.find(c => c.name === 'windows_app_shop_token_23');
-        if (token && token.expires > 0) {
-            const expiresStr = new Date(token.expires * 1000)
-                .toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-            console.log(`   🕒 windows_app_shop_token_23 最新有效期: ${expiresStr}`);
+            // 输出 windows_app_shop_token_23 有效期（北京时间）
+            const token = cookies.find(c => c.name === 'windows_app_shop_token_23');
+            if (token && token.expires > 0) {
+                const expiresStr = new Date(token.expires * 1000)
+                    .toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+                console.log(`   🕒 windows_app_shop_token_23 最新有效期: ${expiresStr}`);
+            }
+        } catch (e) {
+            console.log(`   ❌ 导出Cookie失败: ${e.message}`);
         }
     }
 
@@ -458,8 +462,6 @@ class PDDPlanAntiContentFetcher {
             await this.init();
             await this.setupRequestInterception();
 
-            console.log(`\n📝 登录信息: 用户 ${this.loginCredentials.username}`);
-
             let loginSuccess = false;
             const isFirstRun = process.env.PDD_FIRST_RUN === 'true';
 
@@ -484,34 +486,42 @@ class PDDPlanAntiContentFetcher {
             // 等待 anti-content（如果尚未捕获）
             if (!this.capturedData.antiContentPlan) {
                 console.log('⏳ 等待 anti-content 出现...');
+                this._createAntiContentPromise(); // 重置为全新的 Promise，避免使用已超时的旧 Promise
                 try {
                     await this.antiContentPromise;
                     console.log('✅ anti-content 已捕获');
                 } catch (e) {
-                    console.log('⚠️ anti-content 超时');
+                    console.log('⚠️ 等待超时，anti-content未捕获');
                 }
             }
 
+            // 上传到 Supabase 所需的 cookie 字符串（如果有 anti-content 则捕获）
             if (this.capturedData.antiContentPlan) {
                 await this.captureCookies();
+            } else {
+                console.log('⚠️ 未捕获 anti-content，跳过 cookie 抓取');
+            }
 
-                if (this._credentialRefreshed) {
-                    await this.exportCookies();
-                } else {
-                    console.log('ℹ️ 本次未产生新登录凭证，跳过 Cookie 文件保存');
+            // 只要本次运行刷新了凭证，就保存新的 Cookie 文件（无论 anti-content 是否抓到）
+            if (this._credentialRefreshed) {
+                if (!this.capturedData.cookieString) {
+                    // 如果尚未捕获 Cookie，补调一次
+                    await this.captureCookies();
                 }
+                await this.exportCookies();
+                console.log('💾 已导出刷新后的 Cookie');
+            } else {
+                console.log('ℹ️ 本次未产生新登录凭证，跳过 Cookie 文件保存');
+            }
 
-                // 主动续期检查，但刚刚刷新过凭证则跳过
-                if (!this._credentialRefreshed) {
-                    const shouldRenew = await this.checkTokenExpiry(14400);
-                    if (shouldRenew) {
-                        await this.renewCookies();
-                    }
-                } else {
-                    console.log('ℹ️ 本次已刷新凭证，跳过主动续期检查');
+            // 主动续期检查，但刚刚刷新过凭证则跳过
+            if (!this._credentialRefreshed) {
+                const shouldRenew = await this.checkTokenExpiry(14400);
+                if (shouldRenew) {
+                    await this.renewCookies();
                 }
             } else {
-                console.log('⚠️ 未捕获 anti-content，跳过 Cookie 抓取、文件导出');
+                console.log('ℹ️ 本次已刷新凭证，跳过主动续期检查');
             }
         } catch (error) {
             console.error('❌ 脚本执行出错:', error.message);
@@ -519,25 +529,24 @@ class PDDPlanAntiContentFetcher {
             if (this.browser) {
                 try {
                     await this.browser.close();
-                    console.log('👋 浏览器已关闭');
+                    console.log('👋 浏览器已关闭,程序执行完毕');
                 } catch (closeError) {
                     console.log('⚠️ 关闭浏览器时出现错误:', closeError.message);
                 }
             }
-            console.log('🏁 程序执行完毕');
         }
     }
 }
 
 // ==================== 主函数与入口 ====================
 async function updatePlanAntiContent(username, password, accountIndex = 0) {
-    console.log(`\n🔄 开始更新账号的预估销量参数: ${username}`);
+    console.log(`\n🔄 开始更新账号:【${username}】`);
 
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!supabaseUrl || !supabaseKey) {
         console.log('❌ Supabase配置缺失，跳过数据上传');
-        return;
+        return false;   // 未上传
     }
     const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -564,22 +573,27 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
 
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
+                return false;
             } else {
                 console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
+                return true;
             }
         } else {
             console.log(`⚠️ 未捕获 anti-content，跳过上传`);
+            return false;
         }
     } catch (error) {
         console.log(`❌ 更新账号 ${username} 失败:`, error.message);
         console.error(error.stack);
+        return false;
     }
 }
 
+
 async function main() {
-    console.log('==========================================');
-    console.log(`脚本开始时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
+    console.log('\n' + '='.repeat(50));
+    console.log(`脚本开始时间: 【${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}】`);
     const startTime = Date.now();
 
     const accountsJson = process.env.PDD_ACCOUNTS_JSON;
@@ -590,22 +604,36 @@ async function main() {
 
     try {
         const accounts = JSON.parse(accountsJson).accounts;
+        const failAccounts = [];
+
         for (const [accountIndex, account] of accounts.entries()) {
             const username = account.username;
             const password = process.env[`PASSWORD_${username.toUpperCase()}`];
             if (!password) {
                 console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
+                failAccounts.push(username);
                 continue;
             }
-            await updatePlanAntiContent(username, password, accountIndex);
+
+            const ok = await updatePlanAntiContent(username, password, accountIndex);
+            if (!ok) {
+                console.log(`❌ 账号 ${username} 更新失败，请检查上方详细日志`);
+                failAccounts.push(username);
+            }
         }
 
-        console.log('\n🎉 所有账号的预估销量参数更新完成');
+        if (failAccounts.length === 0) {
+            console.log('🎉 所有账号更新全部成功！'+'\n');
+        } else {
+            console.log(`⚠️ 部分账号更新失败：${failAccounts.join('、')}\n`);
+        }
+        console.log('='.repeat(50)+'\n');
+
         const endTime = Date.now();
         const duration = Math.floor((endTime - startTime) / 1000);
-        console.log(`脚本结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
-        console.log(`总运行时长: ${duration} 秒`);
-        console.log('==========================================');
+        console.log(`脚本结束时间: 【${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}】`);
+        console.log(`总运行时长:【${duration} 秒】`);
+        console.log('\n' + '='.repeat(50));
     } catch (error) {
         console.log('❌ 解析账号信息失败:', error.message);
     }
