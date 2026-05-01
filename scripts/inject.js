@@ -124,20 +124,11 @@ try {
         // 注入所有 Cookie
         for (const c of cookies) {
             try {
-                let expires = (c.expires && c.expires > 0) ? c.expires : undefined;
-                // 对关键 Cookie 延长有效期（可根据需求调整）
-                if ((c.name === 'PASS_ID' || c.name === 'windows_app_shop_token_23') && expires) {
-                    expires += 0; // 暂时不调整：1天 = 86400秒
-                }
-                await page.setCookie({
-                    name: c.name,
-                    value: c.value,
-                    domain: c.domain,
-                    path: c.path,
-                    secure: c.secure,
-                    httpOnly: c.httpOnly,
+                await this.page.setCookie({
+                    name: c.name, value: c.value, domain: c.domain, path: c.path,
+                    secure: c.secure, httpOnly: c.httpOnly,
                     sameSite: c.sameSite || 'Strict',
-                    expires: expires
+                    expires: (c.expires && c.expires > 0) ? c.expires : undefined
                 });
             } catch (e) {
                 console.log(`跳过无法设置的 Cookie: ${c.name} (${e.message})`);
