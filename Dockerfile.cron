@@ -94,6 +94,13 @@ WORKDIR /app
 COPY package-cron.json ./package.json
 RUN npm install
 
+# 复制爬虫相关文件之前，创建备份目录并复制 cookie 文件
+RUN mkdir -p /app/cookie_defaults
+COPY scripts/cookie_wangxh03.json \
+     scripts/cookie_wangxh04.json \
+     scripts/cookie_17752768679.json \
+     /app/cookie_defaults/
+     
 COPY scripts/cookie_wangxh03.json \
      scripts/cookie_wangxh04.json \
      scripts/cookie_17752768679.json \

@@ -11,6 +11,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
+const path = require('path');
 
 puppeteer.use(StealthPlugin());
 
@@ -178,6 +179,18 @@ class PDDPlanAntiContentFetcher {
         });
     }
 
+
+    _clearAntiContentPromise() {
+        if (this._antiContentTimeout) {
+            clearTimeout(this._antiContentTimeout);
+            this._antiContentTimeout = null;
+        }
+        if (this._antiContentResolve) {
+            this._antiContentResolve = null;  // 丢弃 resolve，Promise 会一直被挂起但无影响
+        }
+        this.antiContentPromise = null;
+    }
+
     _createAntiContentPromise() {
         if (this._antiContentTimeout) clearTimeout(this._antiContentTimeout);
         this.antiContentPromise = new Promise((resolve, reject) => {
@@ -314,17 +327,33 @@ class PDDPlanAntiContentFetcher {
         this._createAntiContentPromise();
         this._credentialRefreshed = false;
 
-        const cookieFile = `${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`;
+        const cookieFile = path.resolve(`${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`);
+
+        // 自动从备份目录恢复（如果挂载卷为空）
         if (!fs.existsSync(cookieFile)) {
-            console.log('   ℹ️ 无本地 cookie 文件，无法进行注入登录');
-            return false;
-        }
+            const defaultFile = path.join('/app/cookie_defaults', `cookie_${this.loginCredentials.username}.json`);
+            if (fs.existsSync(defaultFile)) {
+                try {
+                    fs.copyFileSync(defaultFile, cookieFile);
+                    console.log(`   📋 已从默认备份复制 cookie: ${this.loginCredentials.username}`);
+                } catch (e) {
+                    console.log(`   ⚠️ 复制默认 cookie 失败: ${e.message}`);
+                    this._clearAntiContentPromise(); //新增：清理可能残留的定时器
+                    return false;
+                }        
+            } else {
+                console.log('   ℹ️ 无本地 cookie 文件，且备份目录也不存在');
+                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
+                return false;
+            }
+        }    
         console.log('   📂 检测到本地Cookie文件，尝试注入并立即密码登录...');
         let cookies;
         try {
             cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
         } catch (e) {
             console.log('   ❌ 读取 cookie 文件失败:', e.message);
+            this._clearAntiContentPromise();  //新增：清理可能残留的定时器
             return false;
         }
 
@@ -339,6 +368,7 @@ class PDDPlanAntiContentFetcher {
                 });
             } catch (e) {
                 console.log(`   跳过无法设置的 Cookie: ${c.name}`);
+                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
             }
         }
 
@@ -480,6 +510,7 @@ class PDDPlanAntiContentFetcher {
 
             if (!loginSuccess) {
                 console.log('❌ 所有恢复方式均失败，程序退出');
+                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
                 return;
             }
 
