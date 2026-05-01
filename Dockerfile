@@ -76,7 +76,7 @@ COPY scripts/cookie_wangxh03.json \
 RUN mkdir -p /app/cookie_defaults && \
     cp /app/puppeteer_user_data/cookie_*.json /app/cookie_defaults/
 
-COPY scripts/quick-plan-update-ds.js \
+COPY scripts/clean-browser-profiles.js \
      scripts/quick-plan-update.js \
      ./scripts/
 

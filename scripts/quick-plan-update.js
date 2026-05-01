@@ -396,6 +396,14 @@ class PDDPlanAntiContentFetcher {
         const fileName = `./puppeteer_user_data/cookie_${this.loginCredentials.username}.json`;
         fs.writeFileSync(fileName, JSON.stringify(cookies, null, 2));
         console.log(`   ✅ 已保存 ${cookies.length} 个 Cookie → ${fileName}`);
+
+        // 输出 windows_app_shop_token_23 有效期（北京时间）
+        const token = cookies.find(c => c.name === 'windows_app_shop_token_23');
+        if (token && token.expires > 0) {
+            const expiresStr = new Date(token.expires * 1000)
+                .toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            console.log(`   🕒 windows_app_shop_token_23 最新有效期: ${expiresStr}`);
+        }
     }
 
     // -------------------- 续期相关 --------------------
@@ -404,11 +412,13 @@ class PDDPlanAntiContentFetcher {
         const token = cookies.find(c => c.name === 'windows_app_shop_token_23');
         if (!token || token.expires <= 0) return false;
         const remaining = token.expires - Math.floor(Date.now() / 1000);
+        const hoursRemaining = (remaining / 3600).toFixed(1); // 精确到 1 位小数，四舍五入
+
         if (remaining > 0 && remaining < thresholdSeconds) {
-            console.log(`   ⚠️ windows_app_shop_token_23 将在 ${Math.floor(remaining / 3600).toFixed(1)} 小时后过期，准备续期`);
+            console.log(`   ⚠️ windows_app_shop_token_23 将在 ${hoursRemaining} 小时后过期，准备续期`);
             return true;
-        }else {
-            console.log(`   ✅ windows_app_shop_token_23 有效期还有 ${Math.floor(remaining / 3600).toFixed(1)} 小时，无需续期`);
+        } else if (remaining > 0) {
+            console.log(`   ✅ windows_app_shop_token_23 有效期还有 ${hoursRemaining} 小时，无需续期`);
         }
         return false;
     }
@@ -420,18 +430,24 @@ class PDDPlanAntiContentFetcher {
             console.log('   ❌ 续期登录失败（可能验证码），放弃续期');
             return false;
         }
+
         console.log('   ⏳ 等待新会话的 anti-content...');
         this.capturedData.antiContentPlan = null;
         this._createAntiContentPromise();
+
         try {
             await this.antiContentPromise;
             console.log('   ✅ 已捕获续期后的 anti-content');
+            // 捕获成功：执行完整保存
+            await this.captureCookies();
+            await this.exportCookies();
+            console.log('   ✅ 主动续期完成，Cookie 文件已更新');
         } catch (e) {
-            console.log('   ⚠️ 续期后未捕获到 anti-content，但仍将保存新 Cookie');
+            // 捕获超时，但登录已成功，只执行 exportCookies
+            console.log('   ⚠️ 续期后未捕获到 anti-content，仅导出 Cookie');
+            await this.exportCookies();
         }
-        await this.captureCookies();
-        await this.exportCookies();
-        console.log('   ✅ 主动续期完成，Cookie 文件已更新');
+
         return true;
     }
 

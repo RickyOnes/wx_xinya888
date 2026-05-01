@@ -8,7 +8,7 @@ on:
         type: choice
         options:
           - quick-plan-update.js          # 非并发日常版
-          - quick-plan-update-ds.js      # 并发版
+          - clean-browser-profiles.js      # 清理用户数据文件（定期运行，保持环境干净）
         default: quick-plan-update.js
   repository_dispatch:
     types: [external_cron_trigger]
