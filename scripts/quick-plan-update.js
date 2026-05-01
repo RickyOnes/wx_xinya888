@@ -25,6 +25,7 @@ const CONFIG = {
         defaultViewport: { width: 1366, height: 768 },
         args: [
             '--no-sandbox',
+            '--disable-infobars',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
@@ -37,7 +38,6 @@ const CONFIG = {
             '--disk-cache-size=104857600',
             '--aggressive-cache-discard',
             '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
-            '--disable-blink-features=AutomationControlled',
             '--disable-extensions',
             '--disable-component-extensions-with-background-pages',
             '--disable-sync',
@@ -102,6 +102,14 @@ class PDDPlanAntiContentFetcher {
 
         const baseOptions = { ...CONFIG.browserOptions, userDataDir: this.userDataDir, defaultViewport: this.accountProfile.viewport };
         let launchOptions = { ...baseOptions };
+
+        // 根据环境变量 HEADLESS 决定是否无头
+        const headlessEnv = process.env.HEADLESS;
+        if (headlessEnv === 'false') {
+            launchOptions.headless = false;   // 有头模式，可以看到浏览器窗口
+            console.log('   🖥️ 使用有头模式（HEADLESS=false）');
+        }
+
         let useSystemChrome = false;
 
         try {
