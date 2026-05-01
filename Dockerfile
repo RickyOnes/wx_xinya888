@@ -1,7 +1,7 @@
-# 1. 使用 Node.js 24.7.0 slim 版本（轻量级基础镜像）
+# 使用 Node.js 24.7.0 slim 版本（轻量级基础镜像）
 FROM node:24.7.0-slim
 
-# 2. 安装 Chrome 最新稳定版及必要依赖
+# 安装 Chrome 最新稳定版及必要依赖
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -41,38 +41,34 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     --no-install-recommends && \
-    # 添加 Google Chrome 官方仓库
     wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
     echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
-    # 安装最新版本的 Chrome
     apt-get install -y google-chrome-stable --no-install-recommends && \
-    # 清理缓存，减小镜像体积
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 3. 设置时区为中国上海
+# 设置时区
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 4. 安装中文字体（防止页面乱码）
+# 中文字体
 RUN apt-get update && apt-get install -y fonts-wqy-zenhei --no-install-recommends && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 5. 设置工作目录
 WORKDIR /app
 
-# 6. 复制 package.json 并安装依赖（利用 Docker 缓存层）
-COPY package*.json ./
-RUN npm install --production && \
-    npm cache clean --force
+# 跳过 Puppeteer 内置 Chromium 下载（使用系统已安装的 Chrome）
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# 7. 复制项目文件
+COPY package*.json ./
+RUN npm install --production && npm cache clean --force
+
+# 复制项目文件
 COPY scripts/cookie_wangxh03.json \
      scripts/cookie_wangxh04.json \
      scripts/cookie_17752768679.json \
      ./puppeteer_user_data/
 
-# 新增：创建供工作流兜底的备份目录，防止缓存覆盖或丢失
 RUN mkdir -p /app/cookie_defaults && \
     cp /app/puppeteer_user_data/cookie_*.json /app/cookie_defaults/
 
@@ -80,5 +76,4 @@ COPY scripts/clean-browser-profiles.js \
      scripts/quick-plan-update.js \
      ./scripts/
 
-# 8. 默认运行 quick-plan-update.js 脚本
 CMD ["node", "scripts/quick-plan-update.js"]
