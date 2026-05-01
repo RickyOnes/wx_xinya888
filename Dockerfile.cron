@@ -56,6 +56,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# 跳过 Puppeteer 内置 Chromium 下载（使用系统已安装的 Chrome）
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 # 安装 noVNC
 RUN git clone https://github.com/novnc/noVNC.git /opt/novnc \
     && git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
@@ -75,6 +78,15 @@ RUN echo 'export GTK_IM_MODULE=fcitx' > /etc/profile.d/fcitx.sh && \
     echo 'export XMODIFIERS=@im=fcitx' >> /etc/profile.d/fcitx.sh && \
     echo 'export DEFAULT_IM=fcitx' >> /etc/profile.d/fcitx.sh && \
     chmod +x /etc/profile.d/fcitx.sh
+
+# ---------- 新增：解决桌面“网络浏览器”图标打不开的问题 ----------
+# 1. 将默认浏览器设置为 Google Chrome
+RUN xdg-settings set default-web-browser google-chrome.desktop
+
+# 2. 删除可能存在的旧 Xfce 面板配置（容器首次启动时会自动生成新面板）
+RUN rm -rf /root/.config/xfce4/panel \
+    && rm -f /root/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+# -----------------------------------------------------------------
 
 WORKDIR /app
 

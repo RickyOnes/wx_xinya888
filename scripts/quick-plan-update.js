@@ -104,8 +104,8 @@ class PDDPlanAntiContentFetcher {
         let useSystemChrome = false;
 
         try {
-            require('child_process').execSync('which google-chrome', { stdio: 'ignore' });
-            launchOptions.executablePath = '/usr/bin/google-chrome';
+            require('child_process').execSync('which google-chrome-stable', { stdio: 'ignore' });
+            launchOptions.executablePath = '/usr/bin/google-chrome-stable';
             useSystemChrome = true;
             console.log('   ✅ 将尝试使用系统 Chrome');
         } catch {

@@ -37,16 +37,3 @@ jobs:
           push: true
           tags: |
             ghcr.io/rickyones/cron-crawler:latest
-           
-      # 推送到阿里云 ACR
-      - name: Login to Alibaba Cloud ACR
-        uses: docker/login-action@v4
-        with:
-          registry: crpi-ynz6aj0mqwmi5chm.cn-guangzhou.personal.cr.aliyuncs.com
-          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
-          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
-
-      - name: Push image to ACR
-        run: |
-          docker tag ghcr.io/rickyones/cron-crawler:latest crpi-ynz6aj0mqwmi5chm.cn-guangzhou.personal.cr.aliyuncs.com/rickyone/pdd-cron:latest
-          docker push crpi-ynz6aj0mqwmi5chm.cn-guangzhou.personal.cr.aliyuncs.com/rickyone/pdd-cron:latest      
