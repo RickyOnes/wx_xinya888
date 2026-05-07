@@ -1436,11 +1436,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 打开用户目录文件（.json/.zip/.txt）
-  if (req.url.startsWith('/file/view/') && method === 'GET') {
-    let rawPath = req.url;
-    const queryIndex = rawPath.indexOf('?');
-    if (queryIndex !== -1) rawPath = rawPath.substring(0, queryIndex);
-    const encodedFilename = rawPath.substring('/file/view/'.length);
+  if (pathname.startsWith('/file/view/') && method === 'GET') {
+    const encodedFilename = pathname.slice('/file/view/'.length);
 
     if (!encodedFilename) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1493,12 +1490,54 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 删除用户目录文件（.json/.zip/.txt）
+  if (pathname.startsWith('/file/') && !pathname.startsWith('/file/view/') && method === 'DELETE') {
+    const encodedFilename = pathname.slice('/file/'.length);
+
+    if (!encodedFilename) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '无效的文件名' }));
+      return;
+    }
+
+    let filename = '';
+    try {
+      filename = decodeURIComponent(encodedFilename);
+    } catch {
+      filename = encodedFilename;
+    }
+
+    const safeName = path.basename(filename);
+    const ext = path.extname(safeName).toLowerCase();
+    if (!safeName || safeName.startsWith('.') || !USER_DATA_VIEWABLE_EXTENSIONS.has(ext)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '仅支持删除 .json/.zip/.txt 文件' }));
+      return;
+    }
+
+    const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+
+    try {
+      await fs.access(targetPath);
+      await fs.unlink(targetPath);
+      console.log(`[${beijingTime()}] 已删除用户目录文件: ${safeName}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: `文件 ${safeName} 已删除` }));
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
+      } else {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '删除失败: ' + err.message }));
+      }
+    }
+    return;
+  }
+
   // 删除脚本（使用原始 URL 避免自动解码问题）
-  if (req.url.startsWith('/script/') && method === 'DELETE') {
-    let rawPath = req.url;
-    const queryIndex = rawPath.indexOf('?');
-    if (queryIndex !== -1) rawPath = rawPath.substring(0, queryIndex);
-    let encodedFilename = rawPath.substring('/script/'.length);
+  if (pathname.startsWith('/script/') && method === 'DELETE') {
+    let encodedFilename = pathname.substring('/script/'.length);
     if (!encodedFilename) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '无效的文件名' }));
@@ -1584,10 +1623,14 @@ const server = http.createServer(async (req, res) => {
     const userDataFilesHtml = userDataFiles.length > 0
       ? userDataFiles.map(name => {
           const safeName = escapeHtml(name);
-          const openUrl = `/file/view/${encodeURIComponent(name)}`;
-          return `<li><a href="${openUrl}" target="_blank" rel="noopener noreferrer">${safeName}</a></li>`;
-        }).join('')
-      : '<li>暂无 .json/.zip/.txt 文件</li>';
+          return `
+            <div class="script-item" title="${safeName}">
+              <button class="script-btn user-file-open-btn" data-file="${safeName}" title="查看/下载 ${safeName}">${safeName}</button>
+              <button class="delete-btn user-file-delete-btn" data-file="${safeName}" title="删除文件 ${safeName}">🗑️</button>
+            </div>
+          `;
+        }).join('\n')
+      : '<div style="color:#64748b;">暂无 .json/.zip/.txt 文件</div>';
 
     let totalExecutions = history.length;
     let successCount = history.filter(h => h.success).length;
@@ -1786,18 +1829,8 @@ const server = http.createServer(async (req, res) => {
               background: #f8fafc;
               border-radius: 12px;
             }
-            .user-files-list {
+            .user-file-grid {
               margin-top: 10px;
-              padding-left: 18px;
-              line-height: 1.8;
-            }
-            .user-files-list li {
-              margin-bottom: 2px;
-              word-break: break-all;
-            }
-            .user-files-list a {
-              color: #2563eb;
-              text-decoration: underline;
             }
             .btn-small {
               background: #667eea;
@@ -1983,7 +2016,7 @@ const server = http.createServer(async (req, res) => {
 
               <div class="upload-area">
                 <strong>📁 用户目录文件（/app/puppeteer_user_data/）</strong>
-                <ul class="user-files-list">${userDataFilesHtml}</ul>
+                <div class="script-grid user-file-grid" id="userFileGrid">${userDataFilesHtml}</div>
               </div>
 
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
@@ -2558,6 +2591,28 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            function openUserFile(filename) {
+              const encoded = encodeURIComponent(filename);
+              window.open('/file/view/' + encoded, '_blank', 'noopener,noreferrer');
+            }
+
+            async function deleteUserFile(filename) {
+              if(!confirm('确定删除该文件吗？')) return;
+              try {
+                const encoded = encodeURIComponent(filename);
+                const res = await fetch('/file/' + encoded, { method: 'DELETE' });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.message) {
+                  showToast(data.message, 'success');
+                  setTimeout(() => location.reload(), 800);
+                } else {
+                  showToast(data.error || '删除失败', 'error');
+                }
+              } catch(err) {
+                showToast('删除失败: ' + err.message, 'error');
+              }
+            }
+
             toggleLogBtn.onclick = () => {
               const currentlyVisible = logSection.classList.contains('visible');
               if (currentlyVisible) {
@@ -2628,10 +2683,24 @@ const server = http.createServer(async (req, res) => {
                 runScript(script, e.target);
               });
             });
-            document.querySelectorAll('.delete-btn').forEach(btn => {
+            document.querySelectorAll('.delete-btn[data-script]').forEach(btn => {
               btn.addEventListener('click', (e) => {
                 const script = e.target.getAttribute('data-script');
                 deleteScript(script);
+              });
+            });
+
+            document.querySelectorAll('.user-file-open-btn').forEach(btn => {
+              btn.addEventListener('click', (e) => {
+                const filename = e.target.getAttribute('data-file');
+                if (filename) openUserFile(filename);
+              });
+            });
+
+            document.querySelectorAll('.user-file-delete-btn').forEach(btn => {
+              btn.addEventListener('click', (e) => {
+                const filename = e.target.getAttribute('data-file');
+                if (filename) deleteUserFile(filename);
               });
             });
 
@@ -2699,9 +2768,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ---------- 定时任务 ----------
-cron.schedule('15 6,7,9,10,11,12,13,14,15,16,17,18,21,22,23 * * *', () => {
+cron.schedule('18 6,7,9,10,11,12,13,14,15,16,17,18,19,20,22 * * *', () => {
   console.log(`[${beijingTime()}] 定时任务触发，执行 quick-plan-update.js`);
   queueScript('quick-plan-update.js').catch(err => console.error('定时任务执行失败:', err));
+}, { timezone: "Asia/Shanghai" });
+
+cron.schedule('08 8 */4 * *', () => { //每4天北京时间8：08运行清理浏览器缓存的任务
+  console.log(`[${beijingTime()}] 定时清理用户文件夹，执行 clean-browser-profiles.js`);
+  queueScript('clean-browser-profiles.js').catch(err => console.error('定时任务执行失败:', err));
 }, { timezone: "Asia/Shanghai" });
 
 cron.schedule('8 6 * * *', () => { //每天北京时间6：08运行清理日志的任务
@@ -2714,7 +2788,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
