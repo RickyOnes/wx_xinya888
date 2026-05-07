@@ -2473,7 +2473,7 @@ const server = http.createServer(async (req, res) => {
                   setLogSectionVisible(isRunning);
                   currentScriptSpan.innerText = state.currentScript || '无';
                   lastRunSpan.innerText = state.lastRun || '无';
-                  document.querySelectorAll('.script-btn').forEach(btn => {
+                  document.querySelectorAll('.script-btn[data-script]').forEach(btn => {
                     btn.disabled = isRunning;
                   });
                   if (completedRunKey && completedRunKey !== latestCompletedRunKey) {
@@ -2549,6 +2549,10 @@ const server = http.createServer(async (req, res) => {
             }
 
             async function runScript(scriptName, btn) {
+              if (!scriptName) {
+                showToast('无效的脚本名', 'error');
+                return;
+              }
               if (btn.disabled) return;
               if (latestIsRunning) {
                 showToast(\`脚本 \${currentScriptSpan.innerText || '任务'} 正在执行，请稍后再试\`, 'info');
@@ -2677,10 +2681,10 @@ const server = http.createServer(async (req, res) => {
               }
             };
 
-            document.querySelectorAll('.script-btn').forEach(btn => {
+            document.querySelectorAll('.script-btn[data-script]').forEach(btn => {
               btn.addEventListener('click', (e) => {
-                const script = e.target.getAttribute('data-script');
-                runScript(script, e.target);
+                const script = e.currentTarget.getAttribute('data-script');
+                runScript(script, e.currentTarget);
               });
             });
             document.querySelectorAll('.delete-btn[data-script]').forEach(btn => {
@@ -2692,14 +2696,14 @@ const server = http.createServer(async (req, res) => {
 
             document.querySelectorAll('.user-file-open-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
-                const filename = e.target.getAttribute('data-file');
+                const filename = e.currentTarget.getAttribute('data-file');
                 if (filename) openUserFile(filename);
               });
             });
 
             document.querySelectorAll('.user-file-delete-btn').forEach(btn => {
               btn.addEventListener('click', (e) => {
-                const filename = e.target.getAttribute('data-file');
+                const filename = e.currentTarget.getAttribute('data-file');
                 if (filename) deleteUserFile(filename);
               });
             });
