@@ -22,6 +22,7 @@ const SSE_RETRY_INTERVAL = 5000;
 const STOP_FORCE_KILL_DELAY = 15000;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set(['.js', '.json', '.zip', '.txt']);
 const USER_DATA_VIEWABLE_EXTENSIONS = new Set(['.json', '.zip', '.txt']);
+const sseTaskClients = {}; // 新增全局 taskId→客户端的SSE订阅表
 
 // Supabase 配置（从环境变量读取）
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -703,7 +704,8 @@ function addToHistory(script, startTimeStr, duration, success, exitCode, failure
   appendHistoryLog(record);
 }
 
-function runScriptTask(scriptName, resolve, reject) {
+// 关键：runScriptTask 传递 taskId，结束时发给持有该taskId的SSE连接
+function runScriptTask(scriptName, resolve, reject, taskId) {
   if (currentChild) {
     reject(new Error('已有脚本在运行，但队列机制应防止此情况'));
     return;
@@ -716,7 +718,7 @@ function runScriptTask(scriptName, resolve, reject) {
   broadcastState();
   const startTime = Date.now();
   const startTimeStr = beijingTime(new Date(startTime));
-  console.log('\n==========================================');
+  console.log(`\n[${startTimeStr}] ==========================================`);
   console.log(`[${startTimeStr}] 开始执行脚本: ${scriptName}`);
   broadcastLog('info', `开始执行脚本: ${scriptName}`);
 
@@ -801,10 +803,22 @@ function runScriptTask(scriptName, resolve, reject) {
         console.log(`总运行时长: ${duration} 秒`);
         broadcastLog('info', `脚本 ${scriptName} 执行完成，退出码: ${exitCode}，耗时 ${duration} 秒`);
       }
-      console.log("==========================================");
+      console.log(`[${beijingTime(endTime)}] ==========================================`);
 
       addToHistory(scriptName, startTimeStr, duration, success, exitCode, result.failureDetail, result.finalResult);
       broadcastState();
+      // 发送结果给持有该 taskId 的 SSE 客户端
+      if (taskId && sseTaskClients[taskId]) {
+        const message = `event: result\ndata: ${JSON.stringify(result)}\n\n`;
+        sseTaskClients[taskId].forEach(client => {
+          try { client.write(message); } catch(e){}
+        });
+        // 完成后自动关闭连接
+        sseTaskClients[taskId].forEach(client => {
+          try { client.end(); } catch(e){}
+        });
+        delete sseTaskClients[taskId];
+      }
       resolve(result);
       runNext();
     });
@@ -871,31 +885,36 @@ function queueScript(scriptName) {
       return;
     }
 
+    const taskId = createHistoryId();
     const queuedBefore = taskQueue.length;
     const queued = isRunning || queuedBefore > 0;
     const queuePosition = queued ? queuedBefore + 1 : 0;
 
-    taskQueue.push({ scriptName, resolve: () => {}, reject: () => {} });
+    // 原来 taskQueue 只放脚本名，现在放 taskId
+    taskQueue.push({ scriptName, resolve: () => {}, reject: () => {}, taskId });
     broadcastState();
     if (!isRunning) runNext();
 
+    // 关键：直接返回 taskId 给客户端
     resolve({
       accepted: true,
       script: scriptName,
       queued,
       queuePosition,
-      startedAt: beijingTime()
+      startedAt: beijingTime(),
+      taskId,     // 增加返回
     });
   });
 }
 
+// 修改 runNext，把 taskId 传下去
 function runNext() {
   if (isShuttingDown) return;
   if (taskQueue.length === 0) return;
   if (isRunning) return;
-  const { scriptName, resolve, reject } = taskQueue.shift();
+  const { scriptName, resolve, reject, taskId } = taskQueue.shift();
   broadcastState();
-  runScriptTask(scriptName, resolve, reject);
+  runScriptTask(scriptName, resolve, reject, taskId);// 传递 taskId
 }
 
 function rejectQueuedTasks(message) {
@@ -1335,7 +1354,7 @@ const server = http.createServer(async (req, res) => {
         message: result.queued
           ? `脚本 ${scriptName} 已加入队列，前方还有 ${result.queuePosition - 1} 个任务`
           : `脚本 ${scriptName} 已开始执行，请查看实时日志`,
-        result
+        result // 这里包含 taskId
       }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1350,7 +1369,7 @@ const server = http.createServer(async (req, res) => {
   // 默认触发
   if (pathname === '/trigger' && method === 'POST') {
     try {
-      const result = await queueScript('update-pdd-cron.js');
+      const result = await queueScript('quick-plan-update.js');
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         message: result.queued
@@ -1588,6 +1607,7 @@ const server = http.createServer(async (req, res) => {
 
   // SSE 实时日志和状态
   if (pathname === '/events' && method === 'GET') {
+    const taskId = parsedUrl.searchParams.get('taskId');
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -1597,6 +1617,18 @@ const server = http.createServer(async (req, res) => {
     });
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
     res.write(`retry: ${SSE_RETRY_INTERVAL}\n\n`);
+    
+    if (taskId) {
+      // 仅订阅指定任务
+      if (!sseTaskClients[taskId]) sseTaskClients[taskId] = [];
+      sseTaskClients[taskId].push(res);
+      req.on('close', () => {
+        sseTaskClients[taskId] = (sseTaskClients[taskId] || []).filter(client => client !== res);
+      });
+      return;
+    }
+
+    // 原全局日志订阅（不带taskId参数）：
     sseClients.push(res);
     sendSSE('state', getStatePayload());
     req.on('close', () => {
