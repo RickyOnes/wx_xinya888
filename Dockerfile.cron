@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
     libxss1 libxtst6 lsb-release xdg-utils \
     xvfb fonts-wqy-zenhei \
-    xfce4 xfce4-terminal dbus-x11 sudo git unzip nano \
+    xfce4 xfce4-terminal dbus-x11 sudo git zip unzip nano \
+
     net-tools \
     x11vnc \
     fcitx \

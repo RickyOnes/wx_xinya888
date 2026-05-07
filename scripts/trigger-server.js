@@ -15,11 +15,13 @@ const SCRIPTS_DIR = '/app/scripts';
 const USER_DATA_SCRIPTS_DIR = '/app/puppeteer_user_data';
 const LOG_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'logs.txt');
 const HISTORY_FILE = path.join(USER_DATA_SCRIPTS_DIR, 'history.json');
-const MAX_HISTORY = 20;
+const MAX_HISTORY = 30;
 const MAX_LOG_DAYS = 20;
 const SSE_HEARTBEAT_INTERVAL = 25000;
 const SSE_RETRY_INTERVAL = 5000;
 const STOP_FORCE_KILL_DELAY = 15000;
+const ALLOWED_UPLOAD_EXTENSIONS = new Set(['.js', '.json', '.zip', '.txt']);
+const USER_DATA_VIEWABLE_EXTENSIONS = new Set(['.json', '.zip', '.txt']);
 
 // Supabase 配置（从环境变量读取）
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -444,6 +446,60 @@ function extractFailureDetail(result) {
   return `${summaryLines.join('\n')}\n\n关键失败内容:\n${selectedLines.join('\n')}`.slice(0, 1800);
 }
 
+function extractQuickPlanFinalResult(output, errorOutput) {
+  const text = `${output || ''}\n${errorOutput || ''}`;
+
+  if (/所有账号更新全部成功/.test(text)) {
+    return '所有账号更新全部成功';
+  }
+
+  if (/部分账号更新失败[:：]?/.test(text)) {
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const failDetails = [];
+    let capture = false;
+
+    for (const line of lines) {
+      if (/部分账号更新失败[:：]?/.test(line)) {
+        capture = true;
+        continue;
+      }
+      if (!capture) continue;
+      if (/^=+$/.test(line) || /^脚本结束时间[:：]/.test(line) || /^总运行时长[:：]/.test(line)) break;
+      const cleaned = line.replace(/^[-•]\s*/, '').trim();
+      const matched = cleaned.match(/^([^:：]+)[:：]\s*(.+)$/);
+      if (matched) {
+        failDetails.push(`${matched[1].trim()}: ${matched[2].trim()}`);
+      }
+    }
+
+    if (failDetails.length > 0) {
+      return `部分账号更新失败：${failDetails.join('；')}`.slice(0, 1000);
+    }
+    return '部分账号更新失败：未解析到具体原因';
+  }
+
+  return '';
+}
+
+function extractExecutionFinalResult(scriptName, result) {
+  if (['quick-plan-update.js', 'quick-plan-update-new.js', 'update-pdd.js', 'update-pdd-cron.js'].includes(scriptName)) {
+    const quickSummary = extractQuickPlanFinalResult(result.output, result.error);
+    if (quickSummary) return quickSummary;
+  }
+
+  if (result.stopReason === 'timeout') return '脚本执行超时';
+  if (result.stopReason === 'shutdown') return '服务关闭导致脚本中断';
+  if (result.stopReason === 'manual') return '脚本被手动终止';
+  if (result.success) return '执行成功';
+  if (result.softFailure) return '执行失败：日志检测到关键异常';
+
+  const detail = extractFailureDetail(result);
+  const reasonLine = detail.split(/\r?\n/).find(line => line.startsWith('原因:'));
+  if (reasonLine) return reasonLine.replace(/^原因:\s*/, '').trim();
+
+  return '执行失败';
+}
+
 function createHistoryId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -461,7 +517,8 @@ function normalizeHistoryRecord(record) {
     duration: Number.isNaN(duration) ? 0 : duration,
     success: Boolean(record.success),
     exitCode: Number.isNaN(exitCode) ? -1 : exitCode,
-    failureDetail: typeof record.failureDetail === 'string' ? record.failureDetail : ''
+    failureDetail: typeof record.failureDetail === 'string' ? record.failureDetail : '',
+    finalResult: typeof record.finalResult === 'string' ? record.finalResult : ''
   };
 }
 
@@ -472,7 +529,8 @@ function buildHistorySummary(record) {
     script: record.script,
     duration: record.duration,
     success: record.success,
-    exitCode: record.exitCode
+    exitCode: record.exitCode,
+    finalResult: record.finalResult || ''
   };
 }
 
@@ -496,7 +554,8 @@ function getStatePayload() {
       success: lastRunResult.success,
       duration: lastRunResult.duration,
       timestamp: lastRunResult.timestamp,
-      exitCode: lastRunResult.exitCode
+      exitCode: lastRunResult.exitCode,
+      finalResult: lastRunResult.finalResult || ''
     } : null
   };
 }
@@ -628,7 +687,7 @@ async function cleanOldLogs() {
   }
 }
 
-function addToHistory(script, startTimeStr, duration, success, exitCode, failureDetail = '') {
+function addToHistory(script, startTimeStr, duration, success, exitCode, failureDetail = '', finalResult = '') {
   const record = normalizeHistoryRecord({
     id: createHistoryId(),
     timestamp: startTimeStr,
@@ -636,7 +695,8 @@ function addToHistory(script, startTimeStr, duration, success, exitCode, failure
     duration,
     success,
     exitCode,
-    failureDetail
+    failureDetail,
+    finalResult
   });
   history.unshift(record);
   if (history.length > MAX_HISTORY) history.pop();
@@ -720,6 +780,7 @@ function runScriptTask(scriptName, resolve, reject) {
         error: errorOutput.slice(-5000)
       };
       result.failureDetail = success ? '' : extractFailureDetail(result);
+      result.finalResult = extractExecutionFinalResult(scriptName, result);
       lastRunResult = result;
 
       if (stopReason === 'manual') {
@@ -742,7 +803,7 @@ function runScriptTask(scriptName, resolve, reject) {
       }
       console.log("==========================================");
 
-      addToHistory(scriptName, startTimeStr, duration, success, exitCode, result.failureDetail);
+      addToHistory(scriptName, startTimeStr, duration, success, exitCode, result.failureDetail, result.finalResult);
       broadcastState();
       resolve(result);
       runNext();
@@ -767,10 +828,11 @@ function runScriptTask(scriptName, resolve, reject) {
         error: err.message
       };
       result.failureDetail = extractFailureDetail(result);
+      result.finalResult = extractExecutionFinalResult(scriptName, result);
       lastRunResult = result;
       console.error(`[${beijingTime()}] 脚本 ${scriptName} 执行错误: ${err.message}`);
       broadcastLog('error', `脚本 ${scriptName} 执行错误: ${err.message}`);
-      addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail);
+      addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail, result.finalResult);
       broadcastState();
       resolve(result);
       runNext();
@@ -789,10 +851,11 @@ function runScriptTask(scriptName, resolve, reject) {
       error: err.message
     };
     result.failureDetail = extractFailureDetail(result);
+    result.finalResult = extractExecutionFinalResult(scriptName, result);
     lastRunResult = result;
     console.error(`[${beijingTime()}] 脚本 ${scriptName} 定位失败: ${err.message}`);
     broadcastLog('error', `脚本 ${scriptName} 定位失败: ${err.message}`);
-    addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail);
+    addToHistory(scriptName, startTimeStr, duration, false, -1, result.failureDetail, result.finalResult);
     isRunning = false;
     currentScript = null;
     broadcastState();
@@ -925,6 +988,20 @@ async function getAvailableScriptEntries() {
     directory,
     deletable: directory === USER_DATA_SCRIPTS_DIR
   }));
+}
+
+async function getAvailableUserDataFiles() {
+  try {
+    const files = await fs.readdir(USER_DATA_SCRIPTS_DIR);
+    return files
+      .filter(file => USER_DATA_VIEWABLE_EXTENSIONS.has(path.extname(file).toLowerCase()))
+      .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('读取用户目录文件失败:', err.message);
+    }
+    return [];
+  }
 }
 
 async function getAvailableScripts() {
@@ -1137,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/status', '/history', '/events', '/metrics'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1199,7 +1276,8 @@ const server = http.createServer(async (req, res) => {
         exitCode: lastRunResult.exitCode,
         script: lastRunResult.script,
         timestamp: lastRunResult.timestamp,
-        duration: lastRunResult.duration
+        duration: lastRunResult.duration,
+        finalResult: lastRunResult.finalResult || ''
       } : null
     }));
     return;
@@ -1317,9 +1395,10 @@ const server = http.createServer(async (req, res) => {
       } catch(e) {}
       safeFilename = safeFilename.trim();
 
-      if (!safeFilename || !safeFilename.endsWith('.js')) {
+      const ext = path.extname(safeFilename).toLowerCase();
+      if (!safeFilename || !ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
         file.resume();
-        errorMsg = `只允许上传 .js 文件，收到: "${safeFilename || '空'}"`;
+        errorMsg = `仅允许上传 .js/.json/.zip/.txt 文件，收到: "${safeFilename || '空'}"`;
         return;
       }
       const baseName = path.basename(safeFilename);
@@ -1353,6 +1432,64 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.pipe(busboy);
+    return;
+  }
+
+  // 打开用户目录文件（.json/.zip/.txt）
+  if (req.url.startsWith('/file/view/') && method === 'GET') {
+    let rawPath = req.url;
+    const queryIndex = rawPath.indexOf('?');
+    if (queryIndex !== -1) rawPath = rawPath.substring(0, queryIndex);
+    const encodedFilename = rawPath.substring('/file/view/'.length);
+
+    if (!encodedFilename) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '无效的文件名' }));
+      return;
+    }
+
+    let filename = '';
+    try {
+      filename = decodeURIComponent(encodedFilename);
+    } catch {
+      filename = encodedFilename;
+    }
+
+    const safeName = path.basename(filename);
+    const ext = path.extname(safeName).toLowerCase();
+    if (!safeName || safeName.startsWith('.') || !USER_DATA_VIEWABLE_EXTENSIONS.has(ext)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '仅支持打开 .json/.zip/.txt 文件' }));
+      return;
+    }
+
+    const targetPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+
+    try {
+      await fs.access(targetPath);
+      if (ext === '.zip') {
+        const buffer = await fs.readFile(targetPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`
+        });
+        res.end(buffer);
+        return;
+      }
+
+      const content = await fs.readFile(targetPath, 'utf8');
+      const contentType = ext === '.json' ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8';
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(content);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
+      } else {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '打开文件失败: ' + err.message }));
+      }
+    }
     return;
   }
 
@@ -1432,6 +1569,7 @@ const server = http.createServer(async (req, res) => {
   // Web 控制台界面（已通过认证中间件保护，这里直接返回 HTML）
   if (pathname === '/trigger' && method === 'GET') {
     const availableScripts = await getAvailableScriptEntries();
+    const userDataFiles = await getAvailableUserDataFiles();
     const buttonsHtml = availableScripts.map(({ name, deletable }) => {
       const displayName = escapeHtml(getDisplayName(name));
       const safeScriptName = escapeHtml(name);
@@ -1442,6 +1580,14 @@ const server = http.createServer(async (req, res) => {
         </div>
       `;
     }).join('\n');
+
+    const userDataFilesHtml = userDataFiles.length > 0
+      ? userDataFiles.map(name => {
+          const safeName = escapeHtml(name);
+          const openUrl = `/file/view/${encodeURIComponent(name)}`;
+          return `<li><a href="${openUrl}" target="_blank" rel="noopener noreferrer">${safeName}</a></li>`;
+        }).join('')
+      : '<li>暂无 .json/.zip/.txt 文件</li>';
 
     let totalExecutions = history.length;
     let successCount = history.filter(h => h.success).length;
@@ -1455,7 +1601,7 @@ const server = http.createServer(async (req, res) => {
         <td>${escapeHtml(h.script)}</td>
         <td>${h.duration}秒</td>
         <td>${buildHistoryStatusHtml(h)}</td>
-        <td>${h.exitCode}</td>
+        <td class="history-final-result">${escapeHtml(h.finalResult || '-')}</td>
       </tr>
     `).join('');
 
@@ -1640,6 +1786,19 @@ const server = http.createServer(async (req, res) => {
               background: #f8fafc;
               border-radius: 12px;
             }
+            .user-files-list {
+              margin-top: 10px;
+              padding-left: 18px;
+              line-height: 1.8;
+            }
+            .user-files-list li {
+              margin-bottom: 2px;
+              word-break: break-all;
+            }
+            .user-files-list a {
+              color: #2563eb;
+              text-decoration: underline;
+            }
             .btn-small {
               background: #667eea;
               color: white;
@@ -1664,6 +1823,12 @@ const server = http.createServer(async (req, res) => {
               border-collapse: collapse;
               font-size: 0.85rem;
             }
+            .history-table col.col-no { width: 10%; }
+            .history-table col.col-time { width: 20%; }
+            .history-table col.col-script { width: 20%; }
+            .history-table col.col-duration { width: 10%; }
+            .history-table col.col-status { width: 10%; }
+            .history-table col.col-result { width: 30%; }
             .history-table th, .history-table td {
               border: 1px solid #ddd;
               padding: 8px;
@@ -1674,6 +1839,11 @@ const server = http.createServer(async (req, res) => {
               font-weight: 600;
             }
             .history-table tr:nth-child(even) { background: #f9f9f9; }
+            .history-final-result {
+              white-space: normal;
+              word-break: break-word;
+              line-height: 1.5;
+            }
             .history-status-btn {
               background: none;
               border: none;
@@ -1805,10 +1975,15 @@ const server = http.createServer(async (req, res) => {
               <div class="script-grid" id="buttonGrid">${buttonsHtml}</div>
 
               <div class="upload-area">
-                <strong>📤 上传新脚本 (.js)</strong>
-                <input type="file" id="uploadFile" accept=".js">
+                <strong>📤 文件上传</strong>
+                <input type="file" id="uploadFile" accept=".js,.json,.zip,.txt">
                 <button id="uploadBtn" class="btn-small">上传</button>
                 <span id="uploadMsg" style="margin-left: 10px;"></span>
+              </div>
+
+              <div class="upload-area">
+                <strong>📁 用户目录文件（/app/puppeteer_user_data/）</strong>
+                <ul class="user-files-list">${userDataFilesHtml}</ul>
               </div>
 
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
@@ -1842,11 +2017,19 @@ const server = http.createServer(async (req, res) => {
                 <span>⏱️ 平均耗时: <strong id="avgDuration">${avgDuration}</strong> 秒</span>
               </div>
 
-              <h2>📜 最近执行记录 (最多${MAX_HISTORY}条)</h2>
+              <h2>📜 最近执行记录 </h2>
               <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;">
                 <table class="history-table" id="historyTable">
+                  <colgroup>
+                    <col class="col-no">
+                    <col class="col-time">
+                    <col class="col-script">
+                    <col class="col-duration">
+                    <col class="col-status">
+                    <col class="col-result">
+                  </colgroup>
                   <thead>
-                    <tr><th>序号</th><th>时间</th><th>脚本</th><th>耗时</th><th>状态</th><th>退出码</th></tr>
+                    <tr><th>序号</th><th>时间</th><th>脚本</th><th>耗时</th><th>状态</th><th>最终结果</th></tr>
                   </thead>
                   <tbody id="historyBody">
                     ${historyRows}
@@ -2246,7 +2429,7 @@ const server = http.createServer(async (req, res) => {
                   const isRunning = !!state.isRunning;
                   const shuttingDown = !!state.shuttingDown;
                   const completedRunKey = state.lastRunResult
-                    ? \`\${state.lastRunResult.timestamp}|\${state.lastRunResult.script}|\${state.lastRunResult.duration}|\${state.lastRunResult.exitCode}|\${state.lastRunResult.success}\`
+                    ? \`\${state.lastRunResult.timestamp}|\${state.lastRunResult.script}|\${state.lastRunResult.duration}|\${state.lastRunResult.exitCode}|\${state.lastRunResult.success}|\${state.lastRunResult.finalResult || ''}\`
                     : '';
                   globalStatusSpan.innerText = shuttingDown ? '关闭中' : (isRunning ? '运行中' : '空闲');
                   if (isRunning) {
@@ -2264,7 +2447,8 @@ const server = http.createServer(async (req, res) => {
                     latestCompletedRunKey = completedRunKey;
                     refreshHistoryAndStats();
                     if (hasReceivedInitialState && !isRunning) {
-                      showToast(\`脚本 \${state.lastRunResult.script} 执行完成，退出码: \${state.lastRunResult.exitCode}，耗时 \${state.lastRunResult.duration} 秒\`, state.lastRunResult.success ? 'success' : 'error');
+                      const finalText = state.lastRunResult.finalResult || \`耗时 \${state.lastRunResult.duration} 秒\`;
+                      showToast(\`脚本 \${state.lastRunResult.script} 执行完成：\${finalText}\`, state.lastRunResult.success ? 'success' : 'error');
                     }
                   }
                   hasReceivedInitialState = true;
@@ -2305,7 +2489,7 @@ const server = http.createServer(async (req, res) => {
                     <td>\${escapeHtmlText(h.script)}</td>
                     <td>\${h.duration}秒</td>
                     <td>\${buildHistoryStatusCell(h)}</td>
-                    <td>\${h.exitCode}</td>
+                    <td class="history-final-result">\${escapeHtmlText(h.finalResult || '-')}</td>
                   </tr>
                 \`;
               });
@@ -2530,7 +2714,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /script/:filename, /events, /history, /history/detail`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });

@@ -1050,7 +1050,7 @@ async function updateAccount(username, password, verificationCode, accountIndex 
 
   if (!supabaseUrl || !supabaseKey) {
     console.log('❌ Supabase配置缺失，跳过数据上传');
-    return;
+    return { success: false, error: 'Supabase配置缺失' };
   }
 
   const supabase = createClient(supabaseUrl, supabaseKey);
@@ -1084,16 +1084,20 @@ async function updateAccount(username, password, verificationCode, accountIndex 
 
     if (error) {
       console.log(`❌ 上传失败: ${error.message}`);
-    } else {
-      console.log(`✅ 账号 ${username} 数据已更新到Supabase`);
-      console.log('\n' + '='.repeat(50));
+      return { success: false, error: `上传失败: ${error.message}` };
     }
+
+    console.log(`✅ 账号 ${username} 数据已更新到Supabase`);
+    console.log('\n' + '='.repeat(50));
+    return { success: true };
 
   } catch (error) {
     console.log(`❌ 更新账号 ${username} 失败:`, error.message);
     console.error(error.stack);
+    return { success: false, error: error.message || '脚本异常' };
   }
 }
+
 
 async function main() {
   const accountsJson = process.env.PDD_ACCOUNTS_JSON;
@@ -1104,23 +1108,34 @@ async function main() {
 
   try {
     const accounts = JSON.parse(accountsJson).accounts;
+    const failAccounts = [];
 
     for (const [accountIndex, account] of accounts.entries()) {
       const username = account.username;
       const password = process.env[`PASSWORD_${username.toUpperCase()}`];
       if (!password) {
         console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
+        failAccounts.push({ username, error: '密码未设置' });
         continue;
       }
 
-      await updateAccount(username, password, null, accountIndex);
+      const result = await updateAccount(username, password, null, accountIndex);
+      if (!result?.success) {
+        failAccounts.push({ username, error: result?.error || '未知错误' });
+      }
     }
 
-    console.log('\n🎉 所有账号更新完成');
+    if (failAccounts.length === 0) {
+      console.log('\n🎉 所有账号更新全部成功');
+    } else {
+      console.log('\n⚠️ 部分账号更新失败：');
+      failAccounts.forEach(item => console.log(`   - ${item.username}: ${item.error}`));
+    }
 
   } catch (error) {
     console.log('❌ 解析账号信息失败:', error.message);
   }
 }
+
 
 main().catch(console.error);

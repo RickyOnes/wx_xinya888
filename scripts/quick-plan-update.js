@@ -91,8 +91,7 @@ class PDDPlanAntiContentFetcher {
 
     // -------------------- 初始化浏览器 --------------------
     async init() {
-        console.log('🚀 启动浏览器...');
-        console.log(`   📁 用户数据目录: ${this.userDataDir}`);
+        console.log(`🚀 启动浏览器，📁 用户数据目录: ${this.userDataDir}`);
 
         try {
             await fs.promises.mkdir(this.userDataDir, { recursive: true });
@@ -116,14 +115,13 @@ class PDDPlanAntiContentFetcher {
             require('child_process').execSync('which google-chrome-stable', { stdio: 'ignore' });
             launchOptions.executablePath = '/usr/bin/google-chrome-stable';
             useSystemChrome = true;
-            console.log('   ✅ 将尝试使用系统 Chrome');
         } catch {
             console.log('   ℹ️ 系统 Chrome 未找到，将使用 Puppeteer 内置 Chromium');
         }
 
         try {
             this.browser = await puppeteer.launch(launchOptions);
-            if (useSystemChrome) console.log('   ✅ 系统 Chrome 启动成功');
+            if (useSystemChrome) console.log(`✅ 系统 Chrome 启动成功，📊 版本: ${await this.browser.version()}`);
         } catch (error) {
             if (useSystemChrome) {
                 console.log(`   ⚠️ 系统 Chrome 启动失败: ${error.message}`);
@@ -131,7 +129,7 @@ class PDDPlanAntiContentFetcher {
                 delete launchOptions.executablePath;
                 try {
                     this.browser = await puppeteer.launch(launchOptions);
-                    console.log('   ✅ 内置 Chromium 启动成功');
+                    console.log(`✅ 内置 Chromium 启动成功，📊 版本: ${await this.browser.version()}`);
                 } catch (fallbackError) {
                     console.error('❌ 所有浏览器启动尝试均失败:', fallbackError.message);
                     throw fallbackError;
@@ -156,7 +154,6 @@ class PDDPlanAntiContentFetcher {
         }, FIXED_NAVIGATOR_LANGUAGES);
 
         console.log(`🧬 指纹: viewport=${this.accountProfile.viewport.width}x${this.accountProfile.viewport.height}, UA片段=${this.accountProfile.userAgent.match(/Chrome\/\d+/)?.[0] || 'Chrome'}`);
-        console.log(`📊 浏览器版本: ${await this.browser.version()}`);
     }
 
     // -------------------- 请求监听 --------------------
@@ -194,7 +191,7 @@ class PDDPlanAntiContentFetcher {
             this._antiContentTimeout = null;
         }
         if (this._antiContentResolve) {
-            this._antiContentResolve = null;  // 丢弃 resolve，Promise 会一直被挂起但无影响
+            this._antiContentResolve = null;  // 丢弃 resolve，Promise 会被一直挂起但无影响
         }
         this.antiContentPromise = null;
     }
@@ -205,6 +202,209 @@ class PDDPlanAntiContentFetcher {
             this._antiContentResolve = resolve;
             this._antiContentTimeout = setTimeout(() => reject(new Error('anti-content 等待超时')), 60000);
         });
+    }
+
+    // -------------------- 密码登录（内部负责 anti-content 的清空与捕获）--------------------
+    async _doLogin() {
+        console.log('\n🌐 开始登录流程，从登录URL直接登录...');
+
+        // ★ 保存当前已有的 anti-content，用于失败回滚
+        const oldAntiContent = this.capturedData.antiContentPlan;
+
+        try {
+            console.log(`   📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
+            await this.page.goto(CONFIG.planLoginUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+            console.log('   ✅ 登录页面加载成功');
+
+            // 切换到"账号登录"标签
+            try {
+                const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
+                if (tabContainer) {
+                    const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
+                    if (items && items.length >= 2) {
+                        const secondClass = await this.page.evaluate(el => el.className, items[1]);
+                        if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
+                            await items[1].click().catch(() => {});
+                            console.log('   ✅ 已切换到账号登录标签');
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            const usernameEl = await this.page.$('#usernameId');
+            const passwordEl = await this.page.$('#passwordId');
+            if (usernameEl && passwordEl) {
+                await usernameEl.type(this.loginCredentials.username, { delay: 50 });
+                console.log('   ✅ 已输入用户名');
+                await passwordEl.type(this.loginCredentials.password, { delay: 50 });
+                console.log('   ✅ 已输入密码');
+
+                let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
+                if (!loginButton) {
+                    const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
+                    if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
+                }
+                if (loginButton) {
+                    const navigationPromise = this.page.waitForNavigation({
+                        waitUntil: 'domcontentloaded', timeout: 5000
+                    }).catch(() => null);
+                    await loginButton.click().catch(() => {});
+                    console.log('   ✅ 尝试点击登录按钮');
+
+                    // ★★★ 登录动作已触发，现在安全地放弃旧值并开始监听新值 ★★★
+                    this.capturedData.antiContentPlan = null;
+                    this._createAntiContentPromise();
+                    console.log('   🔄 登录请求已发出，已重置 anti-content 等待器');
+
+                    await navigationPromise;
+                } else {
+                    await this.page.keyboard.press('Enter').catch(() => {});
+                    console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
+
+                    // 同样重置监听
+                    this.capturedData.antiContentPlan = null;
+                    this._createAntiContentPromise();
+                    console.log('   🔄 登录请求已发出，已重置 anti-content 等待器');
+                }
+            }
+
+            console.log('   ⏳ 等待登录处理...');
+            await new Promise(r => setTimeout(r, 1000));
+            const startTime = Date.now();
+            while (Date.now() - startTime < 90000) {
+                await new Promise(r => setTimeout(r, 2000));
+                let currentUrl = '';
+                try {
+                    currentUrl = this.page.url();
+                } catch (e) { continue; }
+
+                if (currentUrl.includes('/order/management')) {
+                    console.log('   ✅ 登录成功，已进入订单查询页面');
+                    this._credentialRefreshed = true;
+
+                    // 等待本次创建的 anti-content Promise（最多 15 秒）
+                    console.log('   ⏳ 等待捕获新的 anti-content...');
+                    try {
+                        await Promise.race([
+                            this.antiContentPromise,
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('超时')), 15000))
+                        ]);
+                        console.log('   ✅ 已成功捕获新的 anti-content');
+                    } catch (e) {
+                        console.log('   ⚠️ 登录后未在 15 秒内捕获到 anti-content');
+                    }
+                    return true;
+                }
+
+                const vcodeInput = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
+                if (vcodeInput) {
+                    console.log('   📱 需要短信验证码，将尝试使用本地Cookie注入');
+                    // ★ 登录失败，恢复旧 anti-content
+                    if (oldAntiContent) {
+                        this.capturedData.antiContentPlan = oldAntiContent;
+                        console.log('   ↩️ 已恢复之前的 anti-content（旧值仍可用）');
+                    }
+                    return false;
+                }
+            }
+            console.log('   ❌ 登录超时');
+            // ★ 超时也恢复旧值
+            if (oldAntiContent) {
+                this.capturedData.antiContentPlan = oldAntiContent;
+                console.log('   ↩️ 登录超时，已恢复之前的 anti-content');
+            }
+            return false;
+        } catch (error) {
+            console.log('   ❌ 登录过程出错:', error.message);
+            if (oldAntiContent) {
+                this.capturedData.antiContentPlan = oldAntiContent;
+                console.log('   ↩️ 异常发生，已恢复之前的 anti-content');
+            }
+            return false;
+        }
+    }
+
+    // -------------------- 兜底注入本地Cookie，并立即尝试密码登录刷新凭证 --------------------
+    async _fallbackLogin() {
+        // 注意：_fallbackLogin 不再需要手动清空 antiContent，因为 _doLogin 内部会处理
+        this._credentialRefreshed = false;
+
+        const cookieFile = path.resolve(`${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`);
+
+        // 自动从备份目录恢复（如果挂载卷为空）
+        if (!fs.existsSync(cookieFile)) {
+            const defaultFile = path.join('/app/cookie_defaults', `cookie_${this.loginCredentials.username}.json`);
+            if (fs.existsSync(defaultFile)) {
+                try {
+                    fs.copyFileSync(defaultFile, cookieFile);
+                    console.log(`   📋 已从默认备份复制 cookie: ${this.loginCredentials.username}`);
+                } catch (e) {
+                    console.log(`   ⚠️ 复制默认 cookie 失败: ${e.message}`);
+                    this._clearAntiContentPromise(); //新增：清理可能残留的定时器
+                    return false;
+                }        
+            } else {
+                console.log('   ℹ️ 无本地 cookie 文件，且备份目录也不存在');
+                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
+                return false;
+            }
+        }    
+        console.log('   📂 检测到本地Cookie文件，尝试注入并立即密码登录...');
+        let cookies;
+        try {
+            cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
+        } catch (e) {
+            console.log('   ❌ 读取 cookie 文件失败:', e.message);
+            this._clearAntiContentPromise();  //新增：清理可能残留的定时器
+            return false;
+        }
+
+        // 注入所有 Cookie
+        for (const c of cookies) {
+            try {
+                await this.page.setCookie({
+                    name: c.name,
+                    value: c.value,
+                    domain: c.domain,
+                    path: c.path,
+                    secure: c.secure,
+                    httpOnly: c.httpOnly,
+                    // 只有在原 Cookie 中存在 sameSite 时才设置，否则省略（使用浏览器默认 Lax）
+                    ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+                    // 保留 priority，有的 Cookie 可能有
+                    ...(c.priority ? { priority: c.priority } : {}),
+                    expires: (c.expires && c.expires > 0) ? c.expires : undefined
+                });
+                console.log(`   ✅ 设置 Cookie: ${c.name}`,`${c.value}`,`${c.domain}`,`${c.path}`,`${c.expires ? new Date(c.expires * 1000).toLocaleString() : 'Session'}, secure:${c.secure}, httpOnly:${c.httpOnly}, sameSite:${c.sameSite || ''}`);
+            } catch (e) {
+                console.log(`   跳过无法设置的 Cookie: ${c.name}`);
+            }
+        }
+
+        // 立即尝试密码登录（内部会重置 anti-content 并等待）
+        const refreshed = await this._doLogin();
+        if (refreshed) {
+            // _doLogin 内部已经保证新 anti-content 已捕获（或至少等待过）
+            console.log('   ✅ 刷新后的凭证已就绪');
+            this._credentialRefreshed = true;
+            return true;
+        }
+
+        // 密码登录失败，回退检测旧 Cookie 是否仍有效
+        console.log('   ⚠️ 主动登录失败，检查旧Cookie是否仍有效...');
+        try {
+            await this.page.goto(CONFIG.planDirectUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            const url = this.page.url();
+            if (url.includes('/order/management')) {
+                console.log('   ✅ 旧Cookie仍然有效，继续使用（凭证未刷新）');
+                return true;
+            }
+        } catch (e) {
+            console.log('   ❌ 访问订单页失败:', e.message);
+        }
+        console.log('   ❌ 旧Cookie也无效');
+        return false;
     }
 
     // -------------------- 会话检测与自动登录 --------------------
@@ -252,169 +452,9 @@ class PDDPlanAntiContentFetcher {
         }
     }
 
-    async _doLogin() {
-        console.log('\n🌐 开始登录流程，从登录URL直接登录...');
-        try {
-            console.log(`   📝 导航到登录URL: ${CONFIG.planLoginUrl}`);
-            await this.page.goto(CONFIG.planLoginUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-            console.log('   ✅ 登录页面加载成功');
-
-            // 切换到"账号登录"标签
-            try {
-                const tabContainer = await this.page.$('.Common_operationTabs__3TW7c');
-                if (tabContainer) {
-                    const items = await this.page.$$('.Common_operationTabs__3TW7c .Common_item__3diIn');
-                    if (items && items.length >= 2) {
-                        const secondClass = await this.page.evaluate(el => el.className, items[1]);
-                        if (!secondClass || !secondClass.includes('Common_checked__1oLdj')) {
-                            await items[1].click().catch(() => {});
-                            console.log('   ✅ 已切换到账号登录标签');
-                            await new Promise(r => setTimeout(r, 500));
-                        }
-                    }
-                }
-            } catch (e) {}
-
-            const usernameEl = await this.page.$('#usernameId');
-            const passwordEl = await this.page.$('#passwordId');
-            if (usernameEl && passwordEl) {
-                await usernameEl.type(this.loginCredentials.username, { delay: 50 });
-                console.log('   ✅ 已输入用户名');
-                await passwordEl.type(this.loginCredentials.password, { delay: 50 });
-                console.log('   ✅ 已输入密码');
-
-                let loginButton = await this.page.$('button[data-testid="beast-core-button"]');
-                if (!loginButton) {
-                    const xpathBtn = await this.page.$x("//button[contains(., '登录')]");
-                    if (xpathBtn && xpathBtn.length > 0) loginButton = xpathBtn[0];
-                }
-                if (loginButton) {
-                    const navigationPromise = this.page.waitForNavigation({
-                        waitUntil: 'domcontentloaded', timeout: 5000
-                    }).catch(() => null);
-                    await loginButton.click().catch(() => {});
-                    console.log('   ✅ 尝试点击登录按钮');
-                    await navigationPromise;
-                } else {
-                    await this.page.keyboard.press('Enter').catch(() => {});
-                    console.log('   ℹ️ 未找到明确的登录按钮，已尝试按 Enter');
-                }
-            }
-
-            console.log('   ⏳ 等待登录处理...');
-            await new Promise(r => setTimeout(r, 1000));
-            const startTime = Date.now();
-            while (Date.now() - startTime < 90000) {
-                await new Promise(r => setTimeout(r, 2000));
-                let currentUrl = '';
-                try {
-                    currentUrl = this.page.url();
-                } catch (e) { continue; }
-                if (currentUrl.includes('/order/management')) {
-                    console.log('   ✅ 登录成功，已进入订单查询页面');
-                    this._credentialRefreshed = true;   // 新增：标记凭证已刷新
-                    return true;
-                }
-                const vcodeInput = await this.page.$('input[placeholder="请输入短信验证码"]').catch(() => null);
-                if (vcodeInput) {
-                    console.log('   📱 需要短信验证码，将尝试使用本地Cookie注入');
-                    return false;
-                }
-            }
-            console.log('   ❌ 登录超时');
-            return false;
-        } catch (error) {
-            console.log('   ❌ 登录过程出错:', error.message);
-            return false;
-        }
-    }
-
-    // -------------------- 兜底注入本地Cookie，并立即尝试密码登录刷新凭证 --------------------
-    async _fallbackLogin() {
-        this.capturedData.antiContentPlan = null;
-        this._createAntiContentPromise();
-        this._credentialRefreshed = false;
-
-        const cookieFile = path.resolve(`${this.userDataDir}/../cookie_${this.loginCredentials.username}.json`);
-
-        // 自动从备份目录恢复（如果挂载卷为空）
-        if (!fs.existsSync(cookieFile)) {
-            const defaultFile = path.join('/app/cookie_defaults', `cookie_${this.loginCredentials.username}.json`);
-            if (fs.existsSync(defaultFile)) {
-                try {
-                    fs.copyFileSync(defaultFile, cookieFile);
-                    console.log(`   📋 已从默认备份复制 cookie: ${this.loginCredentials.username}`);
-                } catch (e) {
-                    console.log(`   ⚠️ 复制默认 cookie 失败: ${e.message}`);
-                    this._clearAntiContentPromise(); //新增：清理可能残留的定时器
-                    return false;
-                }        
-            } else {
-                console.log('   ℹ️ 无本地 cookie 文件，且备份目录也不存在');
-                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
-                return false;
-            }
-        }    
-        console.log('   📂 检测到本地Cookie文件，尝试注入并立即密码登录...');
-        let cookies;
-        try {
-            cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
-        } catch (e) {
-            console.log('   ❌ 读取 cookie 文件失败:', e.message);
-            this._clearAntiContentPromise();  //新增：清理可能残留的定时器
-            return false;
-        }
-
-        // 注入所有 Cookie
-        for (const c of cookies) {
-            try {
-                await this.page.setCookie({
-                    name: c.name, value: c.value, domain: c.domain, path: c.path,
-                    secure: c.secure, httpOnly: c.httpOnly,
-                    sameSite: c.sameSite || 'Strict',
-                    expires: (c.expires && c.expires > 0) ? c.expires : undefined
-                });
-            } catch (e) {
-                console.log(`   跳过无法设置的 Cookie: ${c.name}`);
-                this._clearAntiContentPromise(); //新增：清理可能残留的定时器
-            }
-        }
-
-        // 立即尝试密码登录
-        const refreshed = await this._doLogin();
-        if (refreshed) {
-            console.log('   ⏳ 等待新会话的 anti-content...');
-            this.capturedData.antiContentPlan = null;
-            this._createAntiContentPromise();
-            try {
-                await this.antiContentPromise;
-                console.log('   ✅ 已捕获刷新后的 anti-content');
-            } catch (e) {
-                console.log('   ⚠️ 刷新后未捕获到 anti-content，但仍将使用新 Cookie');
-            }
-            this._credentialRefreshed = true;
-            return true;
-        }
-
-        // 密码登录失败，回退检测旧 Cookie 是否仍有效
-        console.log('   ⚠️ 主动登录失败，检查旧Cookie是否仍有效...');
-        try {
-            await this.page.goto(CONFIG.planDirectUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            const url = this.page.url();
-            if (url.includes('/order/management')) {
-                console.log('   ✅ 旧Cookie仍然有效，继续使用（凭证未刷新）');
-                return true;
-            }
-        } catch (e) {
-            console.log('   ❌ 访问订单页失败:', e.message);
-        }
-        console.log('   ❌ 旧Cookie也无效');
-        return false;
-    }
-
     // -------------------- Cookie 操作 --------------------
     async captureCookies() {
-        console.log('\n🍪 捕获Cookies...');
+        console.log('🍪 捕获Cookies...');
         const cookies = await this.page.cookies();
         this.capturedData.allCookies = cookies;
         let cookieStr = '';
@@ -449,7 +489,7 @@ class PDDPlanAntiContentFetcher {
     }
 
     // -------------------- 续期相关 --------------------
-    async checkTokenExpiry(thresholdSeconds = 14400) {
+    async checkTokenExpiry(thresholdSeconds = 7200) {
         const cookies = await this.page.cookies();
         const token = cookies.find(c => c.name === 'windows_app_shop_token_23');
         if (!token || token.expires <= 0) return false;
@@ -467,29 +507,17 @@ class PDDPlanAntiContentFetcher {
 
     async renewCookies() {
         console.log('🔄 主动续期：开始重新登录...');
+        // 直接调用 _doLogin，它内部会清空旧 anti-content 并等待新值
         const loginSuccess = await this._doLogin();
         if (!loginSuccess) {
             console.log('   ❌ 续期登录失败（可能验证码），放弃续期');
             return false;
         }
 
-        console.log('   ⏳ 等待新会话的 anti-content...');
-        this.capturedData.antiContentPlan = null;
-        this._createAntiContentPromise();
-
-        try {
-            await this.antiContentPromise;
-            console.log('   ✅ 已捕获续期后的 anti-content');
-            // 捕获成功：执行完整保存
-            await this.captureCookies();
-            await this.exportCookies();
-            console.log('   ✅ 主动续期完成，Cookie 文件已更新');
-        } catch (e) {
-            // 捕获超时，但登录已成功，只执行 exportCookies
-            console.log('   ⚠️ 续期后未捕获到 anti-content，仅导出 Cookie');
-            await this.exportCookies();
-        }
-
+        // _doLogin 内部已经等待过 anti-content，这里直接捕获 cookie 并导出即可
+        await this.captureCookies();
+        await this.exportCookies();
+        console.log('   ✅ 主动续期完成，Cookie 文件已更新');
         return true;
     }
 
@@ -555,7 +583,7 @@ class PDDPlanAntiContentFetcher {
 
             // 主动续期检查，但刚刚刷新过凭证则跳过
             if (!this._credentialRefreshed) {
-                const shouldRenew = await this.checkTokenExpiry(14400);
+                const shouldRenew = await this.checkTokenExpiry(7200); // 2小时 = 7200秒
                 if (shouldRenew) {
                     await this.renewCookies();
                 }
@@ -585,12 +613,11 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!supabaseUrl || !supabaseKey) {
         console.log('❌ Supabase配置缺失，跳过数据上传');
-        return false;   // 未上传
+        return { success: false, error: 'Supabase配置缺失' };
     }
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     try {
-        console.log('🔍 开始浏览器流程...');
         const fetcher = new PDDPlanAntiContentFetcher(
             { username, password },
             `./puppeteer_user_data/${username}`,
@@ -612,20 +639,20 @@ async function updatePlanAntiContent(username, password, accountIndex = 0) {
 
             if (error) {
                 console.log(`❌ 更新失败: ${error.message}`);
-                return false;
+                return { success: false, error: `Supabase更新失败: ${error.message}` };
             } else {
                 console.log(`✅ 账号 ${username} 的anti_content、cookie_string已更新到Supabase`);
                 console.log('\n' + '='.repeat(50));
-                return true;
+                return { success: true };
             }
         } else {
             console.log(`⚠️ 未捕获 anti-content，跳过上传`);
-            return false;
+            return { success: false, error: '未捕获 anti-content' };
         }
     } catch (error) {
         console.log(`❌ 更新账号 ${username} 失败:`, error.message);
         console.error(error.stack);
-        return false;
+        return { success: false, error: `脚本异常: ${error.message}` };
     }
 }
 
@@ -643,30 +670,32 @@ async function main() {
 
     try {
         const accounts = JSON.parse(accountsJson).accounts;
-        const failAccounts = [];
+        const failAccounts = []; // 改为对象数组 { username, error }
 
         for (const [accountIndex, account] of accounts.entries()) {
             const username = account.username;
             const password = process.env[`PASSWORD_${username.toUpperCase()}`];
             if (!password) {
                 console.log(`❌ 账号 ${username} 的密码未设置，跳过`);
-                failAccounts.push(username);
+                failAccounts.push({ username, error: '密码未设置' });
                 continue;
             }
 
-            const ok = await updatePlanAntiContent(username, password, accountIndex);
-            if (!ok) {
-                console.log(`❌ 账号 ${username} 更新失败，请检查上方详细日志`);
-                failAccounts.push(username);
+            const result = await updatePlanAntiContent(username, password, accountIndex);
+            if (!result.success) {
+                console.log(`❌ 账号 ${username} 更新失败: ${result.error}`);
+                failAccounts.push({ username, error: result.error });
             }
         }
 
         if (failAccounts.length === 0) {
-            console.log('🎉 所有账号更新全部成功！'+'\n');
+            console.log('🎉 所有账号更新全部成功！' + '\n');
         } else {
-            console.log(`⚠️ 部分账号更新失败：${failAccounts.join('、')}\n`);
+            console.log(`⚠️ 部分账号更新失败：`);
+            failAccounts.forEach(f => console.log(`   - ${f.username}: ${f.error}`));
+            console.log();
         }
-        console.log('='.repeat(50)+'\n');
+        console.log('='.repeat(50) + '\n');
 
         const endTime = Date.now();
         const duration = Math.floor((endTime - startTime) / 1000);

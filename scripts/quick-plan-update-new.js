@@ -475,8 +475,14 @@ async function main() {
     const results = await runAccountsWithConcurrency(runnable, concurrency, runtimeContext);
     const uploadSummary = await batchUploadAccountData(supabase, results);
     const failed = results.filter(r => r && !r.success && !r.skipped).concat(uploadSummary.failedResults);
-    if (failed.length) { console.log('⚠️ 失败汇总:'); failed.forEach(r => console.log(` - ${r.username}: ${r.reason || '未知'}`)); }
-    console.log(`🎉 完成 (成功上传: ${uploadSummary.successCount}/${results.length})`);
+    if (failed.length === 0) {
+        console.log('\n🎉 所有账号更新全部成功');
+    } else {
+        console.log('\n⚠️ 部分账号更新失败：');
+        failed.forEach(r => console.log(`   - ${r.username}: ${r.reason || '未知'}`));
+    }
+    console.log(`📊 上传统计: ${uploadSummary.successCount}/${results.length}`);
+
     console.log(`脚本结束时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
     console.log(`总运行时长: ${Math.floor((Date.now() - start) / 1000)} 秒`);
     console.log(`==========================================`);
