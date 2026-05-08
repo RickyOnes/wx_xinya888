@@ -707,4 +707,14 @@ async function main() {
     }
 }
 
-main().catch(console.error);
+main()
+    .then(() => {
+        // 所有业务逻辑已完成（含 close() 后的日志输出），主动退出，不等待 Chrome 进程缓慢释放
+        setTimeout(() => {
+            process.exit(0);
+        }, 200); // 给最后一句日志一点时间输出到 stdout
+    })
+    .catch(err => {
+        console.error('[脚本进程] 致命异常：', err);
+        process.exit(1);
+    });
