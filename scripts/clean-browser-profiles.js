@@ -16,6 +16,11 @@ const BROWSER_ROOT_MARKERS = ['Default', 'Local State', 'First Run', 'Last Versi
 
 // 需要清空内容（但保留文件夹名）的目录列表（相对于浏览器根目录）,已优化！！
 const SAFE_DIRS_TO_EMPTY = [
+  // NOTE: 不再清空 Local Storage / WebStorage / Session Storage / Web Applications，否则会触发风控而要验证码
+  // 'Default/Local Storage',
+  // 'Default/Session Storage',
+  // 'Default/WebStorage',
+  // 'Default/Web Applications',
   'Default/Cache',
   'Default/Code Cache',
   'Default/GPUCache',
@@ -26,12 +31,8 @@ const SAFE_DIRS_TO_EMPTY = [
   'Default/DawnGraphiteCache',
   'Default/GPU Cache',
   'Default/Sessions',
-  'Default/Web Applications',
   'Default/shared_proto_db',
-  'Default/Local Storage',
-  'Default/Session Storage',
   'Default/Shared Dictionary',
-  'Default/WebStorage',
   'Default/Extension State',
   'Default/Extension Scripts',
   'Default/Extension Rules',
@@ -59,6 +60,7 @@ const SAFE_DIRS_TO_EMPTY = [
   'SSLErrorAssistant',
   'AmountExtractionHeuristicRegexes',
   'CaptchaProviders',
+  'Dictionaries',
   'Crash Reports'
 ];
 
@@ -233,7 +235,3 @@ console.log('\n=== 清理完成 ===');
 console.log(`浏览器目录: ${summary.rootsFound}`);
 console.log(`清空目录数: ${summary.dirsEmptied}`);
 console.log(`失败次数: ${summary.failed}`);
-
-if (!dryRun) {
-  console.log('\n建议在浏览器完全关闭后执行，效果最好。');
-}

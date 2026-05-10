@@ -4,6 +4,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { URL } = require('url');
 const fs = require('fs').promises;
+const fssync = require('fs'); // 用于流式读写
 const path = require('path');
 const cron = require('node-cron');
 const Busboy = require('busboy');
@@ -22,7 +23,7 @@ const SSE_RETRY_INTERVAL = 5000;
 const STOP_FORCE_KILL_DELAY = 15000;
 const ALLOWED_UPLOAD_EXTENSIONS = new Set(['.js', '.json', '.zip', '.txt']);
 const USER_DATA_VIEWABLE_EXTENSIONS = new Set(['.json', '.zip', '.txt']);
-const sseTaskClients = {}; // 新增全局 taskId→客户端的SSE订阅表
+const sseTaskClients = {}; // taskId -> [res,...]
 
 // Supabase 配置（从环境变量读取）
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -564,6 +565,169 @@ function getStatePayload() {
 function broadcastState() {
   sendSSE('state', getStatePayload());
 }
+
+// === ADDED: 异步文件任务队列实现（zip / unzip） ===
+// safeBasename 用于校验输入，禁止 .. 路径穿越
+function safeBasename(name) {
+  if (!name || typeof name !== 'string') return null;
+  if (/(^|\/)\.\.(\/|$)/.test(name)) return null;
+  const b = path.basename(name);
+  return b || null;
+}
+
+// 异步任务存储与队列
+const asyncTasks = new Map(); // taskId -> task
+const asyncTaskQueue = [];
+let asyncRunning = 0;
+const MAX_ASYNC_CONCURRENCY = Number(process.env.MAX_ASYNC_CONCURRENCY || 1);
+
+// 广播 task 更新（全局 SSE 和 task-specific SSE）
+function broadcastTaskUpdate(task) {
+  const payload = {
+    id: task.id,
+    type: task.type,
+    status: task.status,
+    startedAt: task.startedAt || null,
+    endedAt: task.endedAt || null,
+    exitCode: typeof task.exitCode === 'number' ? task.exitCode : null,
+    stdout: (task.stdout || '').slice(-2000),
+    stderr: (task.stderr || '').slice(-2000)
+  };
+  try { sendSSE('task-update', payload); } catch(e){}
+  // task-specific clients
+  if (task.id && sseTaskClients[task.id]) {
+    const message = `event: task-update\ndata: ${JSON.stringify(payload)}\n\n`;
+    sseTaskClients[task.id] = (sseTaskClients[task.id] || []).filter(client => {
+      try { client.write(message); return true; } catch (err) { return false; }
+    });
+  }
+}
+
+function processAsyncQueue() {
+  if (asyncRunning >= MAX_ASYNC_CONCURRENCY) return;
+  if (asyncTaskQueue.length === 0) return;
+  const task = asyncTaskQueue.shift();
+  runAsyncTask(task).catch(err => {
+    console.error('异步任务运行失败:', err);
+  });
+}
+
+function scheduleAsyncTask(task) {
+  asyncTasks.set(task.id, task);
+  asyncTaskQueue.push(task);
+  broadcastTaskUpdate({ ...task, status: 'queued' });
+  processAsyncQueue();
+  return task.id;
+}
+
+// 执行一个任务（spawn 子进程执行 zip/unzip）
+function runAsyncTask(task) {
+  return new Promise(async (resolve) => {
+    asyncRunning++;
+    task.status = 'running';
+    task.startedAt = new Date().toISOString();
+    task.stdout = task.stdout || '';
+    task.stderr = task.stderr || '';
+    broadcastTaskUpdate(task);
+
+    let cmd = null;
+    let args = [];
+
+    try {
+      if (task.type === 'zip') {
+        const name = task.params.name;
+        const dirPath = path.join(USER_DATA_SCRIPTS_DIR, name);
+        const zipPath = path.join(USER_DATA_SCRIPTS_DIR, `${name}.zip`);
+        try { await fs.access(dirPath); } catch (e) { throw new Error('目标目录不存在'); }
+        try { await fs.unlink(zipPath).catch(()=>{}); } catch(e){}
+        cmd = 'zip';
+        args = ['-rq', zipPath, dirPath];
+        task._resultTarget = zipPath;
+      } else if (task.type === 'unzip') {
+        const zipFile = task.params.zip;
+        const dest = task.params.dest || path.basename(zipFile, '.zip');
+        const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipFile);
+        const destPath = path.join(USER_DATA_SCRIPTS_DIR, dest);
+        try { await fs.access(zipPath); } catch (e) { throw new Error('zip 文件不存在'); }
+        try { await fs.mkdir(destPath, { recursive: true }); } catch(e){}
+        cmd = 'unzip';
+        args = ['-o', zipPath, '-d', destPath];
+        task._resultTarget = destPath;
+      } else {
+        throw new Error('未知任务类型');
+      }
+    } catch (err) {
+      task.status = 'failed';
+      task.endedAt = new Date().toISOString();
+      task.stderr = (task.stderr || '') + '\n' + err.message;
+      asyncRunning--;
+      broadcastTaskUpdate(task);
+      resolve(task);
+      processAsyncQueue();
+      return;
+    }
+
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => {
+      const s = d.toString();
+      task.stdout = (task.stdout || '') + s;
+      broadcastTaskUpdate(task);
+    });
+    child.stderr.on('data', (d) => {
+      const s = d.toString();
+      task.stderr = (task.stderr || '') + s;
+      broadcastTaskUpdate(task);
+    });
+
+    child.on('close', async (code) => {
+      task.exitCode = code;
+      task.endedAt = new Date().toISOString();
+      if (code === 0) {
+        task.status = 'success';
+        try {
+          if (task.type === 'zip' && task._resultTarget) {
+            const bn = path.basename(task._resultTarget);
+            sendSSE('file-change', { action: 'upload', filename: bn, type: 'file' });
+          } else if (task.type === 'unzip' && task._resultTarget) {
+            sendSSE('file-change', { action: 'upload', filename: path.basename(task._resultTarget), type: 'file' });
+          }
+        } catch(e){}
+      } else {
+        task.status = 'failed';
+      }
+      asyncRunning--;
+      broadcastTaskUpdate(task);
+      resolve(task);
+      processAsyncQueue();
+    });
+
+    child.on('error', (err) => {
+      task.status = 'failed';
+      task.stderr = (task.stderr || '') + '\n' + err.message;
+      task.endedAt = new Date().toISOString();
+      asyncRunning--;
+      broadcastTaskUpdate(task);
+      resolve(task);
+      processAsyncQueue();
+    });
+  });
+}
+
+function getTaskSummary(taskId) {
+  const t = asyncTasks.get(taskId);
+  if (!t) return null;
+  return {
+    id: t.id,
+    type: t.type,
+    status: t.status,
+    startedAt: t.startedAt || null,
+    endedAt: t.endedAt || null,
+    exitCode: typeof t.exitCode === 'number' ? t.exitCode : null,
+    stdout: (t.stdout || '').slice(-2000),
+    stderr: (t.stderr || '').slice(-2000)
+  };
+}
+// === ADDED END ===
 
 function requestChildStop(reason) {
   if (!currentChild) {
@@ -1233,7 +1397,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/profiles'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1387,17 +1551,138 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 上传脚本
+  // === ADDED: /file/profiles 列出 USER_DATA_SCRIPTS_DIR 下的子目录（用于压缩选择） ===
+  if (pathname === '/file/profiles' && method === 'GET') {
+    try {
+      const entries = await fs.readdir(USER_DATA_SCRIPTS_DIR, { withFileTypes: true });
+      const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ profiles: dirs }));
+      return;
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ profiles: [] }));
+        return;
+      }
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '读取目录失败: ' + err.message }));
+      return;
+    }
+  }
+
+  // === ADDED: POST /file/zip-async body: { name: "wangxh03" } ===
+  if (pathname === '/file/zip-async' && method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { name } = JSON.parse(body || '{}');
+        const safeName = safeBasename(name);
+        if (!safeName) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的目录名' }));
+          return;
+        }
+        const dirPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+        try { await fs.access(dirPath); } catch (e) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '目标目录不存在' }));
+          return;
+        }
+        const taskId = createHistoryId();
+        const task = {
+          id: taskId, type: 'zip',
+          params: { name: safeName },
+          status: 'queued', stdout: '', stderr: '',
+          createdAt: new Date().toISOString()
+        };
+        scheduleAsyncTask(task);
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true, taskId }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '参数解析失败' }));
+      }
+    });
+    return;
+  }
+
+  // === ADDED: POST /file/unzip-async body: { zip: "wangxh03.zip" } ===
+  if (pathname === '/file/unzip-async' && method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { zip, dest } = JSON.parse(body || '{}');
+        const safeZip = safeBasename(zip);
+        if (!safeZip || !safeZip.endsWith('.zip')) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的 zip 文件名' }));
+          return;
+        }
+        const zipPath = path.join(USER_DATA_SCRIPTS_DIR, safeZip);
+        try { await fs.access(zipPath); } catch (e) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'zip 文件不存在' }));
+          return;
+        }
+        const safeDest = safeBasename(dest || path.basename(safeZip, '.zip'));
+        if (!safeDest) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的目标目录名' }));
+          return;
+        }
+        const taskId = createHistoryId();
+        const task = {
+          id: taskId, type: 'unzip',
+          params: { zip: safeZip, dest: safeDest },
+          status: 'queued', stdout: '', stderr: '',
+          createdAt: new Date().toISOString()
+        };
+        scheduleAsyncTask(task);
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true, taskId }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '参数解析失败' }));
+      }
+    });
+    return;
+  }
+
+  // === ADDED: GET /file/task/:id 查询任务状态（轮询备用） ===
+  if (pathname.startsWith('/file/task/') && method === 'GET') {
+    const id = pathname.slice('/file/task/'.length);
+    if (!id) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '缺少 taskId' }));
+      return;
+    }
+    const summary = getTaskSummary(id);
+    if (!summary) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未找到任务' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(summary));
+    return;
+  }
+
+  // 上传脚本/文件（改进：等待写入完成并广播 SSE）
   if (pathname === '/upload' && method === 'POST') {
     const busboy = Busboy({
       headers: req.headers,
-      limits: { fileSize: 10 * 1024 * 1024 },
+      limits: { fileSize: 50 * 1024 * 1024 }, // 提高上传上限为 50MB（可根据需要调整）
       defCharset: 'utf-8'
     });
-    let savedFile = null;
+
+    const pendingWrites = [];
+    const savedFiles = [];
     let errorMsg = null;
 
-    busboy.on('file', (fieldname, file, filenameOrInfo) => {
+    busboy.on('file', (fieldname, fileStream, filenameOrInfo) => {
       let rawFilename = '';
       if (filenameOrInfo && typeof filenameOrInfo === 'object') {
         rawFilename = filenameOrInfo.filename || '';
@@ -1416,20 +1701,29 @@ const server = http.createServer(async (req, res) => {
 
       const ext = path.extname(safeFilename).toLowerCase();
       if (!safeFilename || !ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
-        file.resume();
+        fileStream.resume();
         errorMsg = `仅允许上传 .js/.json/.zip/.txt 文件，收到: "${safeFilename || '空'}"`;
         return;
       }
       const baseName = path.basename(safeFilename);
       const savePath = path.join(USER_DATA_SCRIPTS_DIR, baseName);
-      const writeStream = require('fs').createWriteStream(savePath);
-      file.pipe(writeStream);
-      savedFile = { success: true, filename: baseName, path: savePath };
-      writeStream.on('error', (err) => {
+
+      try {
+        const writeStream = fssync.createWriteStream(savePath);
+        const p = new Promise((resolveWrite, rejectWrite) => {
+          writeStream.on('finish', () => resolveWrite());
+          writeStream.on('close', () => resolveWrite());
+          writeStream.on('error', (err) => rejectWrite(err));
+          fileStream.on('error', (err) => rejectWrite(err));
+        });
+        pendingWrites.push(p);
+
+        fileStream.pipe(writeStream);
+        savedFiles.push({ filename: baseName, path: savePath, ext });
+      } catch (err) {
         console.error('写入文件失败:', err);
         errorMsg = '文件写入失败: ' + err.message;
-        savedFile = null;
-      });
+      }
     });
 
     busboy.on('error', (err) => {
@@ -1437,13 +1731,34 @@ const server = http.createServer(async (req, res) => {
       errorMsg = '上传解析失败: ' + err.message;
     });
 
-    busboy.on('finish', () => {
+    busboy.on('finish', async () => {
       if (errorMsg) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: errorMsg }));
-      } else if (savedFile) {
+        return;
+      }
+
+      // 等待所有写入完成
+      try {
+        await Promise.all(pendingWrites);
+      } catch (err) {
+        console.error('等待写入完成时出错:', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '文件写入失败: ' + (err.message || err) }));
+        return;
+      }
+
+      if (savedFiles.length > 0) {
+        // 返回第一个文件信息（保持与原先行为一致）
+        const primary = savedFiles[0];
+        // 广播文件变更事件（upload）
+        try {
+          const type = primary.ext === '.js' ? 'script' : 'file';
+          sendSSE('file-change', { action: 'upload', filename: primary.filename, type });
+        } catch (e) { /* 忽略 SSE 广播错误 */ }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: '上传成功', file: savedFile.filename }));
+        res.end(JSON.stringify({ message: '上传成功', file: primary.filename }));
       } else {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: '未收到有效文件' }));
@@ -1484,15 +1799,36 @@ const server = http.createServer(async (req, res) => {
     try {
       await fs.access(targetPath);
       if (ext === '.zip') {
-        const buffer = await fs.readFile(targetPath);
-        res.writeHead(200, {
-          'Content-Type': 'application/zip',
-          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`
-        });
-        res.end(buffer);
-        return;
+        // 使用流式传输避免一次性读入内存
+        try {
+          const stat = await fs.stat(targetPath);
+          res.writeHead(200, {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+            'Content-Length': String(stat.size),
+            'Cache-Control': 'no-cache'
+          });
+          const stream = fssync.createReadStream(targetPath);
+          stream.on('error', (err) => {
+            console.error('文件流出错:', err.message);
+            try { res.destroy(); } catch(_) {}
+          });
+          stream.pipe(res);
+          return;
+        } catch (err) {
+          console.error('流式读取 ZIP 失败:', err.message);
+          // 回退到一次性读取（极少情况）
+          const buffer = await fs.readFile(targetPath);
+          res.writeHead(200, {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`
+          });
+          res.end(buffer);
+          return;
+        }
       }
 
+      // 小文件直接读取返回（json/txt）
       const content = await fs.readFile(targetPath, 'utf8');
       const contentType = ext === '.json' ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8';
       res.writeHead(200, { 'Content-Type': contentType });
@@ -1540,10 +1876,21 @@ const server = http.createServer(async (req, res) => {
       await fs.access(targetPath);
       await fs.unlink(targetPath);
       console.log(`[${beijingTime()}] 已删除用户目录文件: ${safeName}`);
+
+      // 广播删除事件
+      try {
+        sendSSE('file-change', { action: 'delete', filename: safeName, type: 'file' });
+      } catch (e) { /* ignore */ }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ message: `文件 ${safeName} 已删除` }));
     } catch (err) {
       if (err.code === 'ENOENT') {
+        let dirList = [];
+        try {
+          dirList = await fs.readdir(USER_DATA_SCRIPTS_DIR);
+        } catch(e) {}
+        console.error(`文件不存在: ${targetPath}, 目录内容: ${dirList.join(', ')}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `文件 ${safeName} 不存在` }));
       } else {
@@ -1585,6 +1932,12 @@ const server = http.createServer(async (req, res) => {
       await fs.access(targetPath);
       await fs.unlink(targetPath);
       console.log(`[${beijingTime()}] 已删除脚本: ${safeName}`);
+
+      // 广播脚本删除事件（type=script）
+      try {
+        sendSSE('file-change', { action: 'delete', filename: safeName, type: 'script' });
+      } catch (e) { /* ignore */ }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ message: `脚本 ${safeName} 已删除` }));
     } catch (err) {
@@ -1622,6 +1975,21 @@ const server = http.createServer(async (req, res) => {
       // 仅订阅指定任务
       if (!sseTaskClients[taskId]) sseTaskClients[taskId] = [];
       sseTaskClients[taskId].push(res);
+      // 如果任务已有状态，立即推送当前状态
+      const t = asyncTasks.get(taskId);
+      if (t) {
+        const payload = {
+          id: t.id,
+          type: t.type,
+          status: t.status,
+          startedAt: t.startedAt || null,
+          endedAt: t.endedAt || null,
+          exitCode: t.exitCode || null,
+          stdout: (t.stdout || '').slice(-2000),
+          stderr: (t.stderr || '').slice(-2000)
+        };
+        try { res.write(`event: task-update\ndata: ${JSON.stringify(payload)}\n\n`); } catch(e){}
+      }
       req.on('close', () => {
         sseTaskClients[taskId] = (sseTaskClients[taskId] || []).filter(client => client !== res);
       });
@@ -2012,6 +2380,16 @@ const server = http.createServer(async (req, res) => {
               cursor: pointer;
             }
             .logout-btn:hover { background: #c53030; }
+            /* === ADDED: 压缩/解压模态框样式 === */
+            .zip-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 9999; }
+            .zip-modal.visible { display: flex; }
+            .zip-modal-card { background: #fff; padding: 20px; border-radius: 16px; min-width: 340px; max-width: 640px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
+            .zip-list-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 8px; border-bottom: 1px solid #f1f5f9; }
+            .zip-list-item:last-child { border-bottom: none; }
+            .btn-ghost { background: #f1f5f9; border: 1px solid #e2e8f0; padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
+            .btn-ghost:hover { background: #e2e8f0; }
+            .task-log { font-family: 'Consolas','Monaco',monospace; background: #0f172a; color: #d1fae5; padding: 10px; border-radius: 8px; max-height: 200px; overflow-y: auto; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all; margin-top: 8px; }
+            /* === ADDED END === */
           </style>
         </head>
         <body>
@@ -2049,6 +2427,13 @@ const server = http.createServer(async (req, res) => {
               <div class="upload-area">
                 <strong>📁 用户目录文件（/app/puppeteer_user_data/）</strong>
                 <div class="script-grid user-file-grid" id="userFileGrid">${userDataFilesHtml}</div>
+                <!-- === ADDED: 压缩/解压 操作按钮 === -->
+                <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <button id="openZipModalBtn" class="btn-small">📦 压缩目录</button>
+                  <button id="openUnzipModalBtn" class="btn-small">⬇️ 解压 zip</button>
+                  <span style="color:#64748b;font-size:0.85rem">压缩后生成的 zip 存放于 /app/puppeteer_user_data/ 下</span>
+                </div>
+                <!-- === ADDED END === -->
               </div>
 
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
@@ -2103,6 +2488,26 @@ const server = http.createServer(async (req, res) => {
               </div>
             </div>
           </div>
+
+          <!-- === ADDED: 压缩/解压模态框 === -->
+          <div id="zipModal" class="zip-modal"><div class="zip-modal-card">
+            <h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 压缩目录（选择一个子目录）</h3>
+            <div id="zipList" style="margin-bottom:8px;">加载中...</div>
+            <div style="margin-top:8px;text-align:right">
+              <button id="closeZipModal" class="btn-ghost">关闭</button>
+            </div>
+            <div style="margin-top:8px"><strong style="font-size:0.85rem;">任务日志</strong><div id="zipTaskLog" class="task-log"></div></div>
+          </div></div>
+
+          <div id="unzipModal" class="zip-modal"><div class="zip-modal-card">
+            <h3 style="margin:0 0 12px 0;font-size:1.1rem;">⬇️ 解压 zip（选择一个 zip 文件）</h3>
+            <div id="unzipList" style="margin-bottom:8px;">加载中...</div>
+            <div style="margin-top:8px;text-align:right">
+              <button id="closeUnzipModal" class="btn-ghost">关闭</button>
+            </div>
+            <div style="margin-top:8px"><strong style="font-size:0.85rem;">任务日志</strong><div id="unzipTaskLog" class="task-log"></div></div>
+          </div></div>
+          <!-- === ADDED END === -->
 
           <div id="failureModal" class="modal-overlay">
             <div class="modal-card">
@@ -2520,6 +2925,36 @@ const server = http.createServer(async (req, res) => {
                 } catch(err) { console.error('解析状态错误', err); }
               });
 
+              // 监听文件变更事件，前端收到后局部更新 UI（避免整页刷新）
+              evtSource.addEventListener('file-change', function(e) {
+                markSSEAlive();
+                try {
+                  const payload = JSON.parse(e.data);
+                  // payload: { action: 'upload'|'delete', filename: 'x', type: 'file'|'script' }
+                  if (payload && payload.action) {
+                    if (payload.action === 'upload' && payload.filename) {
+                      // 如果是 viewable file（.zip/.json/.txt），把它��到用户文件区；
+                      // 如果是 script 可重新获取脚本列表或直接插入（此处简单做完整刷新文件列表）
+                      addUserFileToGrid(payload.filename);
+                    } else if (payload.action === 'delete' && payload.filename) {
+                      removeUserFileFromGrid(payload.filename);
+                      // 若为脚本删除，建议重新刷新脚本按钮区域或通知用户手动刷新
+                    }
+                  }
+                } catch (err) { console.error('解析 file-change 事件失败', err); }
+              });
+
+              // === ADDED: 监听 task-update（用于全局显示简短任务日志） ===
+              evtSource.addEventListener('task-update', function(e) {
+                markSSEAlive();
+                try {
+                  const t = JSON.parse(e.data);
+                  const msg = '[TASK ' + (t.id ? t.id.slice(-8) : '??') + '] ' + (t.type || '?') + ' ' + (t.status || '?');
+                  appendLogToBox(msg);
+                } catch(err) { /* ignore */ }
+              });
+              // === ADDED END ===
+
               evtSource.onerror = function(err) {
                 serviceHealthy = false;
                 const delay = reconnectSSE();
@@ -2580,6 +3015,34 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            // DOM 操作辅助：局部添加/移除用户文件条目（避免整页刷新）
+            function addUserFileToGrid(filename) {
+              const grid = document.getElementById('userFileGrid');
+              // 如果已存在，忽略
+              const existing = Array.from(grid.querySelectorAll('.user-file-open-btn')).find(b => b.getAttribute('data-file') === filename);
+              if (existing) return;
+              const safeName = escapeHtmlText(filename);
+              const item = document.createElement('div');
+              item.className = 'script-item';
+              item.title = safeName;
+              item.innerHTML = \`
+                <button class="script-btn user-file-open-btn" data-file="\${safeName}" title="查看/下载 \${safeName}">\${safeName}</button>
+                <button class="delete-btn user-file-delete-btn" data-file="\${safeName}" title="删除文件 \${safeName}">🗑️</button>
+              \`;
+              grid.prepend(item);
+              item.querySelector('.user-file-open-btn').addEventListener('click', () => openUserFile(filename));
+              item.querySelector('.user-file-delete-btn').addEventListener('click', () => deleteUserFile(filename));
+            }
+
+            function removeUserFileFromGrid(filename) {
+              document.querySelectorAll('.user-file-grid .script-item').forEach(node => {
+                const btn = node.querySelector('.user-file-open-btn');
+                if (btn && btn.getAttribute('data-file') === filename) {
+                  node.remove();
+                }
+              });
+            }
+
             async function runScript(scriptName, btn) {
               if (!scriptName) {
                 showToast('无效的脚本名', 'error');
@@ -2611,18 +3074,25 @@ const server = http.createServer(async (req, res) => {
             }
 
             async function deleteScript(scriptName) {
-              if(!confirm('确定删除该脚本吗？')) return;
+              if (!confirm('确定删除该脚本吗？')) return;
               try {
                 const encoded = encodeURIComponent(scriptName);
                 const res = await fetch('/script/' + encoded, { method: 'DELETE' });
-                const data = await res.json();
-                if (data.message) {
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.message) {
                   showToast(data.message, 'success');
-                  setTimeout(() => location.reload(), 1000);
+                  // 局部从页面移除对应的脚本节点（不刷新页面）
+                  document.querySelectorAll('.script-item').forEach(item => {
+                    const btn = item.querySelector('.script-btn[data-script]');
+                    if (btn && btn.getAttribute('data-script') === scriptName) {
+                      item.remove();
+                    }
+                  });
+                  // 若脚本删除后需要刷新其它状态，可选择调用 refreshHistoryAndStats() 或 fetch 脚本列表
                 } else {
                   showToast(data.error || '删除失败', 'error');
                 }
-              } catch(err) {
+              } catch (err) {
                 showToast('删除失败: ' + err.message, 'error');
               }
             }
@@ -2640,7 +3110,7 @@ const server = http.createServer(async (req, res) => {
                 const data = await res.json().catch(() => ({}));
                 if (res.ok && data.message) {
                   showToast(data.message, 'success');
-                  setTimeout(() => location.reload(), 800);
+                  removeUserFileFromGrid(filename);
                 } else {
                   showToast(data.error || '删除失败', 'error');
                 }
@@ -2676,7 +3146,11 @@ const server = http.createServer(async (req, res) => {
                 const data = await res.json();
                 if (data.message) {
                   showToast(data.message, 'success');
-                  setTimeout(() => location.reload(), 1000);
+                  // 不再整页刷新；file-change SSE 会在上传完成后通知其它客户端。
+                  // 当前客户端可直接把文件加入 UI（如果后端返回 file）
+                  if (data.file) addUserFileToGrid(data.file);
+                  setTimeout(() => { uploadFile.value = ''; }, 200);
+                  return;
                 } else {
                   showToast(data.error || '上传失败', 'error');
                 }
@@ -2784,6 +3258,140 @@ const server = http.createServer(async (req, res) => {
               }
             });
 
+            // === ADDED: 压缩/解压模态交互 ===
+            const zipModal = document.getElementById('zipModal');
+            const zipList = document.getElementById('zipList');
+            const zipTaskLog = document.getElementById('zipTaskLog');
+            const unzipModal = document.getElementById('unzipModal');
+            const unzipList = document.getElementById('unzipList');
+            const unzipTaskLog = document.getElementById('unzipTaskLog');
+
+            function appendLogToBox(msg) {
+              const d = document.createElement('div');
+              d.textContent = msg;
+              logBox.appendChild(d);
+              logBox.scrollTop = logBox.scrollHeight;
+            }
+
+            // 打开压缩模态：获取 profiles
+            document.getElementById('openZipModalBtn').addEventListener('click', async () => {
+              zipTaskLog.textContent = '';
+              zipModal.classList.add('visible');
+              zipList.innerHTML = '加载中...';
+              try {
+                const res = await fetch('/file/profiles');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || '获取失败');
+                if (!data.profiles || data.profiles.length === 0) {
+                  zipList.innerHTML = '<div style="color:#64748b">未发现任何子目录</div>';
+                  return;
+                }
+                zipList.innerHTML = data.profiles.map(p => '<div class="zip-list-item"><div>' + escapeHtmlText(p) + '</div><div><button class="btn-small zip-btn" data-name="' + escapeHtmlText(p) + '">压缩</button></div></div>').join('');
+                document.querySelectorAll('.zip-btn').forEach(b => {
+                  b.addEventListener('click', () => startZipTask(b.getAttribute('data-name')));
+                });
+              } catch (err) {
+                zipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + escapeHtmlText(err.message) + '</div>';
+              }
+            });
+            document.getElementById('closeZipModal').addEventListener('click', () => zipModal.classList.remove('visible'));
+
+            // 打开解压模态：从 DOM 中列出 zip 文件
+            document.getElementById('openUnzipModalBtn').addEventListener('click', async () => {
+              unzipTaskLog.textContent = '';
+              unzipModal.classList.add('visible');
+              // 尝试从服务器获取最新的 zip 文件列表
+              try {
+                const res = await fetch('/history', { cache: 'no-store' });
+                // 不依赖 history，改为从文件区域获取 .zip 文件
+              } catch(e) {}
+              const zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
+                .map(b => b.getAttribute('data-file'))
+                .filter(n => n && n.toLowerCase().endsWith('.zip'));
+              if (zipFiles.length === 0) {
+                unzipList.innerHTML = '<div style="color:#64748b">未发现任何 zip 文件</div>';
+                return;
+              }
+              unzipList.innerHTML = zipFiles.map(z => '<div class="zip-list-item"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>').join('');
+              document.querySelectorAll('.unzip-btn').forEach(b => {
+                b.addEventListener('click', () => startUnzipTask(b.getAttribute('data-zip')));
+              });
+            });
+            document.getElementById('closeUnzipModal').addEventListener('click', () => unzipModal.classList.remove('visible'));
+
+            // 发起 zip 异步任务
+            async function startZipTask(name) {
+              if (!confirm('确认压缩目录: ' + name + ' ?')) return;
+              zipTaskLog.textContent = '正在请求任务...';
+              try {
+                const res = await fetch('/file/zip-async', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || '任务请求失败');
+                const taskId = data.taskId;
+                zipTaskLog.textContent = '任务已排队: ' + taskId + '\\n等待执行...';
+                subscribeTaskEvents(taskId, zipTaskLog);
+              } catch (err) {
+                zipTaskLog.textContent = '请求失败: ' + err.message;
+              }
+            }
+
+            // 发起 unzip 异步任务
+            async function startUnzipTask(zipName) {
+              if (!confirm('确认解压 zip: ' + zipName + ' ?')) return;
+              unzipTaskLog.textContent = '正在请求任务...';
+              try {
+                const res = await fetch('/file/unzip-async', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ zip: zipName })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || '任务请求失败');
+                const taskId = data.taskId;
+                unzipTaskLog.textContent = '任务已排队: ' + taskId + '\\n等待执行...';
+                subscribeTaskEvents(taskId, unzipTaskLog);
+              } catch (err) {
+                unzipTaskLog.textContent = '请求失败: ' + err.message;
+              }
+            }
+
+            // 订阅 taskId 专属 SSE 并在 logElement 中显示进度
+            function subscribeTaskEvents(taskId, logElement) {
+              if (!taskId) return;
+              const es = new EventSource('/events?taskId=' + encodeURIComponent(taskId));
+              es.addEventListener('task-update', function(e) {
+                try {
+                  const t = JSON.parse(e.data);
+                  if (!t || !t.id) return;
+                  var lines = [];
+                  lines.push('Task ' + t.id.slice(-10) + ' 状态: ' + t.status);
+                  if (t.startedAt) lines.push('开始: ' + t.startedAt);
+                  if (t.endedAt) lines.push('结束: ' + t.endedAt);
+                  if (t.exitCode !== null && t.exitCode !== undefined) lines.push('退出码: ' + t.exitCode);
+                  if (t.stdout) lines.push('输出: ' + t.stdout.slice(-600));
+                  if (t.stderr) lines.push('错误: ' + t.stderr.slice(-600));
+                  logElement.textContent = lines.join('\\n\\n');
+                  if (t.status === 'success') {
+                    logElement.style.color = '#4ade80';
+                    setTimeout(function() { es.close(); }, 3000);
+                  } else if (t.status === 'failed') {
+                    logElement.style.color = '#f87171';
+                    setTimeout(function() { es.close(); }, 5000);
+                  }
+                } catch (err) {
+                  logElement.textContent = '解析任务事件失败';
+                }
+              });
+              es.onerror = function() {
+                // 保持重连，不显示错误
+              };
+            }
+            // === ADDED END ===
+
             updateLogToggleButton();
             connectSSE();
             updateHealthStatus();
@@ -2824,7 +3432,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth, /file/profiles, /file/zip-async, /file/unzip-async, /file/task/:id`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
