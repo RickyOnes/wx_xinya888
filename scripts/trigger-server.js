@@ -638,25 +638,26 @@ function runAsyncTask(task) {
 
     try {
       if (task.type === 'zip') {
-        const name = task.params.name;
-        const dirPath = path.join(USER_DATA_SCRIPTS_DIR, name);
-        const zipName = `${name}.zip`;
+        const relPath = task.params.path || '';  // 相对路径如 "profileName/subdir"
+        const pathParts = relPath ? relPath.split('/').filter(Boolean) : [];
+        const dirPath = relPath ? path.join(USER_DATA_SCRIPTS_DIR, ...pathParts) : USER_DATA_SCRIPTS_DIR;
+        const zipBase = pathParts.length > 0 ? pathParts[pathParts.length - 1] : 'root_items';
+        const zipName = `${zipBase}.zip`;
         const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipName);
         try { await fs.access(dirPath); } catch (e) { throw new Error('目标目录不存在'); }
         try { await fs.unlink(zipPath).catch(()=>{}); } catch(e){}
-        // 使用 cwd 相对路径，zip 内部存储 name/... 结构，解压到 USER_DATA_SCRIPTS_DIR 即可还原
         cmd = 'zip';
         if (task.params.items && Array.isArray(task.params.items) && task.params.items.length > 0) {
-          // 部分文件/夹压缩：cd 到 profile 目录，只压缩选中的项
+          // 部分文件/夹压缩：cd 到目标目录，只压缩选中的项
           spawnOpts.cwd = dirPath;
           args = ['-rq', zipPath, ...task.params.items];
         } else {
           // 完整目录压缩
           spawnOpts.cwd = USER_DATA_SCRIPTS_DIR;
-          args = ['-rq', zipName, name];
+          args = ['-rq', zipPath, relPath || '.'];
         }
         task._resultTarget = zipPath;
-        broadcastLog('info', `[ZIP] 压缩目标: ${name} → ${zipName}`);
+        broadcastLog('info', `[ZIP] 压缩目标: ${relPath || '(根目录)'} → ${zipName}`);
       } else if (task.type === 'unzip') {
         const zipFile = task.params.zip;
         const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipFile);
@@ -1421,7 +1422,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/profiles', '/file/mkdir'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/browse', '/file/mkdir', '/file/delete-item'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1575,55 +1576,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // === ADDED: /file/profiles 列出 USER_DATA_SCRIPTS_DIR 下的子目录（排除隐藏目录，用于压缩选择） ===
-  if (pathname === '/file/profiles' && method === 'GET') {
-    try {
-      const entries = await fs.readdir(USER_DATA_SCRIPTS_DIR, { withFileTypes: true });
-      // 排除以 . 开头的隐藏目录
-      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name).sort((a,b) => a.localeCompare(b, 'zh-CN'));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ profiles: dirs }));
-      return;
-    } catch (err) {
-      if (err.code === 'ENOENT') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ profiles: [] }));
+  // === ADDED: 列出 USER_DATA_SCRIPTS_DIR 下的内容（目录+文件），支持子目录查询 ===
+  // GET /file/browse?path=sub1/sub2  查询子路径；path 省略则查根目录
+  if (pathname === '/file/browse' && method === 'GET') {
+    const subPath = parsedUrl.searchParams.get('path') || '';
+    let dirPath = USER_DATA_SCRIPTS_DIR;
+    let relativePath = '';
+    if (subPath) {
+      // 安全校验：不允许 ..
+      if (/(^|\/)\.\.(\/|$)/.test(subPath)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '非法的路径' }));
         return;
       }
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '读取目录失败: ' + err.message }));
-      return;
+      // 只允许 basename 块，防止路径穿越
+      const parts = subPath.split('/').filter(Boolean);
+      for (const p of parts) {
+        const safe = path.basename(p);
+        if (!safe || safe === '.' || safe === '..') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的路径段: ' + p }));
+          return;
+        }
+      }
+      dirPath = path.join(USER_DATA_SCRIPTS_DIR, ...parts);
+      relativePath = parts.join('/');
     }
-  }
-
-  // === ADDED: GET /file/profiles/:name/list 列出某个 profile 目录下的内容（用于选择部分文件压缩） ===
-  if (pathname.startsWith('/file/profiles/') && pathname.endsWith('/list') && method === 'GET') {
-    const profileName = pathname.slice('/file/profiles/'.length, -'/list'.length);
-    const safeName = safeBasename(profileName);
-    if (!safeName) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: '非法的目录名' }));
-      return;
-    }
-    const dirPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
     try {
       await fs.access(dirPath);
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       const items = entries
-        .filter(e => !e.name.startsWith('.')) // 排除隐藏文件
+        .filter(e => !e.name.startsWith('.'))
         .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
         .sort((a, b) => {
-          // 目录排在前面
           if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
           return a.name.localeCompare(b.name, 'zh-CN');
         });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ profile: safeName, items }));
+      res.end(JSON.stringify({ path: relativePath, parent: relativePath ? parts.slice(0, -1).join('/') : null, items }));
       return;
     } catch (err) {
       if (err.code === 'ENOENT') {
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: '目录不存在' }));
+        res.end(JSON.stringify({ error: '路径不存在' }));
         return;
       }
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1632,31 +1627,39 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // === ADDED: POST /file/mkdir 创建新文件夹 body: { parent: "profileName", name: "newFolder" } ===
+  // === ADDED: POST /file/mkdir 创建新文件夹 body: { parent: "profileName"（"/"表示根目录）, name: "newFolder" } ===
   if (pathname === '/file/mkdir' && method === 'POST') {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
       try {
         const { parent, name } = JSON.parse(body || '{}');
-        const safeParent = safeBasename(parent);
         const safeName = safeBasename(name);
-        if (!safeParent || !safeName) {
+        if (!safeName) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: '非法的父目录或文件夹名' }));
+          res.end(JSON.stringify({ error: '非法的文件夹名' }));
           return;
         }
-        const parentPath = path.join(USER_DATA_SCRIPTS_DIR, safeParent);
+        // parent="/" 或 "" 表示直接在 USER_DATA_SCRIPTS_DIR 下创建
+        let parentPath = USER_DATA_SCRIPTS_DIR;
+        if (parent && parent !== '/') {
+          const safeParent = safeBasename(parent);
+          if (!safeParent) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '非法的父目录' }));
+            return;
+          }
+          parentPath = path.join(USER_DATA_SCRIPTS_DIR, safeParent);
+          try { await fs.access(parentPath); } catch (e) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '父目录不存在' }));
+            return;
+          }
+        }
         const newDirPath = path.join(parentPath, safeName);
-        try {
-          await fs.access(parentPath);
-        } catch (e) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: '父目录不存在' }));
-          return;
-        }
         await fs.mkdir(newDirPath, { recursive: false });
         console.log(`[${beijingTime()}] 已创建文件夹: ${newDirPath}`);
+        broadcastLog('info', `[MKDIR] 已创建文件夹: ${safeName}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, path: newDirPath }));
       } catch (err) {
@@ -1672,41 +1675,113 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // === ADDED: POST /file/zip-async body: { name: "wangxh03", items: ["subdir1","file.txt"] } ===
+  // === ADDED: POST /file/delete-item  body: { parent: "profileName"|"/", name: "itemToDelete" } 删除文件或文件夹 ===
+  if (pathname === '/file/delete-item' && method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { parent, name } = JSON.parse(body || '{}');
+        if (!name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '缺少 name' }));
+          return;
+        }
+        const safeName = path.basename(name);
+        if (!safeName || safeName === '.' || safeName === '..') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的名称' }));
+          return;
+        }
+        let targetDir = USER_DATA_SCRIPTS_DIR;
+        if (parent && parent !== '/') {
+          const safeParent = path.basename(parent);
+          if (!safeParent) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '非法的父目录' }));
+            return;
+          }
+          targetDir = path.join(USER_DATA_SCRIPTS_DIR, safeParent);
+          try { await fs.access(targetDir); } catch (e) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '父目录不存在' }));
+            return;
+          }
+        }
+        const targetPath = path.join(targetDir, safeName);
+        try { await fs.access(targetPath); } catch (e) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '目标不存在' }));
+          return;
+        }
+        const stat = await fs.stat(targetPath);
+        await fs.rm(targetPath, { recursive: true, force: true });
+        const type = stat.isDirectory() ? '目录' : '文件';
+        console.log(`[${beijingTime()}] 已删除${type}: ${targetPath}`);
+        // 输出到主日志
+        broadcastLog('info', `[DELETE] 已删除${type}: ${safeName}`);
+        // 广播删除事件，前端更新列表
+        try {
+          if (!stat.isDirectory()) {
+            sendSSE('file-change', { action: 'delete', filename: safeName, type: 'file' });
+          }
+        } catch(e){}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: `${type} ${safeName} 已删除` }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '删除失败: ' + err.message }));
+      }
+    });
+    return;
+  }
+
+  // === ADDED: POST /file/zip-async  body: { path: "profileName/subdir", items: ["file1","dir2"] } ===
+  // path 为相对于 USER_DATA_SCRIPTS_DIR 的相对路径（空="/" 表示根目录），items 可选
   if (pathname === '/file/zip-async' && method === 'POST') {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
       try {
-        const { name, items } = JSON.parse(body || '{}');
-        const safeName = safeBasename(name);
-        if (!safeName) {
+        const { path: relPath, items } = JSON.parse(body || '{}');
+        // 校验路径安全
+        if (relPath && /(^|\/)\.\.(\/|$)/.test(relPath)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: '非法的目录名' }));
+          res.end(JSON.stringify({ error: '非法的路径' }));
           return;
         }
-        const dirPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+        const pathParts = relPath ? relPath.split('/').filter(Boolean) : [];
+        for (const p of pathParts) {
+          if (!p || p === '.' || p === '..' || p !== path.basename(p)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '非法的路径段: ' + p }));
+            return;
+          }
+        }
+        const safePath = pathParts.join('/');
+        // 如果没指定 path 或 path=""，表示压缩根目录下的 items
+        // zip 文件名用 basename(safePath) 或 "root" 前缀
+        const dirPath = safePath ? path.join(USER_DATA_SCRIPTS_DIR, safePath) : USER_DATA_SCRIPTS_DIR;
         try { await fs.access(dirPath); } catch (e) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: '目标目录不存在' }));
           return;
         }
-        // 校验 items（如果有），确保它们都在 profile 目录内
+        // 校验 items（如果有），确保它们在目录内
         let safeItems = null;
         if (Array.isArray(items) && items.length > 0) {
           safeItems = [];
           for (const item of items) {
-            const safeItem = safeBasename(item);
-            if (!safeItem) {
+            const safeItem = path.basename(item);
+            if (!safeItem || safeItem === '.' || safeItem === '..') {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: `非法条目: ${item}` }));
+              res.end(JSON.stringify({ error: '非法条目: ' + item }));
               return;
             }
-            // 检查条目是否存在
             const itemPath = path.join(dirPath, safeItem);
             try { await fs.access(itemPath); } catch (e) {
               res.writeHead(404, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: `条目不存在: ${safeItem}` }));
+              res.end(JSON.stringify({ error: '条目不存在: ' + safeItem }));
               return;
             }
             safeItems.push(safeItem);
@@ -1715,17 +1790,18 @@ const server = http.createServer(async (req, res) => {
         const taskId = createHistoryId();
         const task = {
           id: taskId, type: 'zip',
-          params: { name: safeName, items: safeItems },
+          params: { path: safePath, items: safeItems },
           status: 'queued', stdout: '', stderr: '',
           createdAt: new Date().toISOString()
         };
         scheduleAsyncTask(task);
-        broadcastLog('info', `[ZIP] 压缩任务已排队: ${safeName}${safeItems ? ' (选择部分)' : ' (完整)'}`);
+        const displayPath = safePath || '/app/puppeteer_user_data/ (根目录)';
+        broadcastLog('info', `[ZIP] 压缩任务已排队: ${displayPath}${safeItems ? ' (选择部分)' : ' (完整)'}`);
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ accepted: true, taskId }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: '参数解析失败' }));
+        res.end(JSON.stringify({ error: '参数解析失败: ' + err.message }));
       }
     });
     return;
@@ -2754,9 +2830,11 @@ const server = http.createServer(async (req, res) => {
             let loginRedirectTimer = null;
             let loginPromptShown = false;
             let latestIsRunning = false;
+            let latestIsFileTaskRunning = false; // 文件操作任务（zip/unzip）是否在运行
             let latestCompletedRunKey = '';
             let hasReceivedInitialState = false;
             let manualLogOverride = null;
+            let fileTaskHideTimer = null; // 文件任务日志自动隐藏定时器
             const SSE_BASE_RECONNECT_DELAY = 5000;
             const SSE_MAX_RECONNECT_DELAY = 30000;
             const HEALTH_CHECK_TIMEOUT = 5000;
@@ -2806,6 +2884,31 @@ const server = http.createServer(async (req, res) => {
               }, 10000);
               updateLogToggleButton();
             }
+
+            // === ADDED: 文件操作任务（压缩/解压）日志自动显示/隐藏 ===
+            function updateLogForFileTasks(isRunning) {
+              latestIsFileTaskRunning = isRunning;
+              const anyRunning = latestIsRunning || latestIsFileTaskRunning;
+
+              if (anyRunning) {
+                if (fileTaskHideTimer) {
+                  clearTimeout(fileTaskHideTimer);
+                  fileTaskHideTimer = null;
+                }
+                logSection.classList.add('visible');
+                updateLogToggleButton();
+              } else {
+                if (fileTaskHideTimer) clearTimeout(fileTaskHideTimer);
+                fileTaskHideTimer = setTimeout(() => {
+                  if (!latestIsRunning && !latestIsFileTaskRunning && manualLogOverride !== true) {
+                    logSection.classList.remove('visible');
+                    updateLogToggleButton();
+                  }
+                  fileTaskHideTimer = null;
+                }, 10000);
+              }
+            }
+            // === ADDED END ===
 
             function renderHealthStatus() {
               if (authRecoveryPromise) {
@@ -3081,29 +3184,41 @@ const server = http.createServer(async (req, res) => {
                   if (payload && payload.action) {
                     if (payload.action === 'upload' && payload.filename) {
                       if (payload.type === 'script') {
-                        // .js 脚本不上传到文件区，提示刷新脚本列表
-                        showToast('脚本 ' + payload.filename + ' 已上传，请刷新页面查看', 'info');
+                        addScriptToGrid(payload.filename);
                       } else {
                         addUserFileToGrid(payload.filename);
                       }
                     } else if (payload.action === 'delete' && payload.filename) {
                       removeUserFileFromGrid(payload.filename);
-                      // 若为脚本删除，建议重新刷新脚本按钮区域或通知用户手动刷新
                       if (payload.type === 'script') {
-                        showToast('脚本 ' + payload.filename + ' 已删除', 'info');
+                        // 从脚本区移除按钮
+                        document.querySelectorAll('#buttonGrid .script-item').forEach(function(item) {
+                          var btn = item.querySelector('.script-btn[data-script]');
+                          if (btn && btn.getAttribute('data-script') === payload.filename) {
+                            item.remove();
+                          }
+                        });
                       }
                     }
                   }
                 } catch (err) { console.error('解析 file-change 事件失败', err); }
               });
 
-              // === ADDED: 监听 task-update（用于全局显示简短任务日志） ===
+              // === ADDED: 监听 task-update（用于全局显示简短任务日志 + 自动显示/隐藏日志区） ===
               evtSource.addEventListener('task-update', function(e) {
                 markSSEAlive();
                 try {
                   const t = JSON.parse(e.data);
                   const msg = '[TASK ' + (t.id ? t.id.slice(-8) : '??') + '] ' + (t.type || '?') + ' ' + (t.status || '?');
                   appendLogToBox(msg);
+                  // 文件操作任务（zip/unzip）运行时自动显示日志，完成后 10 秒自动隐藏
+                  if (t.type === 'zip' || t.type === 'unzip') {
+                    if (t.status === 'running') {
+                      updateLogForFileTasks(true);
+                    } else if (t.status === 'success' || t.status === 'failed') {
+                      updateLogForFileTasks(false);
+                    }
+                  }
                 } catch(err) { /* ignore */ }
               });
               // === ADDED END ===
@@ -3185,6 +3300,21 @@ const server = http.createServer(async (req, res) => {
               grid.prepend(item);
               item.querySelector('.user-file-open-btn').addEventListener('click', () => openUserFile(filename));
               item.querySelector('.user-file-delete-btn').addEventListener('click', () => deleteUserFile(filename));
+            }
+
+            // === ADDED: 动态添加脚本按钮到"可用脚本"区域 ===
+            function addScriptToGrid(scriptName) {
+              const grid = document.getElementById('buttonGrid');
+              const existing = Array.from(grid.querySelectorAll('.script-btn[data-script]')).find(b => b.getAttribute('data-script') === scriptName);
+              if (existing) return;
+              const safeName = escapeHtmlText(scriptName);
+              const item = document.createElement('div');
+              item.className = 'script-item';
+              item.title = safeName;
+              item.innerHTML = '<button class="script-btn" data-script="' + safeName + '" title="' + safeName + '">' + safeName + '</button><button class="delete-btn" data-script="' + safeName + '" title="删除脚本 ' + safeName + '">🗑️</button>';
+              grid.prepend(item);
+              item.querySelector('.script-btn').addEventListener('click', function(e) { runScript(scriptName, e.currentTarget); });
+              item.querySelector('.delete-btn').addEventListener('click', function() { deleteScript(scriptName); });
             }
 
             function removeUserFileFromGrid(filename) {
@@ -3302,8 +3432,8 @@ const server = http.createServer(async (req, res) => {
                   showToast(data.message, 'success');
                   if (data.file) {
                     if (isJs) {
-                      // .js 脚本文件不上传文件区，提示刷新脚本列表
-                      showToast('脚本已上传，请在"可用脚本"区域查看', 'info');
+                      // .js 脚本直接添加到脚本区
+                      addScriptToGrid(data.file);
                     } else {
                       addUserFileToGrid(data.file);
                     }
@@ -3434,131 +3564,161 @@ const server = http.createServer(async (req, res) => {
               logBox.scrollTop = logBox.scrollHeight;
             }
 
-            let currentProfile = null; // 当前选中的压缩 profile
+            let currentPath = ''; // 当前浏览的相对路径（相对 USER_DATA_SCRIPTS_DIR）
+            let currentPathParts = []; // 路径分段
 
-            // 显示 profiles 列表（压缩模态初始状态）
-            function showZipProfiles() {
-              document.getElementById('zipModalHeader').innerHTML = '<h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 压缩目录 - 选择子目录</h3>';
-              zipActions.style.display = 'none';
-              currentProfile = null;
-              fetch('/file/profiles').then(r=>r.json()).then(data=>{
-                if (!data.profiles || data.profiles.length === 0) {
-                  zipList.innerHTML = '<div style="color:#64748b">未发现任何子目录</div>';
-                  return;
-                }
-                zipList.innerHTML = data.profiles.map(p => '<div class="zip-list-item" style="cursor:pointer" data-profile="'+escapeHtmlText(p)+'"><div><strong>📂 ' + escapeHtmlText(p) + '</strong></div><div style="color:#667eea">选择 →</div></div>').join('');
-                document.querySelectorAll('.zip-list-item[data-profile]').forEach(el => {
-                  el.addEventListener('click', function() { loadProfileContents(this.getAttribute('data-profile')); });
-                });
-              }).catch(err => { zipList.innerHTML = '<div style="color:#f43f5e">加载失败: '+err.message+'</div>'; });
-            }
-
-            // 加载某个 profile 的内容（带复选框）
-            function loadProfileContents(profileName) {
-              currentProfile = profileName;
-              document.getElementById('zipModalHeader').innerHTML = '<h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 <span style="color:#667eea">' + escapeHtmlText(profileName) + '</span> - 选择要压缩的文件/夹</h3>';
+            // 通用：根据 path 加载文件列表到 zipList（path="" 表示根目录）
+            function loadZipList(path) {
+              currentPath = path || '';
+              const query = path ? '?path=' + encodeURIComponent(path) : '';
+              const displayPath = path || '/ (根目录)';
+              document.getElementById('zipModalHeader').innerHTML = '<h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 <span style="color:#667eea">' + escapeHtmlText(displayPath) + '</span></h3>';
               zipActions.style.display = 'flex';
               zipList.innerHTML = '加载中...';
-              fetch('/file/profiles/' + encodeURIComponent(profileName) + '/list').then(r=>r.json()).then(data=>{
+              fetch('/file/browse' + query).then(r=>r.json()).then(data=>{
+                currentPathParts = path ? path.split('/').filter(Boolean) : [];
                 if (!data.items || data.items.length === 0) {
-                  zipList.innerHTML = '<div style="color:#64748b">该目录下无文件</div><div style="margin-top:8px"><button class="btn-small zip-compress-btn" style="background:#dc2626">直接压缩空目录</button></div>';
-                  zipList.querySelector('.zip-compress-btn')?.addEventListener('click', function() { startZipTask(profileName, []); });
+                  var emptyHtml = '<div style="color:#64748b;padding:8px;">该目录下无内容</div>';
+                  emptyHtml += '<div style="margin-top:8px"><button class="btn-small zip-compress-all-btn" style="background:#dc2626">压缩此空目录</button></div>';
+                  zipList.innerHTML = emptyHtml;
+                  zipList.querySelector('.zip-compress-all-btn')?.addEventListener('click', function() { startZipTask(path, null); });
                   return;
                 }
-                // 默认全选
-                let html = '<div style="margin-bottom:4px;color:#64748b;font-size:0.85rem">共 ' + data.items.length + ' 项，勾选需要压缩的项：</div>';
-                data.items.forEach(item => {
-                  const icon = item.isDirectory ? '📁' : '📄';
-                  html += '<label class="zip-list-item" style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" class="zip-item-cb" data-name="' + escapeHtmlText(item.name) + '" checked> ' + icon + ' ' + escapeHtmlText(item.name) + '</label>';
+                var html = '<div style="margin-bottom:4px;color:#64748b;font-size:0.85rem">共 ' + data.items.length + ' 项，勾选需要压缩的项：</div>';
+                data.items.forEach(function(item) {
+                  var icon = item.isDirectory ? '📁' : '📄';
+                  var itemPath = path ? path + '/' + item.name : item.name;
+                  html += '<div class="zip-list-item" style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px solid #f1f5f9">';
+                  html += '<input type="checkbox" class="zip-item-cb" data-name="' + escapeHtmlText(item.name) + '" checked>';
+                  if (item.isDirectory) {
+                    html += '<span style="cursor:pointer;flex:1;display:flex;align-items:center;gap:4px;color:#2563eb" class="zip-dir-link" data-path="' + escapeHtmlText(itemPath) + '">' + icon + ' <u>' + escapeHtmlText(item.name) + '</u></span>';
+                  } else {
+                    html += '<span style="flex:1;display:flex;align-items:center;gap:4px">' + icon + ' ' + escapeHtmlText(item.name) + '</span>';
+                  }
+                  // 删除按钮
+                  var deleteParent = path || '/';
+                  html += '<button class="delete-btn zip-delete-btn" data-parent="' + escapeHtmlText(deleteParent) + '" data-name="' + escapeHtmlText(item.name) + '" title="删除" style="padding:2px 6px;font-size:0.85rem">🗑️</button>';
+                  html += '</div>';
                 });
                 zipList.innerHTML = html;
-              }).catch(err => { zipList.innerHTML = '<div style="color:#f43f5e">加载失败: '+err.message+'</div>'; });
+                // 子目录点击→进入
+                zipList.querySelectorAll('.zip-dir-link').forEach(function(el) {
+                  el.addEventListener('click', function() { loadZipList(this.getAttribute('data-path')); });
+                });
+                // 删除按钮
+                zipList.querySelectorAll('.zip-delete-btn').forEach(function(el) {
+                  el.addEventListener('click', function() {
+                    var parentVal = this.getAttribute('data-parent');
+                    var nameVal = this.getAttribute('data-name');
+                    if (confirm('确定删除 ' + nameVal + ' 吗？')) {
+                      deleteZipItem(parentVal, nameVal, function() { loadZipList(path); });
+                    }
+                  });
+                });
+              }).catch(function(err) { zipList.innerHTML = '<div style="color:#f43f5e">加载失败: '+err.message+'</div>'; });
+            }
+
+            // 删除文件/文件夹
+            async function deleteZipItem(parent, name, callback) {
+              try {
+                var res = await fetch('/file/delete-item', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ parent: parent, name: name })
+                });
+                var data = await res.json();
+                if (!res.ok) throw new Error(data.error || '删除失败');
+                showToast(data.message || '已删除', 'success');
+                if (typeof callback === 'function') callback();
+              } catch (err) {
+                showToast('删除失败: ' + err.message, 'error');
+              }
             }
 
             // 全选/取消全选
             document.getElementById('zipSelectAll').addEventListener('click', function() {
-              document.querySelectorAll('.zip-item-cb').forEach(cb => cb.checked = true);
+              document.querySelectorAll('.zip-item-cb').forEach(function(cb) { cb.checked = true; });
             });
             document.getElementById('zipDeselectAll').addEventListener('click', function() {
-              document.querySelectorAll('.zip-item-cb').forEach(cb => cb.checked = false);
+              document.querySelectorAll('.zip-item-cb').forEach(function(cb) { cb.checked = false; });
             });
             // 压缩选中
             document.getElementById('zipCompressSelected').addEventListener('click', function() {
-              if (!currentProfile) return;
-              const checked = Array.from(document.querySelectorAll('.zip-item-cb:checked')).map(cb => cb.getAttribute('data-name'));
+              var checked = Array.from(document.querySelectorAll('.zip-item-cb:checked')).map(function(cb) { return cb.getAttribute('data-name'); });
               if (checked.length === 0) { showToast('请至少选择一个文件或文件夹', 'error'); return; }
-              startZipTask(currentProfile, checked);
+              startZipTask(currentPath, checked);
             });
             // 压缩全部
             document.getElementById('zipCompressAll').addEventListener('click', function() {
-              if (!currentProfile) return;
-              startZipTask(currentProfile, null);
+              startZipTask(currentPath, null);
             });
-            // 返回
+            // 返回上一级
             document.getElementById('zipBackToProfiles').addEventListener('click', function() {
-              showZipProfiles();
+              if (currentPathParts.length === 0) { /* 已在根目录 */ return; }
+              var parent = currentPathParts.slice(0, -1).join('/');
+              loadZipList(parent);
             });
 
             // 打开压缩模态
             document.getElementById('openZipModalBtn').addEventListener('click', function() {
               zipModal.classList.add('visible');
-              showZipProfiles();
+              loadZipList(''); // 从根目录开始
             });
-            document.getElementById('closeZipModal').addEventListener('click', () => zipModal.classList.remove('visible'));
+            document.getElementById('closeZipModal').addEventListener('click', function() { zipModal.classList.remove('visible'); });
 
             // 打开解压模态
-            document.getElementById('openUnzipModalBtn').addEventListener('click', async () => {
+            document.getElementById('openUnzipModalBtn').addEventListener('click', async function() {
               unzipModal.classList.add('visible');
               unzipList.innerHTML = '加载中...';
               try {
-                const zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
-                  .map(b => b.getAttribute('data-file'))
-                  .filter(n => n && n.toLowerCase().endsWith('.zip'));
+                var zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
+                  .map(function(b) { return b.getAttribute('data-file'); })
+                  .filter(function(n) { return n && n.toLowerCase().endsWith('.zip'); });
                 if (zipFiles.length === 0) {
                   unzipList.innerHTML = '<div style="color:#64748b">未发现任何 zip 文件</div>';
                   return;
                 }
-                unzipList.innerHTML = zipFiles.map(z => '<div class="zip-list-item"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>').join('');
-                document.querySelectorAll('.unzip-btn').forEach(b => {
-                  b.addEventListener('click', () => startUnzipTask(b.getAttribute('data-zip')));
+                unzipList.innerHTML = zipFiles.map(function(z) { return '<div class="zip-list-item" style="display:flex;justify-content:space-between;align-items:center"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>'; }).join('');
+                document.querySelectorAll('.unzip-btn').forEach(function(b) {
+                  b.addEventListener('click', function() { startUnzipTask(b.getAttribute('data-zip')); });
                 });
               } catch (err) {
                 unzipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + err.message + '</div>';
               }
             });
-            document.getElementById('closeUnzipModal').addEventListener('click', () => unzipModal.classList.remove('visible'));
+            document.getElementById('closeUnzipModal').addEventListener('click', function() { unzipModal.classList.remove('visible'); });
 
             // 发起 zip 任务（日志由 runAsyncTask 通过 broadcastLog 发到主控制台）
-            async function startZipTask(profileName, items) {
-              const msg = items && items.length > 0 ? '确认压缩 ' + profileName + ' 中的 ' + items.length + ' 项？' : '确认完整压缩目录 ' + profileName + ' ？';
+            async function startZipTask(relPath, items) {
+              var displayName = relPath ? relPath.split('/').pop() || relPath : '根目录文件';
+              var msg = items && items.length > 0 ? '确认压缩 ' + relPath + ' 中的 ' + items.length + ' 项？' : '确认完整压缩目录 ' + (relPath || '根目录') + ' ？';
               if (!confirm(msg)) return;
               showToast('压缩任务已排队，请查看实时日志', 'info');
               try {
-                const res = await fetch('/file/zip-async', {
+                var res = await fetch('/file/zip-async', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: profileName, items: items })
+                  body: JSON.stringify({ path: relPath || '', items: items })
                 });
-                const data = await res.json();
+                var data = await res.json();
                 if (!res.ok) throw new Error(data.error || '任务请求失败');
-                // 订阅专属 SSE 以便完成后关闭对话框
                 subscribeTaskEvents(data.taskId);
               } catch (err) {
                 showToast('压缩请求失败: ' + err.message, 'error');
               }
             }
 
-            // 发起 unzip 任务（日志由 runAsyncTask 通过 broadcastLog 发到主控制台）
+            // 发起 unzip 任务
             async function startUnzipTask(zipName) {
               if (!confirm('确认解压 zip: ' + zipName + ' 到 /app/puppeteer_user_data/ 目录？')) return;
               showToast('解压任务已排队，请查看实时日志', 'info');
               try {
-                const res = await fetch('/file/unzip-async', {
+                var res = await fetch('/file/unzip-async', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ zip: zipName })
                 });
-                const data = await res.json();
+                var data = await res.json();
                 if (!res.ok) throw new Error(data.error || '任务请求失败');
                 subscribeTaskEvents(data.taskId);
               } catch (err) {
@@ -3566,19 +3726,18 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            // 订阅 taskId 专属 SSE（任务日志已由 broadcastLog 发到主控制台）
+            // 订阅 taskId 专属 SSE
             function subscribeTaskEvents(taskId) {
               if (!taskId) return;
-              const es = new EventSource('/events?taskId=' + encodeURIComponent(taskId));
+              var es = new EventSource('/events?taskId=' + encodeURIComponent(taskId));
               es.addEventListener('task-update', function(e) {
                 try {
-                  const t = JSON.parse(e.data);
+                  var t = JSON.parse(e.data);
                   if (!t || !t.id) return;
                   if (t.status === 'success' || t.status === 'failed') {
                     setTimeout(function() { try { es.close(); } catch(e){} }, 3000);
                     if (t.status === 'success') {
                       showToast('任务 ' + t.type + ' 已完成', 'success');
-                      // 关闭模态
                       zipModal.classList.remove('visible');
                       unzipModal.classList.remove('visible');
                     } else {
@@ -3594,11 +3753,11 @@ const server = http.createServer(async (req, res) => {
             function loadMkdirProfiles() {
               mkdirProfileList.innerHTML = '加载中...';
               fetch('/file/profiles').then(r=>r.json()).then(data=>{
-                if (!data.profiles || data.profiles.length === 0) {
-                  mkdirProfileList.innerHTML = '<div style="color:#64748b;padding:8px;">未发现任何父目录</div>';
-                  return;
+                var html = '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9;background:#f0fdf4"><input type="radio" name="mkdirParent" value="/" checked> <strong>/</strong> <span style="color:#64748b;font-size:0.85rem">（根目录 — /app/puppeteer_user_data/）</span></label>';
+                if (data.profiles && data.profiles.length > 0) {
+                  html += data.profiles.map(p => '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9"><input type="radio" name="mkdirParent" value="' + escapeHtmlText(p) + '"> ' + escapeHtmlText(p) + '</label>').join('');
                 }
-                mkdirProfileList.innerHTML = data.profiles.map(p => '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9"><input type="radio" name="mkdirParent" value="' + escapeHtmlText(p) + '"> ' + escapeHtmlText(p) + '</label>').join('');
+                mkdirProfileList.innerHTML = html;
               }).catch(err => { mkdirProfileList.innerHTML = '<div style="color:#f43f5e;padding:8px;">加载失败: '+err.message+'</div>'; });
             }
 
