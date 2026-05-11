@@ -620,7 +620,7 @@ function scheduleAsyncTask(task) {
   return task.id;
 }
 
-// 执行一个任务（spawn 子进程执行 zip/unzip）
+// 执行一个任务（spawn 子进程执行 zip/unzip），输出日志到主控制台
 function runAsyncTask(task) {
   return new Promise(async (resolve) => {
     asyncRunning++;
@@ -629,30 +629,43 @@ function runAsyncTask(task) {
     task.stdout = task.stdout || '';
     task.stderr = task.stderr || '';
     broadcastTaskUpdate(task);
+    // === ADDED: 同时输出到主日志控制台 ===
+    broadcastLog('info', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 开始执行`);
 
     let cmd = null;
     let args = [];
+    let spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'] };
 
     try {
       if (task.type === 'zip') {
         const name = task.params.name;
         const dirPath = path.join(USER_DATA_SCRIPTS_DIR, name);
-        const zipPath = path.join(USER_DATA_SCRIPTS_DIR, `${name}.zip`);
+        const zipName = `${name}.zip`;
+        const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipName);
         try { await fs.access(dirPath); } catch (e) { throw new Error('目标目录不存在'); }
         try { await fs.unlink(zipPath).catch(()=>{}); } catch(e){}
+        // 使用 cwd 相对路径，zip 内部存储 name/... 结构，解压到 USER_DATA_SCRIPTS_DIR 即可还原
         cmd = 'zip';
-        args = ['-rq', zipPath, dirPath];
+        if (task.params.items && Array.isArray(task.params.items) && task.params.items.length > 0) {
+          // 部分文件/夹压缩：cd 到 profile 目录，只压缩选中的项
+          spawnOpts.cwd = dirPath;
+          args = ['-rq', zipPath, ...task.params.items];
+        } else {
+          // 完整目录压缩
+          spawnOpts.cwd = USER_DATA_SCRIPTS_DIR;
+          args = ['-rq', zipName, name];
+        }
         task._resultTarget = zipPath;
+        broadcastLog('info', `[ZIP] 压缩目标: ${name} → ${zipName}`);
       } else if (task.type === 'unzip') {
         const zipFile = task.params.zip;
-        const dest = task.params.dest || path.basename(zipFile, '.zip');
         const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipFile);
-        const destPath = path.join(USER_DATA_SCRIPTS_DIR, dest);
         try { await fs.access(zipPath); } catch (e) { throw new Error('zip 文件不存在'); }
-        try { await fs.mkdir(destPath, { recursive: true }); } catch(e){}
+        // 解压到 USER_DATA_SCRIPTS_DIR，zip 内部存储 name/...，所以还原为 USER_DATA_SCRIPTS_DIR/name/...
         cmd = 'unzip';
-        args = ['-o', zipPath, '-d', destPath];
-        task._resultTarget = destPath;
+        args = ['-o', zipPath, '-d', USER_DATA_SCRIPTS_DIR];
+        task._resultTarget = USER_DATA_SCRIPTS_DIR;
+        broadcastLog('info', `[UNZIP] 解压 ${zipFile} → ${USER_DATA_SCRIPTS_DIR}/`);
       } else {
         throw new Error('未知任务类型');
       }
@@ -662,21 +675,28 @@ function runAsyncTask(task) {
       task.stderr = (task.stderr || '') + '\n' + err.message;
       asyncRunning--;
       broadcastTaskUpdate(task);
+      broadcastLog('error', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 失败: ${err.message}`);
       resolve(task);
       processAsyncQueue();
       return;
     }
 
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, spawnOpts);
     child.stdout.on('data', (d) => {
       const s = d.toString();
-      task.stdout = (task.stdout || '') + s;
+      // 限制内存中 stdout/stderr 大小
+      task.stdout = ((task.stdout || '') + s).slice(-20000);
       broadcastTaskUpdate(task);
+      // 有实际输出时也推送到主日志
+      const trimmed = s.trim();
+      if (trimmed) broadcastLog('stdout', `[${task.type.toUpperCase()}] ${trimmed}`);
     });
     child.stderr.on('data', (d) => {
       const s = d.toString();
-      task.stderr = (task.stderr || '') + s;
+      task.stderr = ((task.stderr || '') + s).slice(-20000);
       broadcastTaskUpdate(task);
+      const trimmed = s.trim();
+      if (trimmed) broadcastLog('stderr', `[${task.type.toUpperCase()}] ${trimmed}`);
     });
 
     child.on('close', async (code) => {
@@ -684,16 +704,19 @@ function runAsyncTask(task) {
       task.endedAt = new Date().toISOString();
       if (code === 0) {
         task.status = 'success';
+        broadcastLog('info', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 完成`);
         try {
           if (task.type === 'zip' && task._resultTarget) {
             const bn = path.basename(task._resultTarget);
             sendSSE('file-change', { action: 'upload', filename: bn, type: 'file' });
           } else if (task.type === 'unzip' && task._resultTarget) {
-            sendSSE('file-change', { action: 'upload', filename: path.basename(task._resultTarget), type: 'file' });
+            // unzip 完成后不发送 file-change（避免添加目录到文件列表）
+            // 让用户通过刷新文件区查看
           }
         } catch(e){}
       } else {
         task.status = 'failed';
+        broadcastLog('error', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 失败，退出码: ${code}`);
       }
       asyncRunning--;
       broadcastTaskUpdate(task);
@@ -707,6 +730,7 @@ function runAsyncTask(task) {
       task.endedAt = new Date().toISOString();
       asyncRunning--;
       broadcastTaskUpdate(task);
+      broadcastLog('error', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 异常: ${err.message}`);
       resolve(task);
       processAsyncQueue();
     });
@@ -1397,7 +1421,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/profiles'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/profiles', '/file/mkdir'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1551,11 +1575,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // === ADDED: /file/profiles 列出 USER_DATA_SCRIPTS_DIR 下的子目录（用于压缩选择） ===
+  // === ADDED: /file/profiles 列出 USER_DATA_SCRIPTS_DIR 下的子目录（排除隐藏目录，用于压缩选择） ===
   if (pathname === '/file/profiles' && method === 'GET') {
     try {
       const entries = await fs.readdir(USER_DATA_SCRIPTS_DIR, { withFileTypes: true });
-      const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+      // 排除以 . 开头的隐藏目录
+      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name).sort((a,b) => a.localeCompare(b, 'zh-CN'));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ profiles: dirs }));
       return;
@@ -1571,13 +1596,89 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // === ADDED: POST /file/zip-async body: { name: "wangxh03" } ===
+  // === ADDED: GET /file/profiles/:name/list 列出某个 profile 目录下的内容（用于选择部分文件压缩） ===
+  if (pathname.startsWith('/file/profiles/') && pathname.endsWith('/list') && method === 'GET') {
+    const profileName = pathname.slice('/file/profiles/'.length, -'/list'.length);
+    const safeName = safeBasename(profileName);
+    if (!safeName) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '非法的目录名' }));
+      return;
+    }
+    const dirPath = path.join(USER_DATA_SCRIPTS_DIR, safeName);
+    try {
+      await fs.access(dirPath);
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      const items = entries
+        .filter(e => !e.name.startsWith('.')) // 排除隐藏文件
+        .map(e => ({ name: e.name, isDirectory: e.isDirectory() }))
+        .sort((a, b) => {
+          // 目录排在前面
+          if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+          return a.name.localeCompare(b.name, 'zh-CN');
+        });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ profile: safeName, items }));
+      return;
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '目录不存在' }));
+        return;
+      }
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '读取失败: ' + err.message }));
+      return;
+    }
+  }
+
+  // === ADDED: POST /file/mkdir 创建新文件夹 body: { parent: "profileName", name: "newFolder" } ===
+  if (pathname === '/file/mkdir' && method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { parent, name } = JSON.parse(body || '{}');
+        const safeParent = safeBasename(parent);
+        const safeName = safeBasename(name);
+        if (!safeParent || !safeName) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '非法的父目录或文件夹名' }));
+          return;
+        }
+        const parentPath = path.join(USER_DATA_SCRIPTS_DIR, safeParent);
+        const newDirPath = path.join(parentPath, safeName);
+        try {
+          await fs.access(parentPath);
+        } catch (e) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '父目录不存在' }));
+          return;
+        }
+        await fs.mkdir(newDirPath, { recursive: false });
+        console.log(`[${beijingTime()}] 已创建文件夹: ${newDirPath}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, path: newDirPath }));
+      } catch (err) {
+        if (err.code === 'EEXIST') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '文件夹已存在' }));
+          return;
+        }
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '创建失败: ' + err.message }));
+      }
+    });
+    return;
+  }
+
+  // === ADDED: POST /file/zip-async body: { name: "wangxh03", items: ["subdir1","file.txt"] } ===
   if (pathname === '/file/zip-async' && method === 'POST') {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
       try {
-        const { name } = JSON.parse(body || '{}');
+        const { name, items } = JSON.parse(body || '{}');
         const safeName = safeBasename(name);
         if (!safeName) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1590,14 +1691,36 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ error: '目标目录不存在' }));
           return;
         }
+        // 校验 items（如果有），确保它们都在 profile 目录内
+        let safeItems = null;
+        if (Array.isArray(items) && items.length > 0) {
+          safeItems = [];
+          for (const item of items) {
+            const safeItem = safeBasename(item);
+            if (!safeItem) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `非法条目: ${item}` }));
+              return;
+            }
+            // 检查条目是否存在
+            const itemPath = path.join(dirPath, safeItem);
+            try { await fs.access(itemPath); } catch (e) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `条目不存在: ${safeItem}` }));
+              return;
+            }
+            safeItems.push(safeItem);
+          }
+        }
         const taskId = createHistoryId();
         const task = {
           id: taskId, type: 'zip',
-          params: { name: safeName },
+          params: { name: safeName, items: safeItems },
           status: 'queued', stdout: '', stderr: '',
           createdAt: new Date().toISOString()
         };
         scheduleAsyncTask(task);
+        broadcastLog('info', `[ZIP] 压缩任务已排队: ${safeName}${safeItems ? ' (选择部分)' : ' (完整)'}`);
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ accepted: true, taskId }));
       } catch (err) {
@@ -2431,6 +2554,7 @@ const server = http.createServer(async (req, res) => {
                 <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                   <button id="openZipModalBtn" class="btn-small">📦 压缩目录</button>
                   <button id="openUnzipModalBtn" class="btn-small">⬇️ 解压 zip</button>
+                  <button id="openMkdirModalBtn" class="btn-small">📁 新建文件夹</button>
                   <span style="color:#64748b;font-size:0.85rem">压缩后生成的 zip 存放于 /app/puppeteer_user_data/ 下</span>
                 </div>
                 <!-- === ADDED END === -->
@@ -2489,23 +2613,46 @@ const server = http.createServer(async (req, res) => {
             </div>
           </div>
 
-          <!-- === ADDED: 压缩/解压模态框 === -->
+          <!-- === ADDED: 压缩/解压/新建文件夹 模态框 === -->
           <div id="zipModal" class="zip-modal"><div class="zip-modal-card">
-            <h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 压缩目录（选择一个子目录）</h3>
-            <div id="zipList" style="margin-bottom:8px;">加载中...</div>
+            <div id="zipModalHeader">
+              <h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 压缩目录 - 选择子目录</h3>
+            </div>
+            <div id="zipList" style="margin-bottom:8px;max-height:40vh;overflow-y:auto;">加载中...</div>
+            <div id="zipActions" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap">
+              <button id="zipSelectAll" class="btn-small">全选</button>
+              <button id="zipDeselectAll" class="btn-small">取消全选</button>
+              <button id="zipCompressSelected" class="btn-small" style="background:#059669">压缩选中</button>
+              <button id="zipCompressAll" class="btn-small" style="background:#dc2626">压缩全部</button>
+              <button id="zipBackToProfiles" class="btn-ghost">← 返回</button>
+            </div>
             <div style="margin-top:8px;text-align:right">
               <button id="closeZipModal" class="btn-ghost">关闭</button>
             </div>
-            <div style="margin-top:8px"><strong style="font-size:0.85rem;">任务日志</strong><div id="zipTaskLog" class="task-log"></div></div>
           </div></div>
 
           <div id="unzipModal" class="zip-modal"><div class="zip-modal-card">
             <h3 style="margin:0 0 12px 0;font-size:1.1rem;">⬇️ 解压 zip（选择一个 zip 文件）</h3>
-            <div id="unzipList" style="margin-bottom:8px;">加载中...</div>
+            <div id="unzipList" style="margin-bottom:8px;max-height:40vh;overflow-y:auto;">加载中...</div>
             <div style="margin-top:8px;text-align:right">
               <button id="closeUnzipModal" class="btn-ghost">关闭</button>
             </div>
-            <div style="margin-top:8px"><strong style="font-size:0.85rem;">任务日志</strong><div id="unzipTaskLog" class="task-log"></div></div>
+          </div></div>
+
+          <div id="mkdirModal" class="zip-modal"><div class="zip-modal-card">
+            <h3 style="margin:0 0 12px 0;font-size:1.1rem;">📁 新建文件夹</h3>
+            <div style="margin-bottom:8px">
+              <label style="display:block;margin-bottom:4px;font-size:0.9rem;color:#475569">选择父目录：</label>
+              <div id="mkdirProfileList" style="max-height:30vh;overflow-y:auto;border:1px solid #e2e8f0;border-radius:8px;padding:4px;">加载中...</div>
+            </div>
+            <div style="margin-bottom:8px">
+              <label style="display:block;margin-bottom:4px;font-size:0.9rem;color:#475569">文件夹名称：</label>
+              <input id="mkdirNameInput" type="text" placeholder="输入新文件夹名称" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:8px;font-size:0.9rem;">
+            </div>
+            <div style="margin-top:12px;text-align:right;display:flex;gap:8px;justify-content:flex-end">
+              <button id="closeMkdirModal" class="btn-ghost">取消</button>
+              <button id="confirmMkdirBtn" class="btn-small">创建</button>
+            </div>
           </div></div>
           <!-- === ADDED END === -->
 
@@ -2933,12 +3080,18 @@ const server = http.createServer(async (req, res) => {
                   // payload: { action: 'upload'|'delete', filename: 'x', type: 'file'|'script' }
                   if (payload && payload.action) {
                     if (payload.action === 'upload' && payload.filename) {
-                      // 如果是 viewable file（.zip/.json/.txt），把它��到用户文件区；
-                      // 如果是 script 可重新获取脚本列表或直接插入（此处简单做完整刷新文件列表）
-                      addUserFileToGrid(payload.filename);
+                      if (payload.type === 'script') {
+                        // .js 脚本不上传到文件区，提示刷新脚本列表
+                        showToast('脚本 ' + payload.filename + ' 已上传，请刷新页面查看', 'info');
+                      } else {
+                        addUserFileToGrid(payload.filename);
+                      }
                     } else if (payload.action === 'delete' && payload.filename) {
                       removeUserFileFromGrid(payload.filename);
                       // 若为脚本删除，建议重新刷新脚本按钮区域或通知用户手动刷新
+                      if (payload.type === 'script') {
+                        showToast('脚本 ' + payload.filename + ' 已删除', 'info');
+                      }
                     }
                   }
                 } catch (err) { console.error('解析 file-change 事件失败', err); }
@@ -3139,6 +3292,7 @@ const server = http.createServer(async (req, res) => {
             uploadBtn.onclick = async () => {
               const file = uploadFile.files[0];
               if(!file) { showToast('请选择文件', 'error'); return; }
+              const isJs = file.name.toLowerCase().endsWith('.js');
               const formData = new FormData();
               formData.append('script', file);
               try {
@@ -3146,9 +3300,14 @@ const server = http.createServer(async (req, res) => {
                 const data = await res.json();
                 if (data.message) {
                   showToast(data.message, 'success');
-                  // 不再整页刷新；file-change SSE 会在上传完成后通知其它客户端。
-                  // 当前客户端可直接把文件加入 UI（如果后端返回 file）
-                  if (data.file) addUserFileToGrid(data.file);
+                  if (data.file) {
+                    if (isJs) {
+                      // .js 脚本文件不上传文件区，提示刷新脚本列表
+                      showToast('脚本已上传，请在"可用脚本"区域查看', 'info');
+                    } else {
+                      addUserFileToGrid(data.file);
+                    }
+                  }
                   setTimeout(() => { uploadFile.value = ''; }, 200);
                   return;
                 } else {
@@ -3258,13 +3417,15 @@ const server = http.createServer(async (req, res) => {
               }
             });
 
-            // === ADDED: 压缩/解压模态交互 ===
+            // === ADDED: 压缩/解压/新建文件夹 模态交互 ===
             const zipModal = document.getElementById('zipModal');
             const zipList = document.getElementById('zipList');
-            const zipTaskLog = document.getElementById('zipTaskLog');
+            const zipActions = document.getElementById('zipActions');
             const unzipModal = document.getElementById('unzipModal');
             const unzipList = document.getElementById('unzipList');
-            const unzipTaskLog = document.getElementById('unzipTaskLog');
+            const mkdirModal = document.getElementById('mkdirModal');
+            const mkdirProfileList = document.getElementById('mkdirProfileList');
+            const mkdirNameInput = document.getElementById('mkdirNameInput');
 
             function appendLogToBox(msg) {
               const d = document.createElement('div');
@@ -3273,76 +3434,124 @@ const server = http.createServer(async (req, res) => {
               logBox.scrollTop = logBox.scrollHeight;
             }
 
-            // 打开压缩模态：获取 profiles
-            document.getElementById('openZipModalBtn').addEventListener('click', async () => {
-              zipTaskLog.textContent = '';
-              zipModal.classList.add('visible');
-              zipList.innerHTML = '加载中...';
-              try {
-                const res = await fetch('/file/profiles');
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || '获取失败');
+            let currentProfile = null; // 当前选中的压缩 profile
+
+            // 显示 profiles 列表（压缩模态初始状态）
+            function showZipProfiles() {
+              document.getElementById('zipModalHeader').innerHTML = '<h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 压缩目录 - 选择子目录</h3>';
+              zipActions.style.display = 'none';
+              currentProfile = null;
+              fetch('/file/profiles').then(r=>r.json()).then(data=>{
                 if (!data.profiles || data.profiles.length === 0) {
                   zipList.innerHTML = '<div style="color:#64748b">未发现任何子目录</div>';
                   return;
                 }
-                zipList.innerHTML = data.profiles.map(p => '<div class="zip-list-item"><div>' + escapeHtmlText(p) + '</div><div><button class="btn-small zip-btn" data-name="' + escapeHtmlText(p) + '">压缩</button></div></div>').join('');
-                document.querySelectorAll('.zip-btn').forEach(b => {
-                  b.addEventListener('click', () => startZipTask(b.getAttribute('data-name')));
+                zipList.innerHTML = data.profiles.map(p => '<div class="zip-list-item" style="cursor:pointer" data-profile="'+escapeHtmlText(p)+'"><div><strong>📂 ' + escapeHtmlText(p) + '</strong></div><div style="color:#667eea">选择 →</div></div>').join('');
+                document.querySelectorAll('.zip-list-item[data-profile]').forEach(el => {
+                  el.addEventListener('click', function() { loadProfileContents(this.getAttribute('data-profile')); });
                 });
-              } catch (err) {
-                zipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + escapeHtmlText(err.message) + '</div>';
-              }
+              }).catch(err => { zipList.innerHTML = '<div style="color:#f43f5e">加载失败: '+err.message+'</div>'; });
+            }
+
+            // 加载某个 profile 的内容（带复选框）
+            function loadProfileContents(profileName) {
+              currentProfile = profileName;
+              document.getElementById('zipModalHeader').innerHTML = '<h3 style="margin:0 0 12px 0;font-size:1.1rem;">📦 <span style="color:#667eea">' + escapeHtmlText(profileName) + '</span> - 选择要压缩的文件/夹</h3>';
+              zipActions.style.display = 'flex';
+              zipList.innerHTML = '加载中...';
+              fetch('/file/profiles/' + encodeURIComponent(profileName) + '/list').then(r=>r.json()).then(data=>{
+                if (!data.items || data.items.length === 0) {
+                  zipList.innerHTML = '<div style="color:#64748b">该目录下无文件</div><div style="margin-top:8px"><button class="btn-small zip-compress-btn" style="background:#dc2626">直接压缩空目录</button></div>';
+                  zipList.querySelector('.zip-compress-btn')?.addEventListener('click', function() { startZipTask(profileName, []); });
+                  return;
+                }
+                // 默认全选
+                let html = '<div style="margin-bottom:4px;color:#64748b;font-size:0.85rem">共 ' + data.items.length + ' 项，勾选需要压缩的项：</div>';
+                data.items.forEach(item => {
+                  const icon = item.isDirectory ? '📁' : '📄';
+                  html += '<label class="zip-list-item" style="cursor:pointer;display:flex;align-items:center;gap:8px"><input type="checkbox" class="zip-item-cb" data-name="' + escapeHtmlText(item.name) + '" checked> ' + icon + ' ' + escapeHtmlText(item.name) + '</label>';
+                });
+                zipList.innerHTML = html;
+              }).catch(err => { zipList.innerHTML = '<div style="color:#f43f5e">加载失败: '+err.message+'</div>'; });
+            }
+
+            // 全选/取消全选
+            document.getElementById('zipSelectAll').addEventListener('click', function() {
+              document.querySelectorAll('.zip-item-cb').forEach(cb => cb.checked = true);
+            });
+            document.getElementById('zipDeselectAll').addEventListener('click', function() {
+              document.querySelectorAll('.zip-item-cb').forEach(cb => cb.checked = false);
+            });
+            // 压缩选中
+            document.getElementById('zipCompressSelected').addEventListener('click', function() {
+              if (!currentProfile) return;
+              const checked = Array.from(document.querySelectorAll('.zip-item-cb:checked')).map(cb => cb.getAttribute('data-name'));
+              if (checked.length === 0) { showToast('请至少选择一个文件或文件夹', 'error'); return; }
+              startZipTask(currentProfile, checked);
+            });
+            // 压缩全部
+            document.getElementById('zipCompressAll').addEventListener('click', function() {
+              if (!currentProfile) return;
+              startZipTask(currentProfile, null);
+            });
+            // 返回
+            document.getElementById('zipBackToProfiles').addEventListener('click', function() {
+              showZipProfiles();
+            });
+
+            // 打开压缩模态
+            document.getElementById('openZipModalBtn').addEventListener('click', function() {
+              zipModal.classList.add('visible');
+              showZipProfiles();
             });
             document.getElementById('closeZipModal').addEventListener('click', () => zipModal.classList.remove('visible'));
 
-            // 打开解压模态：从 DOM 中列出 zip 文件
+            // 打开解压模态
             document.getElementById('openUnzipModalBtn').addEventListener('click', async () => {
-              unzipTaskLog.textContent = '';
               unzipModal.classList.add('visible');
-              // 尝试从服务器获取最新的 zip 文件列表
+              unzipList.innerHTML = '加载中...';
               try {
-                const res = await fetch('/history', { cache: 'no-store' });
-                // 不依赖 history，改为从文件区域获取 .zip 文件
-              } catch(e) {}
-              const zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
-                .map(b => b.getAttribute('data-file'))
-                .filter(n => n && n.toLowerCase().endsWith('.zip'));
-              if (zipFiles.length === 0) {
-                unzipList.innerHTML = '<div style="color:#64748b">未发现任何 zip 文件</div>';
-                return;
+                const zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
+                  .map(b => b.getAttribute('data-file'))
+                  .filter(n => n && n.toLowerCase().endsWith('.zip'));
+                if (zipFiles.length === 0) {
+                  unzipList.innerHTML = '<div style="color:#64748b">未发现任何 zip 文件</div>';
+                  return;
+                }
+                unzipList.innerHTML = zipFiles.map(z => '<div class="zip-list-item"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>').join('');
+                document.querySelectorAll('.unzip-btn').forEach(b => {
+                  b.addEventListener('click', () => startUnzipTask(b.getAttribute('data-zip')));
+                });
+              } catch (err) {
+                unzipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + err.message + '</div>';
               }
-              unzipList.innerHTML = zipFiles.map(z => '<div class="zip-list-item"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>').join('');
-              document.querySelectorAll('.unzip-btn').forEach(b => {
-                b.addEventListener('click', () => startUnzipTask(b.getAttribute('data-zip')));
-              });
             });
             document.getElementById('closeUnzipModal').addEventListener('click', () => unzipModal.classList.remove('visible'));
 
-            // 发起 zip 异步任务
-            async function startZipTask(name) {
-              if (!confirm('确认压缩目录: ' + name + ' ?')) return;
-              zipTaskLog.textContent = '正在请求任务...';
+            // 发起 zip 任务（日志由 runAsyncTask 通过 broadcastLog 发到主控制台）
+            async function startZipTask(profileName, items) {
+              const msg = items && items.length > 0 ? '确认压缩 ' + profileName + ' 中的 ' + items.length + ' 项？' : '确认完整压缩目录 ' + profileName + ' ？';
+              if (!confirm(msg)) return;
+              showToast('压缩任务已排队，请查看实时日志', 'info');
               try {
                 const res = await fetch('/file/zip-async', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name })
+                  body: JSON.stringify({ name: profileName, items: items })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || '任务请求失败');
-                const taskId = data.taskId;
-                zipTaskLog.textContent = '任务已排队: ' + taskId + '\\n等待执行...';
-                subscribeTaskEvents(taskId, zipTaskLog);
+                // 订阅专属 SSE 以便完成后关闭对话框
+                subscribeTaskEvents(data.taskId);
               } catch (err) {
-                zipTaskLog.textContent = '请求失败: ' + err.message;
+                showToast('压缩请求失败: ' + err.message, 'error');
               }
             }
 
-            // 发起 unzip 异步任务
+            // 发起 unzip 任务（日志由 runAsyncTask 通过 broadcastLog 发到主控制台）
             async function startUnzipTask(zipName) {
-              if (!confirm('确认解压 zip: ' + zipName + ' ?')) return;
-              unzipTaskLog.textContent = '正在请求任务...';
+              if (!confirm('确认解压 zip: ' + zipName + ' 到 /app/puppeteer_user_data/ 目录？')) return;
+              showToast('解压任务已排队，请查看实时日志', 'info');
               try {
                 const res = await fetch('/file/unzip-async', {
                   method: 'POST',
@@ -3351,45 +3560,76 @@ const server = http.createServer(async (req, res) => {
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || '任务请求失败');
-                const taskId = data.taskId;
-                unzipTaskLog.textContent = '任务已排队: ' + taskId + '\\n等待执行...';
-                subscribeTaskEvents(taskId, unzipTaskLog);
+                subscribeTaskEvents(data.taskId);
               } catch (err) {
-                unzipTaskLog.textContent = '请求失败: ' + err.message;
+                showToast('解压请求失败: ' + err.message, 'error');
               }
             }
 
-            // 订阅 taskId 专属 SSE 并在 logElement 中显示进度
-            function subscribeTaskEvents(taskId, logElement) {
+            // 订阅 taskId 专属 SSE（任务日志已由 broadcastLog 发到主控制台）
+            function subscribeTaskEvents(taskId) {
               if (!taskId) return;
               const es = new EventSource('/events?taskId=' + encodeURIComponent(taskId));
               es.addEventListener('task-update', function(e) {
                 try {
                   const t = JSON.parse(e.data);
                   if (!t || !t.id) return;
-                  var lines = [];
-                  lines.push('Task ' + t.id.slice(-10) + ' 状态: ' + t.status);
-                  if (t.startedAt) lines.push('开始: ' + t.startedAt);
-                  if (t.endedAt) lines.push('结束: ' + t.endedAt);
-                  if (t.exitCode !== null && t.exitCode !== undefined) lines.push('退出码: ' + t.exitCode);
-                  if (t.stdout) lines.push('输出: ' + t.stdout.slice(-600));
-                  if (t.stderr) lines.push('错误: ' + t.stderr.slice(-600));
-                  logElement.textContent = lines.join('\\n\\n');
-                  if (t.status === 'success') {
-                    logElement.style.color = '#4ade80';
-                    setTimeout(function() { es.close(); }, 3000);
-                  } else if (t.status === 'failed') {
-                    logElement.style.color = '#f87171';
-                    setTimeout(function() { es.close(); }, 5000);
+                  if (t.status === 'success' || t.status === 'failed') {
+                    setTimeout(function() { try { es.close(); } catch(e){} }, 3000);
+                    if (t.status === 'success') {
+                      showToast('任务 ' + t.type + ' 已完成', 'success');
+                      // 关闭模态
+                      zipModal.classList.remove('visible');
+                      unzipModal.classList.remove('visible');
+                    } else {
+                      showToast('任务 ' + t.type + ' 失败', 'error');
+                    }
                   }
-                } catch (err) {
-                  logElement.textContent = '解析任务事件失败';
-                }
+                } catch (err) { /* ignore */ }
               });
-              es.onerror = function() {
-                // 保持重连，不显示错误
-              };
+              es.onerror = function() {};
             }
+
+            // === 新建文件夹模态 ===
+            function loadMkdirProfiles() {
+              mkdirProfileList.innerHTML = '加载中...';
+              fetch('/file/profiles').then(r=>r.json()).then(data=>{
+                if (!data.profiles || data.profiles.length === 0) {
+                  mkdirProfileList.innerHTML = '<div style="color:#64748b;padding:8px;">未发现任何父目录</div>';
+                  return;
+                }
+                mkdirProfileList.innerHTML = data.profiles.map(p => '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9"><input type="radio" name="mkdirParent" value="' + escapeHtmlText(p) + '"> ' + escapeHtmlText(p) + '</label>').join('');
+              }).catch(err => { mkdirProfileList.innerHTML = '<div style="color:#f43f5e;padding:8px;">加载失败: '+err.message+'</div>'; });
+            }
+
+            document.getElementById('openMkdirModalBtn').addEventListener('click', function() {
+              mkdirNameInput.value = '';
+              mkdirModal.classList.add('visible');
+              loadMkdirProfiles();
+            });
+            document.getElementById('closeMkdirModal').addEventListener('click', () => mkdirModal.classList.remove('visible'));
+
+            document.getElementById('confirmMkdirBtn').addEventListener('click', async function() {
+              const selected = document.querySelector('input[name="mkdirParent"]:checked');
+              if (!selected) { showToast('请选择父目录', 'error'); return; }
+              const parent = selected.value;
+              const name = mkdirNameInput.value.trim();
+              if (!name) { showToast('请输入文件夹名称', 'error'); return; }
+              if (!/^[a-zA-Z0-9_\u4e00-\u9fa5-]+$/.test(name)) { showToast('文件夹名只能包含中文、字母、数字、下划线和横线', 'error'); return; }
+              try {
+                const res = await fetch('/file/mkdir', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ parent, name })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || '创建失败');
+                showToast('文件夹 ' + name + ' 已创建在 ' + parent + ' 下', 'success');
+                mkdirModal.classList.remove('visible');
+              } catch (err) {
+                showToast('创建失败: ' + err.message, 'error');
+              }
+            });
             // === ADDED END ===
 
             updateLogToggleButton();
@@ -3432,7 +3672,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth, /file/profiles, /file/zip-async, /file/unzip-async, /file/task/:id`);
+  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth, /file/profiles, /file/mkdir, /file/zip-async, /file/unzip-async, /file/task/:id`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
