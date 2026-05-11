@@ -1582,6 +1582,7 @@ const server = http.createServer(async (req, res) => {
     const subPath = parsedUrl.searchParams.get('path') || '';
     let dirPath = USER_DATA_SCRIPTS_DIR;
     let relativePath = '';
+    let parts = [];
     if (subPath) {
       // 安全校验：不允许 ..
       if (/(^|\/)\.\.(\/|$)/.test(subPath)) {
@@ -1590,7 +1591,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       // 只允许 basename 块，防止路径穿越
-      const parts = subPath.split('/').filter(Boolean);
+      parts = subPath.split('/').filter(Boolean);
       for (const p of parts) {
         const safe = path.basename(p);
         if (!safe || safe === '.' || safe === '..') {
@@ -3204,14 +3205,24 @@ const server = http.createServer(async (req, res) => {
                 } catch (err) { console.error('解析 file-change 事件失败', err); }
               });
 
-              // === ADDED: 监听 task-update（用于全局显示简短任务日志 + 自动显示/隐藏日志区） ===
+              // === ADDED: 监听 task-update — 实时输出所有子进程日志到前端 ===
               evtSource.addEventListener('task-update', function(e) {
                 markSSEAlive();
                 try {
                   const t = JSON.parse(e.data);
-                  const msg = '[TASK ' + (t.id ? t.id.slice(-8) : '??') + '] ' + (t.type || '?') + ' ' + (t.status || '?');
-                  appendLogToBox(msg);
-                  // 文件操作任务（zip/unzip）运行时自动显示日志，完成后 10 秒自动隐藏
+                  // 实时输出 stdout
+                  if (t.stdout && t.stdout.length > 0) {
+                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '') + ' stdout] ' + t.stdout);
+                  }
+                  // 实时输出 stderr
+                  if (t.stderr && t.stderr.length > 0) {
+                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '') + ' stderr] ' + t.stderr);
+                  }
+                  // 输出状态变更
+                  if (t.status && (!t.stdout || t.stdout.length === 0) && (!t.stderr || t.stderr.length === 0)) {
+                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '??') + '] ' + (t.type || '?') + ' ' + t.status);
+                  }
+                  // 文件操作自动显示/隐藏日志区
                   if (t.type === 'zip' || t.type === 'unzip') {
                     if (t.status === 'running') {
                       updateLogForFileTasks(true);
