@@ -629,8 +629,9 @@ function runAsyncTask(task) {
     task.stdout = task.stdout || '';
     task.stderr = task.stderr || '';
     broadcastTaskUpdate(task);
-    // === ADDED: 同时输出到主日志控制台 ===
-    broadcastLog('info', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 开始执行`);
+    // === ADDED: 同时输出到主日志控制台（含完整路径） ===
+    const _taskDispPath = task.params.path ? path.join(USER_DATA_SCRIPTS_DIR, task.params.path) : USER_DATA_SCRIPTS_DIR;
+    broadcastLog('info', `[${task.type.toUpperCase()}] 任务开始: ${_taskDispPath}`);
 
     let cmd = null;
     let args = [];
@@ -648,25 +649,22 @@ function runAsyncTask(task) {
         try { await fs.unlink(zipPath).catch(()=>{}); } catch(e){}
         cmd = 'zip';
         if (task.params.items && Array.isArray(task.params.items) && task.params.items.length > 0) {
-          // 部分文件/夹压缩：cd 到目标目录，只压缩选中的项
           spawnOpts.cwd = dirPath;
           args = ['-rq', zipPath, ...task.params.items];
         } else {
-          // 完整目录压缩
           spawnOpts.cwd = USER_DATA_SCRIPTS_DIR;
           args = ['-rq', zipPath, relPath || '.'];
         }
         task._resultTarget = zipPath;
-        broadcastLog('info', `[ZIP] 压缩目标: ${relPath || '(根目录)'} → ${zipName}`);
+        broadcastLog('info', `[ZIP] 压缩 -> ${zipPath}`);
       } else if (task.type === 'unzip') {
         const zipFile = task.params.zip;
         const zipPath = path.join(USER_DATA_SCRIPTS_DIR, zipFile);
         try { await fs.access(zipPath); } catch (e) { throw new Error('zip 文件不存在'); }
-        // 解压到 USER_DATA_SCRIPTS_DIR，zip 内部存储 name/...，所以还原为 USER_DATA_SCRIPTS_DIR/name/...
         cmd = 'unzip';
         args = ['-o', zipPath, '-d', USER_DATA_SCRIPTS_DIR];
         task._resultTarget = USER_DATA_SCRIPTS_DIR;
-        broadcastLog('info', `[UNZIP] 解压 ${zipFile} → ${USER_DATA_SCRIPTS_DIR}/`);
+        broadcastLog('info', `[UNZIP] 解压 ${zipPath} -> ${USER_DATA_SCRIPTS_DIR}/`);
       } else {
         throw new Error('未知任务类型');
       }
@@ -676,7 +674,7 @@ function runAsyncTask(task) {
       task.stderr = (task.stderr || '') + '\n' + err.message;
       asyncRunning--;
       broadcastTaskUpdate(task);
-      broadcastLog('error', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 失败: ${err.message}`);
+      broadcastLog('error', `[${task.type.toUpperCase()}] 失败: ${_taskDispPath} - ${err.message}`);
       resolve(task);
       processAsyncQueue();
       return;
@@ -685,10 +683,10 @@ function runAsyncTask(task) {
     const child = spawn(cmd, args, spawnOpts);
     child.stdout.on('data', (d) => {
       const s = d.toString();
-      // 限制内存中 stdout/stderr 大小
       task.stdout = ((task.stdout || '') + s).slice(-20000);
+      // 推给 task-update（仅保持 payload 最新即可，前端不需要输出了）
+      // 但为了不丢失进度信息，仍保留 minimal push
       broadcastTaskUpdate(task);
-      // 有实际输出时也推送到主日志
       const trimmed = s.trim();
       if (trimmed) broadcastLog('stdout', `[${task.type.toUpperCase()}] ${trimmed}`);
     });
@@ -705,7 +703,7 @@ function runAsyncTask(task) {
       task.endedAt = new Date().toISOString();
       if (code === 0) {
         task.status = 'success';
-        broadcastLog('info', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 完成`);
+        broadcastLog('info', `[${task.type.toUpperCase()}] 完成: ${_taskDispPath}`);
         try {
           if (task.type === 'zip' && task._resultTarget) {
             const bn = path.basename(task._resultTarget);
@@ -717,7 +715,7 @@ function runAsyncTask(task) {
         } catch(e){}
       } else {
         task.status = 'failed';
-        broadcastLog('error', `[${task.type.toUpperCase()}] 任务 ${task.id.slice(-8)} 失败，退出码: ${code}`);
+        broadcastLog('error', `[${task.type.toUpperCase()}] 失败: ${_taskDispPath} 退出码: ${code}`);
       }
       asyncRunning--;
       broadcastTaskUpdate(task);
@@ -1660,7 +1658,7 @@ const server = http.createServer(async (req, res) => {
         const newDirPath = path.join(parentPath, safeName);
         await fs.mkdir(newDirPath, { recursive: false });
         console.log(`[${beijingTime()}] 已创建文件夹: ${newDirPath}`);
-        broadcastLog('info', `[MKDIR] 已创建文件夹: ${safeName}`);
+        broadcastLog('info', `[MKDIR] 已创建文件夹: ${newDirPath}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, path: newDirPath }));
       } catch (err) {
@@ -1720,7 +1718,7 @@ const server = http.createServer(async (req, res) => {
         const type = stat.isDirectory() ? '目录' : '文件';
         console.log(`[${beijingTime()}] 已删除${type}: ${targetPath}`);
         // 输出到主日志
-        broadcastLog('info', `[DELETE] 已删除${type}: ${safeName}`);
+        broadcastLog('info', `[DELETE] 已删除${type}: ${targetPath}`);
         // 广播删除事件，前端更新列表
         try {
           if (!stat.isDirectory()) {
@@ -3136,7 +3134,13 @@ const server = http.createServer(async (req, res) => {
                 markSSEAlive();
                 try {
                   const data = JSON.parse(e.data);
-                  const color = data.level === 'error' ? '#f87171' : (data.level === 'stderr' ? '#fbbf24' : '#a0aec0');
+                  // 后端日志（info/zip/unzip/delete/mkdir）用淡黄色 #fef3c7
+                  // 脚本执行 stdout 用 #a0aec0，stderr 用 #fbbf24，error 用 #f87171
+                  var color = '#a0aec0';
+                  if (data.level === 'error') color = '#f87171';
+                  else if (data.level === 'stderr') color = '#fbbf24';
+                  else if (data.level === 'stdout') color = '#a0aec0';
+                  else color = '#fef3c7'; // 淡黄色：文件操作日志
                   const line = \`<span style="color:\${color}">[\${data.timestamp}] \${data.message}</span><br>\`;
                   logBox.innerHTML += line;
                   logBox.scrollTop = logBox.scrollHeight;
@@ -3205,24 +3209,11 @@ const server = http.createServer(async (req, res) => {
                 } catch (err) { console.error('解析 file-change 事件失败', err); }
               });
 
-              // === ADDED: 监听 task-update — 实时输出所有子进程日志到前端 ===
+              // === ADDED: 监听 task-update — 自动打开/关闭日志窗（日志内容由 broadcastLog 推送） ===
               evtSource.addEventListener('task-update', function(e) {
                 markSSEAlive();
                 try {
                   const t = JSON.parse(e.data);
-                  // 实时输出 stdout
-                  if (t.stdout && t.stdout.length > 0) {
-                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '') + ' stdout] ' + t.stdout);
-                  }
-                  // 实时输出 stderr
-                  if (t.stderr && t.stderr.length > 0) {
-                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '') + ' stderr] ' + t.stderr);
-                  }
-                  // 输出状态变更
-                  if (t.status && (!t.stdout || t.stdout.length === 0) && (!t.stderr || t.stderr.length === 0)) {
-                    appendLogToBox('[TASK ' + (t.id ? t.id.slice(-8) : '??') + '] ' + (t.type || '?') + ' ' + t.status);
-                  }
-                  // 文件操作自动显示/隐藏日志区
                   if (t.type === 'zip' || t.type === 'unzip') {
                     if (t.status === 'running') {
                       updateLogForFileTasks(true);
@@ -3677,25 +3668,78 @@ const server = http.createServer(async (req, res) => {
             });
             document.getElementById('closeZipModal').addEventListener('click', function() { zipModal.classList.remove('visible'); });
 
-            // 打开解压模态
-            document.getElementById('openUnzipModalBtn').addEventListener('click', async function() {
-              unzipModal.classList.add('visible');
+            // === 解压模态：多级目录浏览，可删除 zip 文件 ===
+            var unzipCurrentPath = '';
+            function loadUnzipList(path) {
+              unzipCurrentPath = path || '';
+              var query = path ? '?path=' + encodeURIComponent(path) : '';
               unzipList.innerHTML = '加载中...';
-              try {
-                var zipFiles = Array.from(document.querySelectorAll('.user-file-open-btn'))
-                  .map(function(b) { return b.getAttribute('data-file'); })
-                  .filter(function(n) { return n && n.toLowerCase().endsWith('.zip'); });
-                if (zipFiles.length === 0) {
-                  unzipList.innerHTML = '<div style="color:#64748b">未发现任何 zip 文件</div>';
+              fetch('/file/browse' + query).then(function(r) { return r.json(); }).then(function(data) {
+                if (!data.items || data.items.length === 0) {
+                  unzipList.innerHTML = '<div style="color:#64748b">该目录下无文件</div>';
                   return;
                 }
-                unzipList.innerHTML = zipFiles.map(function(z) { return '<div class="zip-list-item" style="display:flex;justify-content:space-between;align-items:center"><div>' + escapeHtmlText(z) + '</div><div><button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(z) + '">解压</button></div></div>'; }).join('');
-                document.querySelectorAll('.unzip-btn').forEach(function(b) {
-                  b.addEventListener('click', function() { startUnzipTask(b.getAttribute('data-zip')); });
+                // 只显示 zip 文件和子目录
+                var zipItems = data.items.filter(function(item) { return item.isDirectory || item.name.toLowerCase().endsWith('.zip'); });
+                if (zipItems.length === 0) {
+                  unzipList.innerHTML = '<div style="color:#64748b">未发现 zip 文件</div>';
+                  return;
+                }
+                var disp = path || '/';
+                document.getElementById('unzipModal').querySelector('h3').innerHTML = '⬇️ 解压 zip - <span style="color:#667eea">' + escapeHtmlText(disp) + '</span>';
+                var html = '<div style="margin-bottom:4px;color:#64748b;font-size:0.85rem">点击目录可进入下级，zip 文件点击"解压"</div>';
+                zipItems.forEach(function(item) {
+                  var icon = item.isDirectory ? '📁' : '📄';
+                  var itemPath = path ? path + '/' + item.name : item.name;
+                  if (item.isDirectory) {
+                    html += '<div class="zip-list-item" style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px solid #f1f5f9">';
+                    html += '<span style="cursor:pointer;flex:1;display:flex;align-items:center;gap:4px;color:#2563eb" class="unzip-dir-link" data-path="' + escapeHtmlText(itemPath) + '">' + icon + ' <u>' + escapeHtmlText(item.name) + '</u></span>';
+                    html += '</div>';
+                  } else {
+                    html += '<div class="zip-list-item" style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px solid #f1f5f9">';
+                    html += '<span style="flex:1;display:flex;align-items:center;gap:4px">' + icon + ' ' + escapeHtmlText(item.name) + '</span>';
+                    html += '<button class="btn-small unzip-btn" data-zip="' + escapeHtmlText(itemPath) + '" style="margin-right:4px">解压</button>';
+                    html += '<button class="delete-btn unzip-delete-btn" data-parent="' + escapeHtmlText(path || '/') + '" data-name="' + escapeHtmlText(item.name) + '" title="删除" style="padding:2px 6px;font-size:0.85rem">🗑️</button>';
+                    html += '</div>';
+                  }
                 });
-              } catch (err) {
-                unzipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + err.message + '</div>';
-              }
+                if (path) {
+                  html += '<div style="margin-top:8px"><button id="unzipBackBtn" class="btn-ghost">← 返回上级</button></div>';
+                }
+                unzipList.innerHTML = html;
+                // 子目录点击
+                unzipList.querySelectorAll('.unzip-dir-link').forEach(function(el) {
+                  el.addEventListener('click', function() { loadUnzipList(this.getAttribute('data-path')); });
+                });
+                // 解压按钮
+                unzipList.querySelectorAll('.unzip-btn').forEach(function(el) {
+                  el.addEventListener('click', function() { startUnzipTask(this.getAttribute('data-zip')); });
+                });
+                // 删除按钮
+                unzipList.querySelectorAll('.unzip-delete-btn').forEach(function(el) {
+                  el.addEventListener('click', function() {
+                    var p = this.getAttribute('data-parent');
+                    var n = this.getAttribute('data-name');
+                    if (confirm('确定删除 ' + n + ' 吗？')) {
+                      deleteZipItem(p, n, function() { loadUnzipList(unzipCurrentPath); });
+                    }
+                  });
+                });
+                // 返回按钮（动态绑定）
+                var backBtn = document.getElementById('unzipBackBtn');
+                if (backBtn) {
+                  backBtn.addEventListener('click', function() {
+                    var parts = unzipCurrentPath.split('/').filter(Boolean);
+                    var parent = parts.slice(0, -1).join('/');
+                    loadUnzipList(parent);
+                  });
+                }
+              }).catch(function(err) { unzipList.innerHTML = '<div style="color:#f43f5e">加载失败: ' + err.message + '</div>'; });
+            }
+
+            document.getElementById('openUnzipModalBtn').addEventListener('click', function() {
+              unzipModal.classList.add('visible');
+              loadUnzipList('');
             });
             document.getElementById('closeUnzipModal').addEventListener('click', function() { unzipModal.classList.remove('visible'); });
 
@@ -3760,16 +3804,20 @@ const server = http.createServer(async (req, res) => {
               es.onerror = function() {};
             }
 
-            // === 新建文件夹模态 ===
+            // === 新建文件夹模态（改用 /file/browse 获取所有子目录） ===
             function loadMkdirProfiles() {
               mkdirProfileList.innerHTML = '加载中...';
-              fetch('/file/profiles').then(r=>r.json()).then(data=>{
-                var html = '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9;background:#f0fdf4"><input type="radio" name="mkdirParent" value="/" checked> <strong>/</strong> <span style="color:#64748b;font-size:0.85rem">（根目录 — /app/puppeteer_user_data/）</span></label>';
-                if (data.profiles && data.profiles.length > 0) {
-                  html += data.profiles.map(p => '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9"><input type="radio" name="mkdirParent" value="' + escapeHtmlText(p) + '"> ' + escapeHtmlText(p) + '</label>').join('');
+              fetch('/file/browse').then(function(r) { return r.json(); }).then(function(data) {
+                var html = '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9;background:#f0fdf4"><input type="radio" name="mkdirParent" value="/" checked> <strong>/ （根目录 — /app/puppeteer_user_data/）</strong></label>';
+                if (data.items && data.items.length > 0) {
+                  data.items.forEach(function(item) {
+                    if (item.isDirectory) {
+                      html += '<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid #f1f5f9"><input type="radio" name="mkdirParent" value="' + escapeHtmlText(item.name) + '"> 📁 ' + escapeHtmlText(item.name) + '</label>';
+                    }
+                  });
                 }
                 mkdirProfileList.innerHTML = html;
-              }).catch(err => { mkdirProfileList.innerHTML = '<div style="color:#f43f5e;padding:8px;">加载失败: '+err.message+'</div>'; });
+              }).catch(function(err) { mkdirProfileList.innerHTML = '<div style="color:#f43f5e;padding:8px;">加载失败: ' + err.message + '</div>'; });
             }
 
             document.getElementById('openMkdirModalBtn').addEventListener('click', function() {
