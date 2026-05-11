@@ -1420,7 +1420,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ==================== 需要认证的路由 ====================
-  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/browse', '/file/mkdir', '/file/delete-item'];
+  const protectedPaths = ['/trigger', '/run/', '/upload', '/script/', '/file/', '/status', '/history', '/events', '/metrics', '/file/zip-async', '/file/unzip-async', '/file/task/', '/file/browse', '/file/mkdir', '/file/delete-item', '/stop'];
   const isProtected = protectedPaths.some(p => pathname === p || pathname.startsWith(p));
 
   if (isProtected) {
@@ -1570,6 +1570,19 @@ const server = http.createServer(async (req, res) => {
         error: err.message || '启动爬虫任务失败',
         current_script: currentScript || null
       }));
+    }
+    return;
+  }
+
+  // === ADDED: POST /stop 终止当前正在执行的脚本 ===
+  if (pathname === '/stop' && method === 'POST') {
+    try {
+      const result = requestChildStop('manual');
+      res.writeHead(result.success ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: '终止失败: ' + err.message }));
     }
     return;
   }
@@ -2578,6 +2591,13 @@ const server = http.createServer(async (req, res) => {
               cursor: pointer;
             }
             .logout-btn:hover { background: #c53030; }
+            .stop-btn {
+              background: #dc2626; color: white; border: none; border-radius: 30px;
+              padding: 6px 14px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+              transition: 0.2s;
+            }
+            .stop-btn:hover { background: #b91c1c; }
+            .stop-btn:disabled { opacity: 0.5; cursor: not-allowed; }
             /* === ADDED: 压缩/解压模态框样式 === */
             .zip-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 9999; }
             .zip-modal.visible { display: flex; }
@@ -2607,8 +2627,11 @@ const server = http.createServer(async (req, res) => {
                   <div class="status-item">⚙️ 当前脚本: <span id="currentScript">无</span></div>
                   <div class="status-item">🕒 上次运行: <span id="lastRun">无</span></div>
                 </div>
-                <div class="status-row">
+                <div class="status-row" style="justify-content:space-between">
                   <div class="status-item">💚 健康状态: <span id="healthStatus">检查中...</span></div>
+                  <div class="status-item">
+                    <button id="stopScriptBtn" class="stop-btn" style="display:none;">⏹️ 停止脚本</button>
+                  </div>
                 </div>
               </div>
 
@@ -3168,6 +3191,11 @@ const server = http.createServer(async (req, res) => {
                   document.querySelectorAll('.script-btn[data-script]').forEach(btn => {
                     btn.disabled = isRunning;
                   });
+                  // 脚本运行时显示停止按钮
+                  const stopBtn = document.getElementById('stopScriptBtn');
+                  if (stopBtn) {
+                    stopBtn.style.display = isRunning && !shuttingDown ? '' : 'none';
+                  }
                   if (completedRunKey && completedRunKey !== latestCompletedRunKey) {
                     latestCompletedRunKey = completedRunKey;
                     refreshHistoryAndStats();
@@ -3477,6 +3505,22 @@ const server = http.createServer(async (req, res) => {
                 showToast('登出失败', 'error');
               }
             };
+
+            // 停止脚本按钮
+            document.getElementById('stopScriptBtn').addEventListener('click', async function() {
+              if (!confirm('确定停止当前正在运行的脚本吗？')) return;
+              try {
+                var res = await fetch('/stop', { method: 'POST' });
+                var data = await res.json();
+                if (res.ok && data.success) {
+                  showToast('已发送停止信号，等待脚本退出', 'info');
+                } else {
+                  showToast(data.message || '停止失败', 'error');
+                }
+              } catch (err) {
+                showToast('请求失败: ' + err.message, 'error');
+              }
+            });
 
             document.querySelectorAll('.script-btn[data-script]').forEach(btn => {
               btn.addEventListener('click', (e) => {
@@ -3890,7 +3934,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`脚本目录: ${SCRIPTS_DIR} 和 ${USER_DATA_SCRIPTS_DIR}`);
   console.log(`日志文件: ${LOG_FILE}`);
   console.log(`历史详情文件: ${HISTORY_FILE}`);
-  console.log(`可用端点: /health, /status, /trigger, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth, /file/profiles, /file/mkdir, /file/zip-async, /file/unzip-async, /file/task/:id`);
+  console.log(`可用端点: /health, /status, /trigger, /stop, /run/:script, /upload, /file/view/:filename, /file/:filename, /script/:filename, /events, /history, /history/detail, /login, /logout, /check-auth, /file/browse, /file/mkdir, /file/zip-async, /file/unzip-async, /file/task/:id, /file/delete-item`);
   if (API_KEY) console.log(`⚠️ API Key 验证已启用`);
   if (!supabase) console.warn('⚠️ Supabase 未配置，认证功能已禁用！请设置环境变量 SUPABASE_URL 和 SUPABASE_SERVICE_ROLE_KEY');
 });
