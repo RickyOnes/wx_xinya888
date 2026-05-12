@@ -1,4 +1,4 @@
-name: 构建VNC + noVNC 爬虫镜像并推送【GHCR/腾讯云TCR】双仓库
+name: 构建VNC + noVNC 爬虫镜像并推送【GHCR/腾讯云TCR】
 
 on:
   push:
@@ -57,10 +57,8 @@ jobs:
           file: ./Dockerfile.cron
           push: true
           tags: |
-            # A. 腾讯云标签
             ccr.ccs.tencentyun.com/rickyone/xinya888/cron-crawler:latest
             ccr.ccs.tencentyun.com/rickyone/xinya888/cron-crawler:${{ github.sha }}
             
-            # B. 原有的 GHCR 标签
             ghcr.io/rickyones/cron-crawler:latest
             ghcr.io/rickyones/cron-crawler:${{ github.sha }}
