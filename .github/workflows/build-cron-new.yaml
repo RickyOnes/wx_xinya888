@@ -57,8 +57,8 @@ jobs:
           file: ./Dockerfile.cron
           push: true
           tags: |
-            ccr.ccs.tencentyun.com/rickyone/xinya888/cron-crawler:latest
-            ccr.ccs.tencentyun.com/rickyone/xinya888/cron-crawler:${{ github.sha }}
+            ccr.ccs.tencentyun.com/rickyone/xinya888:latest
+            ccr.ccs.tencentyun.com/rickyone/xinya888:${{ github.sha }}
             
             ghcr.io/rickyones/cron-crawler:latest
             ghcr.io/rickyones/cron-crawler:${{ github.sha }}
