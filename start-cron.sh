@@ -3,27 +3,19 @@ set -e
 
 # 容器启动脚本 - 支持三种访问/触发方式：
 # 1. 直接 VNC 连接（端口 5900，密码通过 VNC_PASSWORD 环境变量设置，默认 zf123456）
-#   使用 VNC 客户端连接主机IP:5900，延迟最低、操作最流畅
-# 2. Web 访问 noVNC（端口 6080，无需额外客户端）
-#   浏览器访问 http://主机IP:6080/vnc.html
-# 3. HTTP 触发服务器（端口 3000，用于 Supabase Cron 定时调用）
-#   - 健康检查: GET /health
-#   - 触发爬虫: POST /trigger (需 API_KEY 验证，如果设置了 API_KEY 环境变量)
-#   - 状态查询: GET /status
-# 基本参数：x11vnc -noxdamage -shared, noVNC --heartbeat 30
-#
-# 部署到 clawcloud 后，可通过 Supabase Cron 定时调用 HTTP 触发服务器来执行爬虫任务。
-# 设置环境变量 API_KEY 可启用授权保护，确保只有携带正确 Bearer Token 的请求才能触发爬虫。
-# 详细配置示例参见 /app/scripts/trigger-server.js 文件顶部的注释。
-#
-# 环境变量说明：
-# - VNC_PASSWORD: VNC连接密码（默认：zf123456）
-# - API_KEY: HTTP触发服务器授权密钥（可选，如设置则需Bearer Token验证）
-# - TRIGGER_PORT: HTTP触发服务器端口（默认：3000）
-
+# 2. Web 访问 noVNC（端口 6080）
+# 3. HTTP 触发服务器（端口 3000）
 
 # 加载全局环境变量（确保 fcitx 生效）
 source /etc/profile.d/fcitx.sh
+
+echo "=== 清理旧的 X 环境 ==="
+# 杀死可能残留的 Xvfb 和 x11vnc 进程
+pkill -9 Xvfb 2>/dev/null || true
+pkill -9 x11vnc 2>/dev/null || true
+# 删除锁文件和 Unix socket
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+sleep 1
 
 echo "=== 启动 Xvfb ==="
 Xvfb :99 -screen 0 1280x720x16 -ac +extension GLX +render -noreset &
@@ -73,16 +65,18 @@ startxfce4 &
 sleep 3
 
 echo "=== 设置 VNC 密码并启动 VNC ==="
-mkdir -p ~/.vnc
 PASSWORD=${VNC_PASSWORD:-zf123456}
-x11vnc -storepasswd $PASSWORD ~/.vnc/passwd
+VNC_PASSWD_DIR="/app/puppeteer_user_data/.vnc"
+VNC_PASSWD_FILE="${VNC_PASSWD_DIR}/passwd"
+mkdir -p "$VNC_PASSWD_DIR"
+x11vnc -storepasswd "$PASSWORD" "$VNC_PASSWD_FILE"
 echo "启动 x11vnc..."
-x11vnc -display :99 -forever -usepw -rfbauth ~/.vnc/passwd -rfbport 5900 -shared -noxdamage &
+x11vnc -display :99 -forever -rfbauth "$VNC_PASSWD_FILE" -rfbport 5900 -shared -noxdamage &
 
 # 等待 VNC 服务就绪
 echo "等待 VNC 服务启动（最大 10 秒）..."
-for i in {1..10}; do
-    if timeout 1 bash -c "cat < /dev/null > /dev/tcp/localhost/5900" 2>/dev/null; then
+for i in $(seq 1 10); do
+    if netstat -tuln | grep -q ":5900 "; then
         echo "VNC 服务已在端口 5900 上就绪"
         break
     fi
@@ -95,7 +89,7 @@ echo "启动 noVNC 代理，监听 0.0.0.0:6080，连接到 localhost:5900..."
 /opt/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 0.0.0.0:6080 --web /opt/novnc --heartbeat 30 &
 sleep 2
 
-if timeout 1 bash -c "cat < /dev/null > /dev/tcp/localhost/6080" 2>/dev/null; then
+if netstat -tuln | grep -q ":6080 "; then
     echo "noVNC 服务已在端口 6080 上就绪"
 else
     echo "警告：noVNC 服务可能未启动，端口 6080 未监听"
